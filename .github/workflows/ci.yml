@@ -20,6 +20,7 @@ jobs:
   frontend:
     name: Frontend
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -52,13 +53,14 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
@@ -89,6 +91,7 @@ jobs:
   app:
     name: App build (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -99,8 +102,8 @@ jobs:
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
