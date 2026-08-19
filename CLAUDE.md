@@ -128,6 +128,22 @@ from here to GitHub.
 - `tools::Context` carries the pool and the GitHub client, so tools are testable against an
   in-memory database and a stub server rather than a live Tauri app.
 
+## Background daemon
+
+`src-tauri/src/daemon.rs` keeps the work log current: ask GitHub what the user merged, ask the local
+model to turn each merge into a one-sentence achievement, and write it to `work_logs`.
+
+- It runs shortly after launch and then on an interval. A failing pass is never fatal — GitHub may
+  be unreachable or Ollama may not be running — so it reports and tries again next time.
+- Every pass is **idempotent**: entries carry the pull request's identifier in `external_id`, and
+  the unique index added in migration v2 means the same merge is never logged twice. Entries the
+  user writes by hand have no `external_id`, which is why that index is partial.
+- Work already in the log is skipped _before_ the model is asked, so a caught-up pass costs nothing.
+- If summarising fails, nothing is written for that item. Writing an unsummarised row would mean it
+  is never revisited, since the dedupe key would already be present.
+- `run_once` takes a `Context` rather than an `AppHandle`, so a whole pass runs in tests against an
+  in-memory database and stub GitHub and Ollama servers.
+
 ## Conventions
 
 **TypeScript**
@@ -184,6 +200,6 @@ Build strictly in order, and stop for review at each step:
    back to the model. ✅
 5. **GitHub sign-in** — device flow from the desktop app, token stored in `integrations`, and
    `fetch_github_prs` reading real data. ✅
-6. **Background daemon & work log** — periodic fetch, summarise locally, write to `work_logs`.
+6. **Background daemon & work log** — periodic fetch, summarise locally, write to `work_logs`. ✅
 
 Do not start a later step before the earlier one is reviewed and merged.
