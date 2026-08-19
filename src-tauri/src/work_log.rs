@@ -25,8 +25,11 @@ pub struct WorkLogEntry {
     /// Where the entry came from, e.g. `github` or `calendar`.
     pub source: String,
     pub content: String,
-    /// A one-line achievement, written by the local model in a later step.
+    /// A one-line achievement, written by the local model.
     pub summary: Option<String>,
+    /// Identifies the thing this entry describes, for entries written by the
+    /// background daemon. `None` for entries the user wrote themselves.
+    pub external_id: Option<String>,
 }
 
 /// A new entry. `timestamp` defaults to now, `summary` to nothing.
@@ -39,6 +42,9 @@ pub struct NewWorkLogEntry {
     pub timestamp: Option<String>,
     #[serde(default)]
     pub summary: Option<String>,
+    /// Set by the daemon so the same activity is only ever logged once.
+    #[serde(default)]
+    pub external_id: Option<String>,
 }
 
 /// Read entries newest first.
@@ -46,7 +52,7 @@ pub async fn fetch(pool: &SqlitePool, limit: Option<i64>) -> Result<Vec<WorkLogE
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     let entries = sqlx::query_as::<_, WorkLogEntry>(
-        "SELECT id, timestamp, source, content, summary
+        "SELECT id, timestamp, source, content, summary, external_id
          FROM work_logs
          ORDER BY timestamp DESC, id DESC
          LIMIT ?1",
@@ -61,18 +67,57 @@ pub async fn fetch(pool: &SqlitePool, limit: Option<i64>) -> Result<Vec<WorkLogE
 /// Append an entry and return it as stored, including the values SQLite filled in.
 pub async fn insert(pool: &SqlitePool, entry: NewWorkLogEntry) -> Result<WorkLogEntry, Error> {
     let stored = sqlx::query_as::<_, WorkLogEntry>(
-        "INSERT INTO work_logs (timestamp, source, content, summary)
-         VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4)
-         RETURNING id, timestamp, source, content, summary",
+        "INSERT INTO work_logs (timestamp, source, content, summary, external_id)
+         VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4, ?5)
+         RETURNING id, timestamp, source, content, summary, external_id",
     )
     .bind(entry.timestamp)
     .bind(entry.source)
     .bind(entry.content)
     .bind(entry.summary)
+    .bind(entry.external_id)
     .fetch_one(pool)
     .await?;
 
     Ok(stored)
+}
+
+/// Append an entry unless this source has already logged that thing.
+///
+/// Returns the stored entry, or `None` when it was already there. This is what
+/// lets the daemon run as often as it likes.
+pub async fn insert_new(
+    pool: &SqlitePool,
+    entry: NewWorkLogEntry,
+) -> Result<Option<WorkLogEntry>, Error> {
+    let stored = sqlx::query_as::<_, WorkLogEntry>(
+        "INSERT INTO work_logs (timestamp, source, content, summary, external_id)
+         VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4, ?5)
+         ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL DO NOTHING
+         RETURNING id, timestamp, source, content, summary, external_id",
+    )
+    .bind(entry.timestamp)
+    .bind(entry.source)
+    .bind(entry.content)
+    .bind(entry.summary)
+    .bind(entry.external_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(stored)
+}
+
+/// Whether this source has already logged that thing.
+pub async fn has_logged(pool: &SqlitePool, source: &str, external_id: &str) -> Result<bool, Error> {
+    let existing = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM work_logs WHERE source = ?1 AND external_id = ?2 LIMIT 1",
+    )
+    .bind(source)
+    .bind(external_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(existing.is_some())
 }
 
 /// Read the work log, newest first.
@@ -106,6 +151,7 @@ mod tests {
             content: content.to_string(),
             timestamp: None,
             summary: None,
+            external_id: None,
         }
     }
 
@@ -201,5 +247,93 @@ mod tests {
         // A nonsensical limit must not return everything or panic.
         let entries = fetch(&pool, Some(0)).await.expect("read should succeed");
         assert_eq!(entries.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod deduplication_tests {
+    use super::*;
+    use crate::db::test_support::migrated_pool;
+
+    fn from_github(external_id: &str, content: &str) -> NewWorkLogEntry {
+        NewWorkLogEntry {
+            source: "github".to_string(),
+            content: content.to_string(),
+            timestamp: None,
+            summary: Some("Shipped something".to_string()),
+            external_id: Some(external_id.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn logs_an_entry_the_first_time() {
+        let pool = migrated_pool().await;
+
+        let stored = insert_new(&pool, from_github("pr-12", "Merged PR #12"))
+            .await
+            .expect("insert should succeed");
+
+        assert!(stored.is_some(), "the first sighting should be logged");
+    }
+
+    #[tokio::test]
+    async fn does_not_log_the_same_activity_twice() {
+        let pool = migrated_pool().await;
+
+        insert_new(&pool, from_github("pr-12", "Merged PR #12"))
+            .await
+            .expect("insert should succeed");
+        let again = insert_new(&pool, from_github("pr-12", "Merged PR #12"))
+            .await
+            .expect("insert should succeed");
+
+        assert!(again.is_none(), "the second sighting should be skipped");
+        assert_eq!(fetch(&pool, None).await.expect("read").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tells_two_sources_apart() {
+        let pool = migrated_pool().await;
+
+        insert_new(&pool, from_github("12", "Merged PR #12"))
+            .await
+            .expect("insert should succeed");
+
+        let calendar = NewWorkLogEntry {
+            source: "calendar".to_string(),
+            ..from_github("12", "Attended event 12")
+        };
+        let stored = insert_new(&pool, calendar)
+            .await
+            .expect("insert should succeed");
+
+        assert!(
+            stored.is_some(),
+            "the same id from another source is a different thing"
+        );
+    }
+
+    #[tokio::test]
+    async fn hand_written_entries_never_collide() {
+        let pool = migrated_pool().await;
+
+        for _ in 0..2 {
+            let stored = insert_new(
+                &pool,
+                NewWorkLogEntry {
+                    source: "manual".to_string(),
+                    content: "Wrote something down".to_string(),
+                    timestamp: None,
+                    summary: None,
+                    external_id: None,
+                },
+            )
+            .await
+            .expect("insert should succeed");
+
+            assert!(stored.is_some(), "entries without an id are always kept");
+        }
+
+        assert_eq!(fetch(&pool, None).await.expect("read").len(), 2);
     }
 }

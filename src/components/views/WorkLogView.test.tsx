@@ -41,6 +41,18 @@ describe('WorkLogView', () => {
     expect(await screen.findByText('Merged pull request #4')).toBeInTheDocument();
   });
 
+  it('reloads on request, so new entries appear without a restart', async () => {
+    invoke.mockResolvedValueOnce([]);
+
+    render(<WorkLogView />);
+    expect(await screen.findByRole('heading', { name: 'No entries yet' })).toBeInTheDocument();
+
+    invoke.mockResolvedValueOnce([entry]);
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh work log' }));
+
+    expect(await screen.findByText('Shipped the app shell')).toBeInTheDocument();
+  });
+
   it('shows the empty state when nothing is logged', async () => {
     invoke.mockResolvedValue([]);
 

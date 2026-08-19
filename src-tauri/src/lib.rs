@@ -6,6 +6,7 @@
 
 mod agent;
 mod connect;
+mod daemon;
 mod db;
 mod github;
 mod integrations;
@@ -32,6 +33,10 @@ pub fn run() {
             tauri::Manager::manage(app, ollama::Client::new()?);
             tauri::Manager::manage(app, github::Client::new()?);
             tauri::Manager::manage(app, connect::Pending::default());
+
+            // Keeps the work log up to date in the background.
+            daemon::spawn(&app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -133,6 +133,16 @@ pub struct PullRequest {
     pub draft: bool,
     pub url: String,
     pub updated_at: String,
+    /// When it was merged, for pull requests that were.
+    pub merged_at: Option<String>,
+}
+
+impl PullRequest {
+    /// A stable identifier for this pull request, so the same merge is never
+    /// logged twice.
+    pub fn external_id(&self) -> String {
+        format!("{}#{}", self.repository, self.number)
+    }
 }
 
 /// Which pull requests to ask GitHub for.
@@ -141,6 +151,9 @@ pub enum State {
     #[default]
     Open,
     Closed,
+    /// Merged, which is narrower than closed: a closed pull request may simply
+    /// have been abandoned.
+    Merged,
     All,
 }
 
@@ -149,6 +162,7 @@ impl State {
         match self {
             State::Open => " is:open",
             State::Closed => " is:closed",
+            State::Merged => " is:merged",
             State::All => "",
         }
     }
@@ -384,6 +398,9 @@ fn pull_request_from(item: &Value) -> PullRequest {
         draft: item["draft"].as_bool().unwrap_or(false),
         url: item["html_url"].as_str().unwrap_or_default().to_string(),
         updated_at: item["updated_at"].as_str().unwrap_or_default().to_string(),
+        merged_at: item["pull_request"]["merged_at"]
+            .as_str()
+            .map(ToString::to_string),
     }
 }
 
@@ -600,6 +617,23 @@ mod tests {
     fn asks_for_the_right_pull_requests() {
         assert_eq!(State::Open.qualifier(), " is:open");
         assert_eq!(State::Closed.qualifier(), " is:closed");
+        assert_eq!(State::Merged.qualifier(), " is:merged");
         assert_eq!(State::All.qualifier(), "");
+    }
+
+    #[test]
+    fn identifies_a_pull_request_by_repository_and_number() {
+        let pr = PullRequest {
+            number: 12,
+            title: "Add the daemon".to_string(),
+            repository: "scottmallinson/chief.ai".to_string(),
+            state: "closed".to_string(),
+            draft: false,
+            url: "https://github.com/scottmallinson/chief.ai/pull/12".to_string(),
+            updated_at: "2026-08-19T14:00:00Z".to_string(),
+            merged_at: Some("2026-08-19T14:00:00Z".to_string()),
+        };
+
+        assert_eq!(pr.external_id(), "scottmallinson/chief.ai#12");
     }
 }

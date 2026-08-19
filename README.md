@@ -6,9 +6,9 @@ Chief answers questions about your work — what you shipped, what is waiting on
 like — by reading your tools and reasoning with a local LLM. Everything happens on your machine:
 no cloud backend, no remote model, no proxy server.
 
-> **Status:** early development. Steps 1–5 of the roadmap are in place: the app shell, the local
-> SQLite database, the local LLM engine, the tool-calling orchestrator and GitHub sign-in. The
-> background work-log daemon is the remaining step.
+> **Status:** the six steps of the initial roadmap are complete — the app shell, the local SQLite
+> database, the local LLM engine, the tool-calling orchestrator, GitHub sign-in, and the background
+> work-log daemon.
 
 ## Requirements
 
@@ -62,6 +62,13 @@ pnpm tauri:dev
 | `pnpm build`                    | Typecheck and build the frontend bundle   |
 | `pnpm tauri build`              | Build installers for the current platform |
 | `pnpm rust:lint`                | Clippy with warnings denied               |
+
+## The work log
+
+Once GitHub is connected, Chief periodically looks for pull requests you have merged, asks the local
+model to turn each one into a single-sentence achievement, and records it. The summarising happens
+on your machine, like everything else. Passes are idempotent, so the same merge is never logged
+twice.
 
 ## How it stays private
 
