@@ -6,8 +6,8 @@ Chief answers questions about your work — what you shipped, what is waiting on
 like — by reading your tools and reasoning with a local LLM. Everything happens on your machine:
 no cloud backend, no remote model, no proxy server.
 
-> **Status:** early development. Step 1 of the roadmap (project scaffolding and UI shell) is in
-> place; the local database, LLM engine and integrations are not built yet.
+> **Status:** early development. Steps 1 and 2 of the roadmap (project scaffolding, UI shell and
+> the local SQLite database) are in place; the LLM engine and integrations are not built yet.
 
 ## Requirements
 
@@ -47,7 +47,7 @@ pnpm tauri:dev
 
 - Inference runs against Ollama on `http://localhost:11434`.
 - Your work log, integration tokens and embeddings live in a local SQLite database in this app's
-  data directory.
+  config directory.
 - Integrations authenticate with PKCE OAuth directly from the app — there is no server in between,
   and requests go straight from your machine to the service you connected.
 - There is no telemetry, analytics or crash reporting.

@@ -1,10 +1,19 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import App from '@/App';
 
+const invoke = vi.hoisted(() => vi.fn());
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke }));
+
 describe('App', () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue([]);
+  });
+
   it('opens on the chat view', () => {
     render(<App />);
 
@@ -16,6 +25,7 @@ describe('App', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Work Log' }));
 
-    expect(screen.getByRole('heading', { name: 'No entries yet' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Work Log' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'No entries yet' })).toBeInTheDocument();
   });
 });

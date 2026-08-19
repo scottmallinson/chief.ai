@@ -72,6 +72,21 @@ src-tauri/               Rust backend
   tauri.conf.json        Window, bundle and CSP configuration
 ```
 
+## Data layer
+
+The SQL plugin owns the connection pool for `sqlite:chief.db`, which resolves to a file in the OS
+app-config directory. `plugins.sql.preload` in `tauri.conf.json` makes the plugin connect and
+migrate at startup, so the pool is ready before the first command runs.
+
+- Migrations live in `src-tauri/src/db.rs` and are **append-only**: once a version has shipped, add
+  a new `Migration` rather than editing an existing one, or installed copies drift from the schema.
+- `db::pool(&app)` borrows the plugin's pool. Never open a second pool on the same file.
+- Query functions take `&SqlitePool` so they can be tested against an in-memory database; the
+  `#[tauri::command]` wrappers stay thin. See `src-tauri/src/work_log.rs` for the pattern.
+- The renderer is **not** granted the `sql:*` permissions, so it cannot run arbitrary SQL. All
+  database access goes through typed commands. If direct queries are ever wanted, add `sql:default`
+  to `src-tauri/capabilities/default.json` — deliberately, not by reflex.
+
 ## Conventions
 
 **TypeScript**
@@ -122,7 +137,7 @@ Build strictly in order, and stop for review at each step:
 
 1. **Project scaffolding & UI foundation** — Tauri v2 + React + Vite, Tailwind, app shell. ✅
 2. **SQLite local database** — `@tauri-apps/plugin-sql`, migrations for `work_logs` and
-   `integrations`, Tauri commands to read/write the log.
+   `integrations`, Tauri commands to read/write the log. ✅
 3. **Local LLM engine** — Rust service posting to Ollama `/api/chat`, `ask_agent` command.
 4. **Tool calling orchestrator** — `fetch_github_prs` schema, intercept `tool_calls`, feed results
    back to the model.
