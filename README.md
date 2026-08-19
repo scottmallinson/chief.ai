@@ -30,18 +30,16 @@ no cloud backend, no remote model, no proxy server.
 
 See the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for macOS and Windows.
 
-## Connecting GitHub
+## First run
 
-Chief signs in with GitHub's **device flow**, so no client secret is stored anywhere. You need your
-own OAuth app:
+Chief needs a model running on your machine. The app checks for one when it starts and walks you
+through it — install Ollama if it is missing, then download the model with a progress bar. No
+terminal required.
 
-1. GitHub → Settings → Developer settings → OAuth Apps → **New OAuth App**.
-2. On the app's page, enable **Device flow**.
-3. Copy the client id into `CHIEF_GITHUB_CLIENT_ID` (see `.env.example`), then connect from
-   Settings inside the app.
+Connecting GitHub is one click in Settings: Chief shows a short code, opens your browser, and waits
+while you authorise it. Your access token is stored in the local database and sent only to GitHub.
 
-The client id is not a secret. Your access token is stored in the local database and sent only to
-GitHub.
+Running from source is the one case where you need your own OAuth app — see `.env.example`.
 
 ## Getting started
 
