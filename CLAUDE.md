@@ -108,6 +108,26 @@ migrate at startup, so the pool is ready before the first command runs.
 - Errors are user-facing: an unreachable Ollama or a missing model says what to run, rather than
   surfacing a transport error.
 
+## Integrations
+
+`src-tauri/src/github.rs` is the only code allowed to reach a host that is not this machine, and
+only because the user connected the account. Requests carry the user's own token and go straight
+from here to GitHub.
+
+- Sign-in uses the **device flow**, not authorization code + PKCE. GitHub still requires a client
+  secret to exchange an authorization code — PKCE protects the code but does not replace the secret,
+  and GitHub "does not distinguish between public and confidential clients". A secret shipped inside
+  a desktop binary is not a secret, so the device flow, which needs none, is the only honest option.
+- The client id comes from `CHIEF_GITHUB_CLIENT_ID` at run time, falling back to build time. It is
+  not a secret. Without it, sign-in fails with a message saying what to do.
+- `Client::against` — the constructor that points at another host — is `#[cfg(test)]`, so a release
+  build cannot be aimed anywhere but GitHub.
+- Tokens live in `integrations`, one row per service; reconnecting replaces the row. They are stored
+  as plain text in the local database, protected by the OS user account rather than by encryption.
+  Moving them to the OS keychain would be a genuine improvement.
+- `tools::Context` carries the pool and the GitHub client, so tools are testable against an
+  in-memory database and a stub server rather than a live Tauri app.
+
 ## Conventions
 
 **TypeScript**
@@ -162,8 +182,8 @@ Build strictly in order, and stop for review at each step:
 3. **Local LLM engine** — Rust service posting to Ollama `/api/chat`, `ask_agent` command. ✅
 4. **Tool calling orchestrator** — `fetch_github_prs` schema, intercept `tool_calls`, feed results
    back to the model. ✅
-5. **Local PKCE OAuth** — GitHub authorization code + PKCE from the desktop app, token stored in
-   `integrations`.
+5. **GitHub sign-in** — device flow from the desktop app, token stored in `integrations`, and
+   `fetch_github_prs` reading real data. ✅
 6. **Background daemon & work log** — periodic fetch, summarise locally, write to `work_logs`.
 
 Do not start a later step before the earlier one is reviewed and merged.

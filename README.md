@@ -6,9 +6,9 @@ Chief answers questions about your work — what you shipped, what is waiting on
 like — by reading your tools and reasoning with a local LLM. Everything happens on your machine:
 no cloud backend, no remote model, no proxy server.
 
-> **Status:** early development. Steps 1–4 of the roadmap are in place: the app shell, the local
-> SQLite database, the local LLM engine and the tool-calling orchestrator. `fetch_github_prs` still
-> answers with sample data — connecting a real GitHub account is the next step.
+> **Status:** early development. Steps 1–5 of the roadmap are in place: the app shell, the local
+> SQLite database, the local LLM engine, the tool-calling orchestrator and GitHub sign-in. The
+> background work-log daemon is the remaining step.
 
 ## Requirements
 
@@ -29,6 +29,19 @@ no cloud backend, no remote model, no proxy server.
   ```
 
 See the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for macOS and Windows.
+
+## Connecting GitHub
+
+Chief signs in with GitHub's **device flow**, so no client secret is stored anywhere. You need your
+own OAuth app:
+
+1. GitHub → Settings → Developer settings → OAuth Apps → **New OAuth App**.
+2. On the app's page, enable **Device flow**.
+3. Copy the client id into `CHIEF_GITHUB_CLIENT_ID` (see `.env.example`), then connect from
+   Settings inside the app.
+
+The client id is not a secret. Your access token is stored in the local database and sent only to
+GitHub.
 
 ## Getting started
 

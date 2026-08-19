@@ -1,16 +1,27 @@
 //! Tools the agent can call.
 //!
 //! A tool is a schema the model sees plus a function we run on its behalf.
-//! Everything runs locally: a tool either reads the user's own database or
-//! calls a service the user has explicitly connected, with their own token.
-//!
-//! `fetch_github_prs` currently answers with a fixed sample. Step 5 replaces
-//! that body with a real request once GitHub OAuth stores a token.
+//! Everything runs on the user's terms: a tool either reads their own local
+//! database or calls a service they explicitly connected, with their own token.
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sqlx::SqlitePool;
 
+use crate::github::{self, State as PrState};
+use crate::integrations;
 use crate::ollama::{Tool, ToolCall, ToolFunction};
+
+/// What the tools need to do their work: the user's local database, and a
+/// client for the services they have connected.
+///
+/// Passing this explicitly, rather than reaching into the Tauri app, keeps the
+/// tools runnable in tests against an in-memory database and a stub server.
+#[derive(Debug, Clone)]
+pub struct Context {
+    pub pool: SqlitePool,
+    pub github: github::Client,
+}
 
 /// Names of the tools we advertise, so the dispatcher and the catalogue cannot
 /// drift apart.
@@ -25,6 +36,19 @@ pub enum PullRequestState {
     Closed,
     All,
 }
+
+impl From<PullRequestState> for PrState {
+    fn from(state: PullRequestState) -> Self {
+        match state {
+            PullRequestState::Open => PrState::Open,
+            PullRequestState::Closed => PrState::Closed,
+            PullRequestState::All => PrState::All,
+        }
+    }
+}
+
+/// How many pull requests to read in one go.
+const PR_LIMIT: u8 = 25;
 
 /// Arguments to [`FETCH_GITHUB_PRS`], as the model produced them.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -60,10 +84,13 @@ pub fn catalog() -> Vec<Tool> {
 /// A failure is reported to the model rather than to the user: it gets an
 /// `error` payload and can explain itself or try something else, which beats
 /// collapsing the whole conversation.
-pub async fn dispatch(call: &ToolCall) -> Value {
+pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
     match call.function.name.as_str() {
         FETCH_GITHUB_PRS => match parse(&call.function.arguments) {
-            Ok(args) => fetch_github_prs(args.state).await,
+            Ok(args) => match fetch_github_prs(context, args.state).await {
+                Ok(result) => result,
+                Err(error) => json!({ "error": error.to_string() }),
+            },
             Err(message) => json!({ "error": message }),
         },
         unknown => json!({
@@ -82,52 +109,43 @@ fn parse(arguments: &Value) -> Result<FetchGithubPrsArgs, String> {
         .map_err(|error| format!("could not read the arguments: {error}"))
 }
 
-/// Placeholder pull requests.
-///
-/// Replaced in step 5 by a real request to `api.github.com` made from here with
-/// the user's own token.
-async fn fetch_github_prs(state: PullRequestState) -> Value {
-    let sample = json!([
-        {
-            "number": 4,
-            "title": "Scaffold the desktop app and its toolchain",
-            "repository": "scottmallinson/chief.ai",
-            "state": "closed",
-            "merged": true,
-            "waiting_on": null,
-        },
-        {
-            "number": 12,
-            "title": "Add the tool calling orchestrator",
-            "repository": "scottmallinson/chief.ai",
-            "state": "open",
-            "merged": false,
-            "waiting_on": "review",
-        },
-    ]);
+/// Read the user's pull requests from GitHub with their own token.
+async fn fetch_github_prs(
+    context: &Context,
+    state: PullRequestState,
+) -> Result<Value, github::Error> {
+    let token = integrations::token(&context.pool, integrations::GITHUB)
+        .await?
+        .ok_or(github::Error::NotConnected)?;
 
-    let pull_requests: Vec<Value> = sample
-        .as_array()
-        .expect("the sample is an array")
-        .iter()
-        .filter(|pr| match state {
-            PullRequestState::All => true,
-            PullRequestState::Open => pr["state"] == "open",
-            PullRequestState::Closed => pr["state"] == "closed",
-        })
-        .cloned()
-        .collect();
+    let pull_requests = context
+        .github
+        .pull_requests(&token, state.into(), PR_LIMIT)
+        .await?;
 
-    json!({
-        "pull_requests": pull_requests,
-        "note": "Sample data. GitHub is not connected yet.",
-    })
+    Ok(github::as_tool_result(&pull_requests))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test_support::migrated_pool;
+    use crate::ollama::test_support::serve;
     use crate::ollama::ToolCallFunction;
+
+    /// One page of GitHub search results, trimmed to the fields we read.
+    const SEARCH_RESULTS: &str = r#"{
+        "total_count": 1,
+        "items": [{
+            "number": 12,
+            "title": "Add the tool calling orchestrator",
+            "repository_url": "https://api.github.com/repos/scottmallinson/chief.ai",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/scottmallinson/chief.ai/pull/12",
+            "updated_at": "2026-08-19T14:00:00Z"
+        }]
+    }"#;
 
     fn call(name: &str, arguments: Value) -> ToolCall {
         ToolCall {
@@ -136,6 +154,23 @@ mod tests {
                 arguments,
             },
         }
+    }
+
+    /// A context whose GitHub client talks to `host`.
+    async fn context(host: &str) -> Context {
+        Context {
+            pool: migrated_pool().await,
+            github: github::Client::against(host).expect("should build a client"),
+        }
+    }
+
+    async fn connected(host: &str) -> Context {
+        let context = context(host).await;
+        integrations::save(&context.pool, integrations::GITHUB, "gho_token", None)
+            .await
+            .expect("should store a token");
+
+        context
     }
 
     #[test]
@@ -153,40 +188,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_open_pull_requests_by_default() {
-        let result = dispatch(&call("fetch_github_prs", json!({}))).await;
+    async fn reads_the_users_pull_requests() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = connected(&host).await;
+
+        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
         let prs = result["pull_requests"]
             .as_array()
-            .expect("should be a list");
+            .unwrap_or_else(|| panic!("expected a list, got {result}"));
 
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0]["number"], json!(12));
+        assert_eq!(prs[0]["repository"], json!("scottmallinson/chief.ai"));
+        assert_eq!(prs[0]["state"], json!("open"));
+
+        let requests = server.await.expect("the stub should finish");
+        let (request_line, _) = crate::ollama::test_support::split(&requests[0]);
+
+        assert!(
+            request_line.contains("/search/issues"),
+            "unexpected request: {request_line}"
+        );
+        assert!(
+            request_line.contains("is%3Apr") && request_line.contains("is%3Aopen"),
+            "the query should ask for the user's open pull requests: {request_line}"
+        );
+        assert!(
+            // Header names arrive lowercased on the wire.
+            requests[0]
+                .to_lowercase()
+                .contains("authorization: bearer gho_token"),
+            "the stored token should be sent"
+        );
     }
 
     #[tokio::test]
-    async fn honours_the_requested_state() {
-        let result = dispatch(&call("fetch_github_prs", json!({ "state": "all" }))).await;
-        assert_eq!(result["pull_requests"].as_array().unwrap().len(), 2);
+    async fn asks_github_for_the_requested_state() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = connected(&host).await;
 
-        let result = dispatch(&call("fetch_github_prs", json!({ "state": "closed" }))).await;
-        let prs = result["pull_requests"]
-            .as_array()
-            .expect("should be a list");
+        dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "state": "closed" })),
+        )
+        .await;
 
-        assert_eq!(prs.len(), 1);
-        assert_eq!(prs[0]["merged"], json!(true));
+        let requests = server.await.expect("the stub should finish");
+        let (request_line, _) = crate::ollama::test_support::split(&requests[0]);
+
+        assert!(
+            request_line.contains("is%3Aclosed"),
+            "unexpected request: {request_line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tells_the_model_when_github_is_not_connected() {
+        let context = context("http://127.0.0.1:1").await;
+
+        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+
+        assert!(
+            result["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("not connected")),
+            "got {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tells_the_model_when_the_token_was_rejected() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 401 Unauthorized",
+            r#"{"message":"Bad credentials"}"#,
+        )]);
+        let context = connected(&host).await;
+
+        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+
+        assert!(
+            result["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("Reconnect GitHub")),
+            "got {result}"
+        );
+
+        server.await.expect("the stub should finish");
     }
 
     #[tokio::test]
     async fn copes_with_missing_arguments() {
-        let result = dispatch(&call("fetch_github_prs", Value::Null)).await;
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = connected(&host).await;
+
+        let result = dispatch(&context, &call("fetch_github_prs", Value::Null)).await;
 
         assert!(result["pull_requests"].is_array(), "got {result}");
+        server.await.expect("the stub should finish");
     }
 
     #[tokio::test]
     async fn tells_the_model_when_arguments_make_no_sense() {
-        let result = dispatch(&call("fetch_github_prs", json!({ "state": "sideways" }))).await;
+        let context = context("http://127.0.0.1:1").await;
+
+        let result = dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "state": "sideways" })),
+        )
+        .await;
 
         assert!(
             result["error"].is_string(),
@@ -196,7 +305,9 @@ mod tests {
 
     #[tokio::test]
     async fn tells_the_model_when_a_tool_does_not_exist() {
-        let result = dispatch(&call("send_everything_to_the_cloud", json!({}))).await;
+        let context = context("http://127.0.0.1:1").await;
+
+        let result = dispatch(&context, &call("send_everything_to_the_cloud", json!({}))).await;
 
         assert!(
             result["error"]
