@@ -6,8 +6,12 @@
 
 mod agent;
 mod db;
-mod ollama;
 mod work_log;
+
+// The Ollama client is a self-contained piece of this crate's library API: it
+// models the whole chat contract, including the tool-calling payload the
+// orchestrator uses in the next step.
+pub mod ollama;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
