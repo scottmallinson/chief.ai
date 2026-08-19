@@ -419,8 +419,16 @@ pub(crate) mod test_support {
     }
 
     /// Serve `replies` in order, one per request, then hand back everything
-    /// the client sent.
-    pub fn serve(replies: Vec<(&'static str, &'static str)>) -> (String, JoinHandle<Vec<String>>) {
+    /// the client sent. Bodies may be borrowed or owned, so a test can build
+    /// one up rather than having to write it as a literal.
+    pub fn serve<B: Into<String>>(
+        replies: Vec<(&'static str, B)>,
+    ) -> (String, JoinHandle<Vec<String>>) {
+        let replies: Vec<(&'static str, String)> = replies
+            .into_iter()
+            .map(|(status_line, body)| (status_line, body.into()))
+            .collect();
+
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind loopback");
         listener
             .set_nonblocking(true)
