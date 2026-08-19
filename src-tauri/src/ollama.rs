@@ -380,12 +380,10 @@ mod tests {
     }
 }
 
-/// Tests that exercise [`Client`] against a throwaway HTTP server on loopback,
-/// so the request we actually put on the wire is covered without Ollama.
+/// A throwaway HTTP server on loopback, so the requests [`Client`] actually
+/// puts on the wire are covered without a running Ollama.
 #[cfg(test)]
-mod http_tests {
-    use super::*;
-    use serde_json::json;
+pub(crate) mod test_support {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
@@ -410,61 +408,100 @@ mod http_tests {
             .unwrap_or(0)
     }
 
-    /// Serve exactly one request, then hand back what the client sent.
-    async fn stub(status_line: &'static str, body: &'static str) -> (String, JoinHandle<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("should bind a loopback port");
+    /// Split a raw HTTP request into its request line and body.
+    pub fn split(request: &str) -> (&str, &str) {
+        let (headers, body) = request
+            .split_once("\r\n\r\n")
+            .expect("request should have a body");
+        let request_line = headers.lines().next().expect("request should have a line");
+
+        (request_line, body)
+    }
+
+    /// Serve `replies` in order, one per request, then hand back everything
+    /// the client sent.
+    pub fn serve(replies: Vec<(&'static str, &'static str)>) -> (String, JoinHandle<Vec<String>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind loopback");
+        listener
+            .set_nonblocking(true)
+            .expect("should be non-blocking");
         let port = listener
             .local_addr()
             .expect("socket should have an address")
             .port();
 
         let handle = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("should accept a connection");
-
+            let listener = TcpListener::from_std(listener).expect("should adopt the listener");
             let mut received = Vec::new();
-            let mut chunk = [0_u8; 1024];
 
-            loop {
-                let read = socket
-                    .read(&mut chunk)
-                    .await
-                    .expect("should read a request");
-                if read == 0 {
-                    break;
-                }
-                received.extend_from_slice(&chunk[..read]);
+            for (status_line, body) in replies {
+                let (mut socket, _) = listener.accept().await.expect("should accept a connection");
 
-                if let Some(end) = headers_end(&received) {
-                    let headers = String::from_utf8_lossy(&received[..end]).to_string();
-                    if received.len() >= end + content_length(&headers) {
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+
+                loop {
+                    let read = socket
+                        .read(&mut chunk)
+                        .await
+                        .expect("should read a request");
+                    if read == 0 {
                         break;
                     }
+                    request.extend_from_slice(&chunk[..read]);
+
+                    if let Some(end) = headers_end(&request) {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_string();
+                        if request.len() >= end + content_length(&headers) {
+                            break;
+                        }
+                    }
                 }
+
+                let response = format!(
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("should write a response");
+                socket.flush().await.expect("should flush the response");
+
+                received.push(String::from_utf8_lossy(&request).to_string());
             }
 
-            let response = format!(
-                "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket
-                .write_all(response.as_bytes())
-                .await
-                .expect("should write a response");
-            socket.flush().await.expect("should flush the response");
-
-            String::from_utf8_lossy(&received).to_string()
+            received
         });
 
         (format!("http://127.0.0.1:{port}"), handle)
     }
 
+    /// Bind and immediately release a port, so nothing is listening on it.
+    pub fn closed_port() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind loopback");
+        let port = listener
+            .local_addr()
+            .expect("socket should have an address")
+            .port();
+        drop(listener);
+
+        format!("http://127.0.0.1:{port}")
+    }
+}
+
+/// Tests that exercise [`Client`] against the stub server in [`test_support`].
+#[cfg(test)]
+mod http_tests {
+    use super::test_support::{closed_port, serve, split};
+    use super::*;
+    use serde_json::json;
+
     #[tokio::test]
     async fn posts_the_conversation_to_the_chat_endpoint() {
         const BODY: &str = r#"{"model":"llama3.2:3b","message":{"role":"assistant","content":"Two pull requests."},"done":true}"#;
 
-        let (base_url, server) = stub("HTTP/1.1 200 OK", BODY).await;
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", BODY)]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
         let response = client
@@ -480,18 +517,15 @@ mod http_tests {
 
         assert_eq!(response.message.content, "Two pull requests.");
 
-        let request = server.await.expect("the stub should finish");
+        let requests = server.await.expect("the stub should finish");
+        let (request_line, body) = split(&requests[0]);
+
         assert!(
-            request.starts_with("POST /api/chat "),
-            "unexpected request line in: {request}"
+            request_line.starts_with("POST /api/chat "),
+            "unexpected request line: {request_line}"
         );
 
-        let body = request
-            .split_once("\r\n\r\n")
-            .expect("request should have a body")
-            .1;
         let sent: serde_json::Value = serde_json::from_str(body).expect("body should be JSON");
-
         assert_eq!(sent["model"], json!("llama3.2:3b"));
         assert_eq!(sent["stream"], json!(false));
         assert_eq!(sent["messages"][0]["role"], json!("system"));
@@ -502,7 +536,7 @@ mod http_tests {
     async fn explains_that_a_model_is_not_installed() {
         const BODY: &str = r#"{"error":"model 'llama3.2:3b' not found"}"#;
 
-        let (base_url, server) = stub("HTTP/1.1 404 Not Found", BODY).await;
+        let (base_url, server) = serve(vec![("HTTP/1.1 404 Not Found", BODY)]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
         let error = client
@@ -523,7 +557,7 @@ mod http_tests {
 
     #[tokio::test]
     async fn surfaces_an_unexpected_status() {
-        let (base_url, server) = stub("HTTP/1.1 500 Internal Server Error", "boom").await;
+        let (base_url, server) = serve(vec![("HTTP/1.1 500 Internal Server Error", "boom")]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
         let error = client
@@ -544,18 +578,7 @@ mod http_tests {
 
     #[tokio::test]
     async fn says_when_ollama_is_not_running() {
-        // Bind and immediately release a port so we know nothing is listening.
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("should bind a loopback port");
-        let port = listener
-            .local_addr()
-            .expect("socket should have an address")
-            .port();
-        drop(listener);
-
-        let client = Client::with_base_url(&format!("http://127.0.0.1:{port}"))
-            .expect("loopback should be allowed");
+        let client = Client::with_base_url(&closed_port()).expect("loopback should be allowed");
 
         let error = client
             .chat(&ChatRequest::new("llama3.2:3b", vec![Message::user("hi")]))
