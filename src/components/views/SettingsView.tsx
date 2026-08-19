@@ -36,8 +36,8 @@ export function SettingsView() {
       />
       <SettingsSection
         title="Local data"
-        description="Your work log and embeddings live in a SQLite file inside this app's data directory."
-        status="Not initialised"
+        description="Your work log and integration tokens live in a SQLite file inside this app's config directory. Nothing is synchronised anywhere."
+        status="Ready"
       />
     </div>
   );
