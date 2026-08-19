@@ -26,8 +26,8 @@ export function SettingsView() {
     <div className="mx-auto max-w-3xl space-y-4 p-6">
       <SettingsSection
         title="Local model"
-        description="Chief talks to an Ollama instance on http://localhost:11434. Nothing is sent anywhere else."
-        status="Not configured"
+        description="Chief talks to an Ollama instance on http://localhost:11434. The client refuses any address that is not on this machine."
+        status="llama3.2:3b"
       />
       <SettingsSection
         title="Integrations"
