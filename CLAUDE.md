@@ -93,10 +93,18 @@ migrate at startup, so the pool is ready before the first command runs.
 
 - [`Client`] **refuses any base URL that is not loopback**, so a misconfiguration cannot turn into a
   hosted model reading the user's work. Proxies are disabled on the client for the same reason.
-- The `tools` array is already modelled in Ollama's function-calling format and is omitted from the
-  payload when empty. The orchestration loop that acts on `tool_calls` lands in step 4.
+- The `tools` array is modelled in Ollama's function-calling format and is omitted from the payload
+  when empty.
 - `src-tauri/src/agent.rs` owns the system prompt and drops any `system` turn sent by the renderer —
   how the agent is instructed is not the frontend's to change.
+- `agent::respond` is the orchestration loop: ask, run any `tool_calls`, append each result as a
+  `tool` message, repeat until the model answers in words. It is bounded by `MAX_TOOL_ROUNDS` so a
+  model that will not stop calling tools cannot spin forever.
+- `src-tauri/src/tools.rs` holds the catalogue and the dispatcher. A tool failure — bad arguments, an
+  unknown name — is reported back to the _model_ as an `error` payload, not raised to the user: it
+  can then explain itself or try something else instead of collapsing the conversation.
+- Add a tool by writing its schema in `catalog()` and its arm in `dispatch()`. Keep the two in step
+  via a shared name constant.
 - Errors are user-facing: an unreachable Ollama or a missing model says what to run, rather than
   surfacing a transport error.
 
@@ -153,7 +161,7 @@ Build strictly in order, and stop for review at each step:
    `integrations`, Tauri commands to read/write the log. ✅
 3. **Local LLM engine** — Rust service posting to Ollama `/api/chat`, `ask_agent` command. ✅
 4. **Tool calling orchestrator** — `fetch_github_prs` schema, intercept `tool_calls`, feed results
-   back to the model.
+   back to the model. ✅
 5. **Local PKCE OAuth** — GitHub authorization code + PKCE from the desktop app, token stored in
    `integrations`.
 6. **Background daemon & work log** — periodic fetch, summarise locally, write to `work_logs`.

@@ -6,9 +6,9 @@ Chief answers questions about your work — what you shipped, what is waiting on
 like — by reading your tools and reasoning with a local LLM. Everything happens on your machine:
 no cloud backend, no remote model, no proxy server.
 
-> **Status:** early development. Steps 1–3 of the roadmap (project scaffolding, UI shell, the local
-> SQLite database and the local LLM engine) are in place; tool calling and the integrations are not
-> built yet.
+> **Status:** early development. Steps 1–4 of the roadmap are in place: the app shell, the local
+> SQLite database, the local LLM engine and the tool-calling orchestrator. `fetch_github_prs` still
+> answers with sample data — connecting a real GitHub account is the next step.
 
 ## Requirements
 
