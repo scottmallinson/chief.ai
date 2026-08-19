@@ -87,6 +87,19 @@ migrate at startup, so the pool is ready before the first command runs.
   database access goes through typed commands. If direct queries are ever wanted, add `sql:default`
   to `src-tauri/capabilities/default.json` — deliberately, not by reflex.
 
+## Agent layer
+
+`src-tauri/src/ollama.rs` is the only place that speaks HTTP to a model.
+
+- [`Client`] **refuses any base URL that is not loopback**, so a misconfiguration cannot turn into a
+  hosted model reading the user's work. Proxies are disabled on the client for the same reason.
+- The `tools` array is already modelled in Ollama's function-calling format and is omitted from the
+  payload when empty. The orchestration loop that acts on `tool_calls` lands in step 4.
+- `src-tauri/src/agent.rs` owns the system prompt and drops any `system` turn sent by the renderer —
+  how the agent is instructed is not the frontend's to change.
+- Errors are user-facing: an unreachable Ollama or a missing model says what to run, rather than
+  surfacing a transport error.
+
 ## Conventions
 
 **TypeScript**
@@ -138,7 +151,7 @@ Build strictly in order, and stop for review at each step:
 1. **Project scaffolding & UI foundation** — Tauri v2 + React + Vite, Tailwind, app shell. ✅
 2. **SQLite local database** — `@tauri-apps/plugin-sql`, migrations for `work_logs` and
    `integrations`, Tauri commands to read/write the log. ✅
-3. **Local LLM engine** — Rust service posting to Ollama `/api/chat`, `ask_agent` command.
+3. **Local LLM engine** — Rust service posting to Ollama `/api/chat`, `ask_agent` command. ✅
 4. **Tool calling orchestrator** — `fetch_github_prs` schema, intercept `tool_calls`, feed results
    back to the model.
 5. **Local PKCE OAuth** — GitHub authorization code + PKCE from the desktop app, token stored in
