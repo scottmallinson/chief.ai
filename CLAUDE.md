@@ -128,9 +128,11 @@ from here to GitHub.
   repositories, which is broader than it needs — but GitHub gives OAuth apps no read-only scope for
   private repositories, and `repo:status` grants no pull request access at all. A GitHub App with
   fine-grained permissions is the way to narrow this.
-- The OAuth app has **"Expire user access tokens" turned off**, because nothing refreshes them yet.
-  `finish_login` captures a `refresh_token` and stores it, but no code exchanges it. Turning expiry
-  on without building that would silently break every connection a few hours after sign-in.
+- Expiring user access tokens are supported. `src-tauri/src/session.rs` renews a rejected token and
+  retries once, storing the rotated pair. GitHub requires a client secret to refresh _unless_ the
+  token came from the device flow — which is how Chief signs in, so no secret is involved.
+- Every GitHub read goes through `Session`, not `Client` directly, so renewal is not something each
+  caller has to remember.
 - Tokens live in `integrations`, one row per service; reconnecting replaces the row. They are stored
   as plain text in the local database, protected by the OS user account rather than by encryption.
   Moving them to the OS keychain would be a genuine improvement.
