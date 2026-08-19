@@ -20,9 +20,15 @@ const AUTH_HOST: &str = "https://github.com";
 /// Where the REST API lives.
 const API_HOST: &str = "https://api.github.com";
 
-/// What Chief asks for: read-only access to the user's repositories and
-/// profile, so it can see pull requests. Nothing that can write.
-const SCOPES: &str = "repo:status read:user";
+/// What Chief asks for.
+///
+/// `repo` is broader than we would like: it is read *and* write across public
+/// and private repositories. Chief only ever reads, but GitHub offers no
+/// narrower option — OAuth apps have no read-only scope for private
+/// repositories, and `repo:status` covers commit statuses without granting any
+/// access to pull requests at all. Fine-grained read-only permissions would
+/// mean registering a GitHub App instead, which is the honest upgrade path.
+const SCOPES: &str = "repo read:user";
 
 /// GitHub asks clients to identify themselves.
 const USER_AGENT: &str = concat!("chief-ai/", env!("CARGO_PKG_VERSION"));
@@ -472,7 +478,8 @@ mod tests {
         );
         assert!(body.contains("client_id=Iv1.clientid"), "body was {body}");
         assert!(
-            body.contains("scope="),
+            // Pinned deliberately: widening this widens what every user grants.
+            body.contains("scope=repo+read%3Auser") || body.contains("scope=repo%20read%3Auser"),
             "the requested scopes should be sent: {body}"
         );
         assert!(

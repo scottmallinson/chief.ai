@@ -124,6 +124,13 @@ from here to GitHub.
   anything. The run-time override exists for development against your own OAuth app.
 - `Client::against` — the constructor that points at another host — is `#[cfg(test)]`, so a release
   build cannot be aimed anywhere but GitHub.
+- Chief requests the `repo` scope. That is read _and_ write across public and private
+  repositories, which is broader than it needs — but GitHub gives OAuth apps no read-only scope for
+  private repositories, and `repo:status` grants no pull request access at all. A GitHub App with
+  fine-grained permissions is the way to narrow this.
+- The OAuth app has **"Expire user access tokens" turned off**, because nothing refreshes them yet.
+  `finish_login` captures a `refresh_token` and stores it, but no code exchanges it. Turning expiry
+  on without building that would silently break every connection a few hours after sign-in.
 - Tokens live in `integrations`, one row per service; reconnecting replaces the row. They are stored
   as plain text in the local database, protected by the OS user account rather than by encryption.
   Moving them to the OS keychain would be a genuine improvement.
