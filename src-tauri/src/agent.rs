@@ -6,8 +6,10 @@
 //! connected data.
 
 use serde::Deserialize;
-use tauri::State;
+use tauri::{AppHandle, Runtime, State};
 
+use crate::db;
+use crate::github;
 use crate::ollama::{self, ChatRequest, Client, Message, Role};
 use crate::tools;
 
@@ -42,6 +44,8 @@ pub struct Turn {
 pub enum Error {
     #[error(transparent)]
     Ollama(#[from] ollama::Error),
+    #[error(transparent)]
+    Storage(#[from] db::Error),
     #[error("the model kept asking for tools without answering")]
     TooManyToolRounds,
 }
@@ -72,6 +76,7 @@ fn conversation(turns: Vec<Turn>) -> Vec<Message> {
 /// Ask the model, running any tools it calls, until it replies in words.
 async fn respond(
     client: &Client,
+    context: &tools::Context,
     model: &str,
     mut messages: Vec<Message>,
 ) -> Result<String, Error> {
@@ -88,7 +93,7 @@ async fn respond(
         messages.push(reply.clone());
 
         for call in &reply.tool_calls {
-            let result = tools::dispatch(call).await;
+            let result = tools::dispatch(context, call).await;
 
             messages.push(Message {
                 role: Role::Tool,
@@ -104,14 +109,20 @@ async fn respond(
 
 /// Ask the local model to answer the conversation so far.
 #[tauri::command]
-pub async fn ask_agent(
+pub async fn ask_agent<R: Runtime>(
+    app: AppHandle<R>,
     client: State<'_, Client>,
+    github: State<'_, github::Client>,
     messages: Vec<Turn>,
     model: Option<String>,
 ) -> Result<String, Error> {
     let model = model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let context = tools::Context {
+        pool: db::pool(&app).await?,
+        github: github.inner().clone(),
+    };
 
-    respond(&client, &model, conversation(messages)).await
+    respond(&client, &context, &model, conversation(messages)).await
 }
 
 /// Build a transcript turn, shared by the test modules below.
@@ -166,8 +177,38 @@ mod tests {
 #[cfg(test)]
 mod orchestration_tests {
     use super::*;
+    use crate::db::test_support::migrated_pool;
+    use crate::integrations;
     use crate::ollama::test_support::{serve, split};
     use serde_json::{json, Value};
+
+    /// One page of GitHub search results, trimmed to the fields we read.
+    const SEARCH_RESULTS: &str = r#"{
+        "total_count": 1,
+        "items": [{
+            "number": 12,
+            "title": "Add the tool calling orchestrator",
+            "repository_url": "https://api.github.com/repos/scottmallinson/chief.ai",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/scottmallinson/chief.ai/pull/12",
+            "updated_at": "2026-08-19T14:00:00Z"
+        }]
+    }"#;
+
+    /// A tool context whose GitHub client talks to `host`, with a token stored
+    /// so the tool gets as far as making a request.
+    async fn context_connected_to(host: &str) -> tools::Context {
+        let pool = migrated_pool().await;
+        integrations::save(&pool, integrations::GITHUB, "gho_token", None)
+            .await
+            .expect("should store a token");
+
+        tools::Context {
+            pool,
+            github: github::Client::against(host).expect("should build a client"),
+        }
+    }
 
     const ASKS_FOR_PRS: &str = r#"{
         "model": "llama3.2:3b",
@@ -197,8 +238,10 @@ mod orchestration_tests {
         let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", ANSWERS)]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
+        let context = context_connected_to("http://127.0.0.1:1").await;
         let answer = respond(
             &client,
+            &context,
             "llama3.2:3b",
             conversation(vec![turn(Role::User, "Hello")]),
         )
@@ -216,8 +259,10 @@ mod orchestration_tests {
         let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", ANSWERS)]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
+        let context = context_connected_to("http://127.0.0.1:1").await;
         respond(
             &client,
+            &context,
             "llama3.2:3b",
             conversation(vec![turn(Role::User, "Hello")]),
         )
@@ -241,8 +286,12 @@ mod orchestration_tests {
         ]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = context_connected_to(&github_host).await;
+
         let answer = respond(
             &client,
+            &context,
             "llama3.2:3b",
             conversation(vec![turn(Role::User, "What is waiting on me?")]),
         )
@@ -281,6 +330,18 @@ mod orchestration_tests {
         .expect("tool content should be JSON");
 
         assert_eq!(payload["pull_requests"][0]["number"], json!(12));
+        assert_eq!(
+            payload["pull_requests"][0]["repository"],
+            json!("scottmallinson/chief.ai")
+        );
+
+        let github_requests = github_server.await.expect("GitHub stub should finish");
+        assert!(
+            github_requests[0]
+                .to_lowercase()
+                .contains("authorization: bearer gho_token"),
+            "the tool should have used the stored token"
+        );
     }
 
     #[tokio::test]
@@ -301,8 +362,10 @@ mod orchestration_tests {
         ]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
+        let context = context_connected_to("http://127.0.0.1:1").await;
         let answer = respond(
             &client,
+            &context,
             "llama3.2:3b",
             conversation(vec![turn(Role::User, "Do something odd")]),
         )
@@ -329,8 +392,13 @@ mod orchestration_tests {
         let (base_url, server) = serve(replies);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
+        let github_replies = vec![("HTTP/1.1 200 OK", SEARCH_RESULTS); MAX_TOOL_ROUNDS];
+        let (github_host, github_server) = serve(github_replies);
+        let context = context_connected_to(&github_host).await;
+
         let error = respond(
             &client,
+            &context,
             "llama3.2:3b",
             conversation(vec![turn(Role::User, "Loop forever")]),
         )
@@ -341,5 +409,6 @@ mod orchestration_tests {
 
         let requests = server.await.expect("the stub should finish");
         assert_eq!(requests.len(), MAX_TOOL_ROUNDS);
+        github_server.await.expect("GitHub stub should finish");
     }
 }
