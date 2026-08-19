@@ -46,6 +46,29 @@ pub async fn save(
     Ok(())
 }
 
+/// What is stored for a connected service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Credentials {
+    pub access_token: String,
+    /// Present only when the service issues expiring tokens.
+    pub refresh_token: Option<String>,
+}
+
+/// Both stored tokens for a service, if it is connected.
+pub async fn credentials(pool: &SqlitePool, service: &str) -> Result<Option<Credentials>, Error> {
+    let row = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT access_token, refresh_token FROM integrations WHERE service_name = ?1",
+    )
+    .bind(service)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(access_token, refresh_token)| Credentials {
+        access_token,
+        refresh_token,
+    }))
+}
+
 /// The access token for a service, if one is stored.
 pub async fn token(pool: &SqlitePool, service: &str) -> Result<Option<String>, Error> {
     let token = sqlx::query_scalar::<_, String>(

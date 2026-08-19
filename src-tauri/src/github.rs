@@ -310,6 +310,38 @@ impl Client {
         }
     }
 
+    /// Exchange a refresh token for a fresh access token.
+    ///
+    /// GitHub requires a client secret here *unless* the token came from the
+    /// device flow, which is how Chief signs in — so this needs no secret.
+    pub async fn refresh(
+        &self,
+        client_id: &str,
+        refresh_token: &str,
+    ) -> Result<(String, Option<String>), Error> {
+        let response: AccessTokenResponse = self
+            .post_form(
+                &format!("{}/login/oauth/access_token", self.auth_host),
+                &[
+                    ("client_id", client_id),
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", refresh_token),
+                ],
+            )
+            .await?;
+
+        match interpret(response) {
+            Poll::Granted {
+                access_token,
+                refresh_token,
+            } => Ok((access_token, refresh_token)),
+            Poll::Failed(error) => Err(error),
+            // Neither applies to a refresh; whatever happened, the stored
+            // credential is no longer usable.
+            Poll::KeepWaiting | Poll::SlowDown => Err(Error::TokenRejected),
+        }
+    }
+
     /// The user's pull requests, newest activity first.
     pub async fn pull_requests(
         &self,

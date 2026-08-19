@@ -10,6 +10,7 @@ mod daemon;
 mod db;
 mod github;
 mod integrations;
+mod session;
 mod setup;
 mod tools;
 mod work_log;
