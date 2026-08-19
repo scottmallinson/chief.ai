@@ -1,0 +1,2 @@
+# Keep Tauri command signatures readable.
+too-many-arguments-threshold = 8
