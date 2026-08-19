@@ -42,6 +42,22 @@ export function WorkLogView() {
 
   return (
     <div className="mx-auto max-w-3xl p-6">
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <p className="text-xs text-muted-foreground">
+          Filled in automatically from your connected tools, summarised on this machine.
+        </p>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={reload}
+          disabled={status === 'loading'}
+          aria-label="Refresh work log"
+        >
+          <RefreshCw aria-hidden />
+          Refresh
+        </Button>
+      </div>
+
       {status === 'loading' && (
         <p className="text-sm text-muted-foreground" role="status">
           Reading your local work log…
