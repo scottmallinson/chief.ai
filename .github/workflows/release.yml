@@ -65,6 +65,10 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Baked into the binary so nobody has to configure anything to sign
+          # in. A device-flow client id is not a secret, which is why this is a
+          # repository variable rather than a secret.
+          CHIEF_GITHUB_CLIENT_ID: ${{ vars.CHIEF_GITHUB_CLIENT_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Chief ${{ github.ref_name }}'

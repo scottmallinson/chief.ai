@@ -38,8 +38,9 @@ const MAX_POLL: Duration = Duration::from_secs(15 * 60);
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "no GitHub client id is configured. Register an OAuth app with the device flow enabled \
-         and set CHIEF_GITHUB_CLIENT_ID."
+        "this build has no GitHub client id, so signing in is unavailable. Released builds set \
+         CHIEF_GITHUB_CLIENT_ID when they are compiled; set it in your environment when running \
+         from source."
     )]
     NoClientId,
     #[error("GitHub is not connected. Connect it in Settings.")]
