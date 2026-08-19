@@ -139,6 +139,32 @@ pub struct ChatResponse {
     pub done: bool,
 }
 
+/// How a model download is progressing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullProgress {
+    /// Ollama's own wording, e.g. "pulling manifest" or "verifying sha256 digest".
+    pub status: String,
+    /// Bytes fetched so far, while a layer is downloading.
+    #[serde(default)]
+    pub completed: u64,
+    /// Bytes in the layer being fetched, when known.
+    #[serde(default)]
+    pub total: u64,
+}
+
+impl PullProgress {
+    /// Progress through the current layer, 0.0 to 1.0, when it can be known.
+    pub fn fraction(&self) -> Option<f64> {
+        (self.total > 0).then(|| (self.completed as f64 / self.total as f64).clamp(0.0, 1.0))
+    }
+
+    /// Whether Ollama considers the download finished.
+    pub fn is_done(&self) -> bool {
+        self.status == "success"
+    }
+}
+
 /// What can go wrong talking to a local model.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -217,10 +243,7 @@ impl Client {
 
     /// Ask the model to continue a conversation.
     pub async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, Error> {
-        let url = self
-            .base_url
-            .join("/api/chat")
-            .map_err(|_| Error::InvalidUrl(self.base_url.to_string()))?;
+        let url = self.endpoint("/api/chat")?;
 
         let response = self
             .http
@@ -252,6 +275,125 @@ impl Client {
             .map_err(|error| Error::Decode(error.to_string()))
     }
 
+    /// Ollama's version, which doubles as a health check.
+    pub async fn version(&self) -> Result<String, Error> {
+        #[derive(Deserialize)]
+        struct Version {
+            version: String,
+        }
+
+        let url = self.endpoint("/api/version")?;
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| self.transport_error(error))?;
+
+        Ok(self.read::<Version>(response).await?.version)
+    }
+
+    /// The models installed on this machine.
+    pub async fn installed_models(&self) -> Result<Vec<String>, Error> {
+        #[derive(Deserialize)]
+        struct Tags {
+            #[serde(default)]
+            models: Vec<Model>,
+        }
+
+        #[derive(Deserialize)]
+        struct Model {
+            #[serde(default)]
+            name: String,
+        }
+
+        let url = self.endpoint("/api/tags")?;
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| self.transport_error(error))?;
+
+        let tags = self.read::<Tags>(response).await?;
+
+        Ok(tags.models.into_iter().map(|model| model.name).collect())
+    }
+
+    /// Download a model, reporting progress as Ollama streams it.
+    ///
+    /// The transfer is between Ollama and its registry; nothing about the
+    /// user's own work is involved.
+    pub async fn pull<F>(&self, model: &str, mut on_progress: F) -> Result<(), Error>
+    where
+        F: FnMut(PullProgress),
+    {
+        use futures_util::StreamExt;
+
+        let url = self.endpoint("/api/pull")?;
+        let response = self
+            .http
+            .post(url)
+            .json(&serde_json::json!({ "model": model, "stream": true }))
+            .send()
+            .await
+            .map_err(|error| self.transport_error(error))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+
+            return Err(Error::Status {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        // Progress arrives as newline-delimited JSON, so one chunk may hold a
+        // partial line.
+        let mut stream = response.bytes_stream();
+        let mut pending = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| Error::Transport(error.to_string()))?;
+            pending.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(newline) = pending.find('\n') {
+                let line: String = pending.drain(..=newline).collect();
+                report(line.trim(), &mut on_progress)?;
+            }
+        }
+
+        report(pending.trim(), &mut on_progress)
+    }
+
+    fn endpoint(&self, path: &str) -> Result<reqwest::Url, Error> {
+        self.base_url
+            .join(path)
+            .map_err(|_| Error::InvalidUrl(self.base_url.to_string()))
+    }
+
+    async fn read<T: serde::de::DeserializeOwned>(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<T, Error> {
+        let status = response.status();
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+
+            return Err(Error::Status {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        response
+            .json::<T>()
+            .await
+            .map_err(|error| Error::Decode(error.to_string()))
+    }
+
     fn transport_error(&self, error: reqwest::Error) -> Error {
         if error.is_connect() {
             Error::Unreachable {
@@ -263,6 +405,36 @@ impl Client {
             Error::Transport(error.to_string())
         }
     }
+}
+
+/// Read one line of Ollama's pull stream, passing on anything meaningful.
+///
+/// Ollama reports a failure inside the body of an otherwise successful
+/// response, so an `error` field has to be treated as one here.
+fn report<F>(line: &str, on_progress: &mut F) -> Result<(), Error>
+where
+    F: FnMut(PullProgress),
+{
+    if line.is_empty() {
+        return Ok(());
+    }
+
+    let value: Value =
+        serde_json::from_str(line).map_err(|error| Error::Decode(error.to_string()))?;
+
+    if let Some(message) = value.get("error").and_then(Value::as_str) {
+        return Err(Error::Status {
+            status: 200,
+            body: message.to_string(),
+        });
+    }
+
+    let progress: PullProgress =
+        serde_json::from_value(value).map_err(|error| Error::Decode(error.to_string()))?;
+
+    on_progress(progress);
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -362,6 +534,29 @@ mod tests {
 
         assert_eq!(call.function.name, "fetch_github_prs");
         assert_eq!(call.function.arguments["state"], json!("open"));
+    }
+
+    #[test]
+    fn progress_is_unknown_until_a_size_is_reported() {
+        let starting = PullProgress {
+            status: "pulling manifest".to_string(),
+            completed: 0,
+            total: 0,
+        };
+
+        assert_eq!(starting.fraction(), None);
+        assert!(!starting.is_done());
+    }
+
+    #[test]
+    fn progress_never_exceeds_one() {
+        let overshoot = PullProgress {
+            status: "pulling abc".to_string(),
+            completed: 120,
+            total: 100,
+        };
+
+        assert_eq!(overshoot.fraction(), Some(1.0));
     }
 
     #[test]
@@ -578,6 +773,108 @@ mod http_tests {
                 assert_eq!(status, 500);
                 assert_eq!(body, "boom");
             }
+            other => panic!("expected Status, got {other:?}"),
+        }
+
+        server.await.expect("the stub should finish");
+    }
+
+    #[tokio::test]
+    async fn reports_ollamas_version_as_a_health_check() {
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", r#"{"version":"0.5.1"}"#)]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let version = client.version().await.expect("the stub should answer");
+
+        assert_eq!(version, "0.5.1");
+
+        let requests = server.await.expect("the stub should finish");
+        let (request_line, _) = split(&requests[0]);
+        assert!(
+            request_line.starts_with("GET /api/version "),
+            "unexpected request line: {request_line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn lists_the_models_on_this_machine() {
+        const TAGS: &str = r#"{"models":[{"name":"llama3.2:3b"},{"name":"mistral:latest"}]}"#;
+
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", TAGS)]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let models = client
+            .installed_models()
+            .await
+            .expect("the stub should answer");
+
+        assert_eq!(models, ["llama3.2:3b", "mistral:latest"]);
+
+        let requests = server.await.expect("the stub should finish");
+        let (request_line, _) = split(&requests[0]);
+        assert!(
+            request_line.starts_with("GET /api/tags "),
+            "unexpected request line: {request_line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_progress_while_pulling_a_model() {
+        const STREAM: &str = concat!(
+            r#"{"status":"pulling manifest"}"#,
+            "\n",
+            r#"{"status":"pulling abc","digest":"abc","total":100,"completed":40}"#,
+            "\n",
+            r#"{"status":"success"}"#,
+            "\n"
+        );
+
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", STREAM)]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let mut seen = Vec::new();
+        client
+            .pull("llama3.2:3b", |progress| seen.push(progress))
+            .await
+            .expect("the stub should stream to the end");
+
+        assert_eq!(seen.len(), 3, "every line should be reported: {seen:?}");
+        assert_eq!(seen[0].status, "pulling manifest");
+        assert_eq!(seen[1].fraction(), Some(0.4));
+        assert!(seen[2].is_done());
+
+        let requests = server.await.expect("the stub should finish");
+        let (request_line, body) = split(&requests[0]);
+
+        assert!(
+            request_line.starts_with("POST /api/pull "),
+            "unexpected request line: {request_line}"
+        );
+        assert!(
+            body.contains(r#""model":"llama3.2:3b""#),
+            "the model should be named: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn surfaces_a_failure_reported_inside_the_pull_stream() {
+        const STREAM: &str = concat!(
+            r#"{"status":"pulling manifest"}"#,
+            "\n",
+            r#"{"error":"model 'nope' not found"}"#,
+            "\n"
+        );
+
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", STREAM)]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let error = client
+            .pull("nope", |_| {})
+            .await
+            .expect_err("an error in the stream should surface");
+
+        match error {
+            Error::Status { body, .. } => assert!(body.contains("not found"), "got {body}"),
             other => panic!("expected Status, got {other:?}"),
         }
 
