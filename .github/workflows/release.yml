@@ -12,6 +12,7 @@ jobs:
   release:
     name: Bundle (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -29,9 +30,14 @@ jobs:
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
+        env:
+          APT_OPTS: >-
+            -o Acquire::Retries=3
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get update $APT_OPTS
+          sudo apt-get install -y --no-install-recommends $APT_OPTS \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
@@ -62,9 +68,27 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # A missing variable would silently produce a binary whose "Connect
+      # GitHub" button never works, and nobody would find out until after they
+      # had installed it.
+      - name: Check the GitHub client id is configured
+        shell: bash
+        env:
+          CHIEF_GITHUB_CLIENT_ID: ${{ vars.CHIEF_GITHUB_CLIENT_ID }}
+        run: |
+          if [ -z "$CHIEF_GITHUB_CLIENT_ID" ]; then
+            echo "::error::CHIEF_GITHUB_CLIENT_ID is not set. Add it under Settings → Secrets and variables → Actions → Variables, or sign-in will be broken in this release."
+            exit 1
+          fi
+          echo "Client id is configured (${#CHIEF_GITHUB_CLIENT_ID} characters)."
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Baked into the binary so nobody has to configure anything to sign
+          # in. A device-flow client id is not a secret, which is why this is a
+          # repository variable rather than a secret.
+          CHIEF_GITHUB_CLIENT_ID: ${{ vars.CHIEF_GITHUB_CLIENT_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Chief ${{ github.ref_name }}'

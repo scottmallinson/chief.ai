@@ -119,9 +119,20 @@ from here to GitHub.
   and GitHub "does not distinguish between public and confidential clients". A secret shipped inside
   a desktop binary is not a secret, so the device flow, which needs none, is the only honest option.
 - The client id comes from `CHIEF_GITHUB_CLIENT_ID` at run time, falling back to build time. It is
-  not a secret. Without it, sign-in fails with a message saying what to do.
+  **not a secret** — a device-flow client id is public by design, which is why release builds bake
+  one in from the repository _variable_ of the same name and nobody installing Chief has to register
+  anything. The run-time override exists for development against your own OAuth app.
 - `Client::against` — the constructor that points at another host — is `#[cfg(test)]`, so a release
   build cannot be aimed anywhere but GitHub.
+- Chief requests the `repo` scope. That is read _and_ write across public and private
+  repositories, which is broader than it needs — but GitHub gives OAuth apps no read-only scope for
+  private repositories, and `repo:status` grants no pull request access at all. A GitHub App with
+  fine-grained permissions is the way to narrow this.
+- Expiring user access tokens are supported. `src-tauri/src/session.rs` renews a rejected token and
+  retries once, storing the rotated pair. GitHub requires a client secret to refresh _unless_ the
+  token came from the device flow — which is how Chief signs in, so no secret is involved.
+- Every GitHub read goes through `Session`, not `Client` directly, so renewal is not something each
+  caller has to remember.
 - Tokens live in `integrations`, one row per service; reconnecting replaces the row. They are stored
   as plain text in the local database, protected by the OS user account rather than by encryption.
   Moving them to the OS keychain would be a genuine improvement.
@@ -143,6 +154,19 @@ model to turn each merge into a one-sentence achievement, and write it to `work_
   is never revisited, since the dedupe key would already be present.
 - `run_once` takes a `Context` rather than an `AppHandle`, so a whole pass runs in tests against an
   in-memory database and stub GitHub and Ollama servers.
+
+## First-run setup
+
+`src-tauri/src/setup.rs` answers one question for the frontend: can this machine answer anything
+yet? `check_readiness` reports whether Ollama is up (`/api/version`) and whether the model is
+installed (`/api/tags`); `pull_model` downloads it (`/api/pull`), streaming newline-delimited
+progress that is forwarded to the renderer as `model-pull-progress` events.
+
+- `App` renders `SetupView` instead of the shell until both are true, with a "Skip for now" escape.
+- Ollama is not bundled: it is a gigabyte-scale install with its own GPU runtimes and system
+  service. Detecting it and offering the download is the honest trade.
+- Ollama reports a failed pull _inside_ a 200 response, so the stream parser treats an `error` field
+  as a failure.
 
 ## Conventions
 

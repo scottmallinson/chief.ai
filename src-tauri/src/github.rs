@@ -20,9 +20,15 @@ const AUTH_HOST: &str = "https://github.com";
 /// Where the REST API lives.
 const API_HOST: &str = "https://api.github.com";
 
-/// What Chief asks for: read-only access to the user's repositories and
-/// profile, so it can see pull requests. Nothing that can write.
-const SCOPES: &str = "repo:status read:user";
+/// What Chief asks for.
+///
+/// `repo` is broader than we would like: it is read *and* write across public
+/// and private repositories. Chief only ever reads, but GitHub offers no
+/// narrower option — OAuth apps have no read-only scope for private
+/// repositories, and `repo:status` covers commit statuses without granting any
+/// access to pull requests at all. Fine-grained read-only permissions would
+/// mean registering a GitHub App instead, which is the honest upgrade path.
+const SCOPES: &str = "repo read:user";
 
 /// GitHub asks clients to identify themselves.
 const USER_AGENT: &str = concat!("chief-ai/", env!("CARGO_PKG_VERSION"));
@@ -38,8 +44,9 @@ const MAX_POLL: Duration = Duration::from_secs(15 * 60);
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "no GitHub client id is configured. Register an OAuth app with the device flow enabled \
-         and set CHIEF_GITHUB_CLIENT_ID."
+        "this build has no GitHub client id, so signing in is unavailable. Released builds set \
+         CHIEF_GITHUB_CLIENT_ID when they are compiled; set it in your environment when running \
+         from source."
     )]
     NoClientId,
     #[error("GitHub is not connected. Connect it in Settings.")]
@@ -303,6 +310,38 @@ impl Client {
         }
     }
 
+    /// Exchange a refresh token for a fresh access token.
+    ///
+    /// GitHub requires a client secret here *unless* the token came from the
+    /// device flow, which is how Chief signs in — so this needs no secret.
+    pub async fn refresh(
+        &self,
+        client_id: &str,
+        refresh_token: &str,
+    ) -> Result<(String, Option<String>), Error> {
+        let response: AccessTokenResponse = self
+            .post_form(
+                &format!("{}/login/oauth/access_token", self.auth_host),
+                &[
+                    ("client_id", client_id),
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", refresh_token),
+                ],
+            )
+            .await?;
+
+        match interpret(response) {
+            Poll::Granted {
+                access_token,
+                refresh_token,
+            } => Ok((access_token, refresh_token)),
+            Poll::Failed(error) => Err(error),
+            // Neither applies to a refresh; whatever happened, the stored
+            // credential is no longer usable.
+            Poll::KeepWaiting | Poll::SlowDown => Err(Error::TokenRejected),
+        }
+    }
+
     /// The user's pull requests, newest activity first.
     pub async fn pull_requests(
         &self,
@@ -471,7 +510,8 @@ mod tests {
         );
         assert!(body.contains("client_id=Iv1.clientid"), "body was {body}");
         assert!(
-            body.contains("scope="),
+            // Pinned deliberately: widening this widens what every user grants.
+            body.contains("scope=repo+read%3Auser") || body.contains("scope=repo%20read%3Auser"),
             "the requested scopes should be sent: {body}"
         );
         assert!(

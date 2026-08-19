@@ -595,6 +595,7 @@ dependencies = [
 name = "chief-ai"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",

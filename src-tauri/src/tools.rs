@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use sqlx::SqlitePool;
 
 use crate::github::{self, State as PrState};
-use crate::integrations;
 use crate::ollama::{Tool, ToolCall, ToolFunction};
+use crate::session::Session;
 
 /// What the tools need to do their work: the user's local database, and a
 /// client for the services they have connected.
@@ -114,13 +114,8 @@ async fn fetch_github_prs(
     context: &Context,
     state: PullRequestState,
 ) -> Result<Value, github::Error> {
-    let token = integrations::token(&context.pool, integrations::GITHUB)
-        .await?
-        .ok_or(github::Error::NotConnected)?;
-
-    let pull_requests = context
-        .github
-        .pull_requests(&token, state.into(), PR_LIMIT)
+    let pull_requests = Session::new(&context.pool, &context.github)
+        .pull_requests(state.into(), PR_LIMIT)
         .await?;
 
     Ok(github::as_tool_result(&pull_requests))
@@ -130,6 +125,7 @@ async fn fetch_github_prs(
 mod tests {
     use super::*;
     use crate::db::test_support::migrated_pool;
+    use crate::integrations;
     use crate::ollama::test_support::serve;
     use crate::ollama::ToolCallFunction;
 

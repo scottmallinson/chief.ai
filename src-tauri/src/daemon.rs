@@ -16,6 +16,7 @@ use crate::db;
 use crate::github::{self, PullRequest, State};
 use crate::integrations;
 use crate::ollama::{self, ChatRequest, Message};
+use crate::session::Session;
 use crate::work_log::{self, NewWorkLogEntry};
 
 /// How long to settle after launch before the first pass, so startup is not
@@ -93,13 +94,15 @@ async fn context<R: Runtime>(app: &AppHandle<R>) -> Result<Context, db::Error> {
 /// Does nothing at all when GitHub is not connected — there is no work to read
 /// and nothing to report.
 pub async fn run_once(context: &Context) -> Result<usize, Error> {
-    let Some(token) = integrations::token(&context.pool, integrations::GITHUB).await? else {
+    if integrations::token(&context.pool, integrations::GITHUB)
+        .await?
+        .is_none()
+    {
         return Ok(0);
-    };
+    }
 
-    let merged = context
-        .github
-        .pull_requests(&token, State::Merged, BATCH)
+    let merged = Session::new(&context.pool, &context.github)
+        .pull_requests(State::Merged, BATCH)
         .await?;
 
     let mut written = 0;

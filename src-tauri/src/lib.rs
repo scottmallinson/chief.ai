@@ -10,6 +10,8 @@ mod daemon;
 mod db;
 mod github;
 mod integrations;
+mod session;
+mod setup;
 mod tools;
 mod work_log;
 
@@ -45,6 +47,8 @@ pub fn run() {
             connect::finish_github_login,
             connect::github_connection,
             connect::disconnect_github,
+            setup::check_readiness,
+            setup::pull_model,
             work_log::list_work_logs,
             work_log::create_work_log
         ])
