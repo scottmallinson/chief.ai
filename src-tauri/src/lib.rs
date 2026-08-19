@@ -5,7 +5,10 @@
 //! No component of this crate may talk to a remote service on its own.
 
 mod agent;
+mod connect;
 mod db;
+mod github;
+mod integrations;
 mod tools;
 mod work_log;
 
@@ -24,12 +27,19 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            // One pooled client for the lifetime of the app, pinned to loopback.
+            // One pooled client each, for the lifetime of the app. The Ollama
+            // client is pinned to loopback; the GitHub one is pinned to GitHub.
             tauri::Manager::manage(app, ollama::Client::new()?);
+            tauri::Manager::manage(app, github::Client::new()?);
+            tauri::Manager::manage(app, connect::Pending::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             agent::ask_agent,
+            connect::start_github_login,
+            connect::finish_github_login,
+            connect::github_connection,
+            connect::disconnect_github,
             work_log::list_work_logs,
             work_log::create_work_log
         ])
