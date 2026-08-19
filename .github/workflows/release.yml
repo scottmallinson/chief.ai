@@ -62,6 +62,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # A missing variable would silently produce a binary whose "Connect
+      # GitHub" button never works, and nobody would find out until after they
+      # had installed it.
+      - name: Check the GitHub client id is configured
+        shell: bash
+        env:
+          CHIEF_GITHUB_CLIENT_ID: ${{ vars.CHIEF_GITHUB_CLIENT_ID }}
+        run: |
+          if [ -z "$CHIEF_GITHUB_CLIENT_ID" ]; then
+            echo "::error::CHIEF_GITHUB_CLIENT_ID is not set. Add it under Settings → Secrets and variables → Actions → Variables, or sign-in will be broken in this release."
+            exit 1
+          fi
+          echo "Client id is configured (${#CHIEF_GITHUB_CLIENT_ID} characters)."
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
