@@ -6,6 +6,7 @@
 
 mod agent;
 mod db;
+mod tools;
 mod work_log;
 
 // The Ollama client is a self-contained piece of this crate's library API: it
