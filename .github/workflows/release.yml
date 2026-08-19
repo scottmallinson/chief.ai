@@ -3,7 +3,15 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Lets a release be cut from the Actions tab without pushing a tag first.
+  # The draft release carries the tag, which GitHub creates when it is
+  # published — so nothing is tagged until you decide to publish.
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. v0.1.0'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -90,8 +98,8 @@ jobs:
           # repository variable rather than a secret.
           CHIEF_GITHUB_CLIENT_ID: ${{ vars.CHIEF_GITHUB_CLIENT_ID }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Chief ${{ github.ref_name }}'
+          tagName: ${{ inputs.version || github.ref_name }}
+          releaseName: 'Chief ${{ inputs.version || github.ref_name }}'
           releaseBody: 'See the assets below to download and install this version.'
           releaseDraft: true
           prerelease: false
