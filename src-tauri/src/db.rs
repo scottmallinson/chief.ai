@@ -38,17 +38,38 @@ CREATE TABLE IF NOT EXISTS integrations (
 );
 ";
 
+/// Lets an entry be traced back to the thing it describes, so the background
+/// daemon can run again without writing the same achievement twice.
+///
+/// The index is partial: entries the user writes by hand have no external id
+/// and must not collide with each other.
+const ADD_WORK_LOG_EXTERNAL_ID: &str = r"
+ALTER TABLE work_logs ADD COLUMN external_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_work_logs_external_id
+    ON work_logs (source, external_id)
+    WHERE external_id IS NOT NULL;
+";
+
 /// Migrations applied to [`DB_URL`], in order.
 ///
 /// Migrations are append-only: once a version has shipped, add a new one rather
 /// than editing it, or existing installations will drift from the schema.
 pub fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "create work_logs and integrations",
-        sql: CREATE_INITIAL_TABLES,
-        kind: MigrationKind::Up,
-    }]
+    vec![
+        Migration {
+            version: 1,
+            description: "create work_logs and integrations",
+            sql: CREATE_INITIAL_TABLES,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "trace work log entries back to their source",
+            sql: ADD_WORK_LOG_EXTERNAL_ID,
+            kind: MigrationKind::Up,
+        },
+    ]
 }
 
 /// Errors surfaced to the frontend from database work.
@@ -121,6 +142,43 @@ mod tests {
 
         assert!(tables.contains(&"work_logs".to_string()));
         assert!(tables.contains(&"integrations".to_string()));
+    }
+
+    #[tokio::test]
+    async fn upgrading_an_existing_database_keeps_its_entries() {
+        // A database as it stood before migration 2 shipped.
+        let pool = super::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("failed to open in-memory database");
+
+        let mut applied = super::migrations().into_iter();
+        let first = applied.next().expect("there is a first migration");
+        sqlx::raw_sql(first.sql)
+            .execute(&pool)
+            .await
+            .expect("migration 1 should apply");
+
+        sqlx::query("INSERT INTO work_logs (source, content) VALUES ('github', 'Merged PR #4')")
+            .execute(&pool)
+            .await
+            .expect("an entry should be storable before the upgrade");
+
+        for migration in applied {
+            sqlx::raw_sql(migration.sql)
+                .execute(&pool)
+                .await
+                .expect("later migrations should apply to an existing database");
+        }
+
+        // The entry survives, and the new column is there but empty for it.
+        let (content, external_id): (String, Option<String>) =
+            sqlx::query_as("SELECT content, external_id FROM work_logs")
+                .fetch_one(&pool)
+                .await
+                .expect("the existing entry should still be there");
+
+        assert_eq!(content, "Merged PR #4");
+        assert_eq!(external_id, None);
     }
 
     #[tokio::test]
