@@ -30,6 +30,12 @@
     "rust:lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --all-features",
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "verify:commits": "commitlint --from origin/main --to HEAD",
+    "verify:frontend": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
+    "verify:layout": "pnpm test:e2e",
+    "verify:rust": "pnpm rust:fmt:check && pnpm rust:lint && pnpm rust:test",
+    "verify:app": "pnpm tauri build --no-bundle",
+    "verify": "pnpm verify:commits && pnpm verify:frontend && pnpm verify:layout && pnpm verify:rust && pnpm verify:app",
     "prepare": "husky"
   },
   "dependencies": {

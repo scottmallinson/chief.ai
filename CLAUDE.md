@@ -47,7 +47,27 @@ pnpm tauri build --no-bundle   # compile the desktop binary without packaging in
 pnpm rust:fmt             # cargo fmt
 pnpm rust:lint            # cargo clippy -D warnings
 pnpm rust:test            # cargo test
+pnpm verify               # everything CI runs, on this machine — before every push
 ```
+
+### Verifying without CI
+
+`pnpm verify` is one command per CI job, in the same order, cheapest first, so a branch can be
+taken as far as CI would take it without a runner. Each job can be run on its own while working on
+that part:
+
+| Command                | CI job               | Roughly                    |
+| ---------------------- | -------------------- | -------------------------- |
+| `pnpm verify:commits`  | Conventional Commits | instant                    |
+| `pnpm verify:frontend` | Frontend             | ~1 min                     |
+| `pnpm verify:layout`   | Layout               | ~35 s                      |
+| `pnpm verify:rust`     | Rust                 | ~4 min                     |
+| `pnpm verify:app`      | App build            | ~7 min cold, far less warm |
+
+Two things it cannot cover. `verify:app` builds for **this** machine only, so the other two
+platforms in CI's matrix are unverified until someone builds there — the Rust is portable but the
+WebKitGTK/WebView2/WKWebView differences are not. And the PR _title_ is linted by CI rather than by
+commitlint here; `verify:commits` checks the commit messages the title is usually taken from.
 
 Building the desktop app on Linux needs the WebKitGTK toolchain:
 

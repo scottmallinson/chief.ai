@@ -129,6 +129,16 @@ interface Bridge {
    * the region turns up somewhere unexpected.
    */
   scroller: () => HTMLElement | null;
+  /**
+   * Wait until the view has stopped reacting.
+   *
+   * Pushing an update returns as soon as the listener has been called, which is
+   * before React has rendered it and long before the effect that follows the
+   * answer has run. Without waiting, the next step races a scroll that has not
+   * happened yet — and a test that measures a position mid-flight reads whatever
+   * the timing gave it.
+   */
+  settle: () => Promise<void>;
 }
 
 /**
@@ -160,6 +170,24 @@ function installBackend(setup: Setup) {
 
         return overflow === 'auto' || overflow === 'scroll';
       }) ?? null,
+
+    settle: async () => {
+      const frame = () => new Promise<void>((painted) => requestAnimationFrame(() => painted()));
+
+      // Quiet means two consecutive frames where neither the amount of content
+      // nor the reader's position within it moved.
+      let previous = '';
+
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await frame();
+
+        const region = bridge.scroller();
+        const now = region === null ? 'none' : `${region.scrollHeight}:${region.scrollTop}`;
+
+        if (now === previous) return;
+        previous = now;
+      }
+    },
   };
 
   const internals = {
@@ -267,6 +295,11 @@ function readPosition(): Position {
   };
 }
 
+/** Wait for the page to stop reacting to whatever just happened. */
+function settle(page: Page): Promise<void> {
+  return page.evaluate(() => (window as unknown as { __chief: Bridge }).__chief.settle());
+}
+
 function handleFor(page: Page): Chief {
   const composer = page.getByRole('textbox', { name: 'Message your chief of staff' });
 
@@ -288,23 +321,31 @@ function handleFor(page: Page): Chief {
       await composer.fill(question);
       await composer.press('Enter');
       await page.waitForFunction(() => document.querySelectorAll('main li').length > 0);
+      await settle(page);
     },
 
     async stream(update: AgentUpdate) {
-      await page.evaluate((sent) => {
-        (window as unknown as { __chief: Bridge }).__chief.stream(sent);
+      await page.evaluate(async (sent) => {
+        const bridge = (window as unknown as { __chief: Bridge }).__chief;
+
+        bridge.stream(sent);
+        await bridge.settle();
       }, update);
     },
 
     async finish(answer: string) {
-      await page.evaluate((sent) => {
-        (window as unknown as { __chief: Bridge }).__chief.finish(sent);
+      await page.evaluate(async (sent) => {
+        const bridge = (window as unknown as { __chief: Bridge }).__chief;
+
+        bridge.finish(sent);
+        await bridge.settle();
       }, answer);
     },
 
     async goTo(view) {
       await page.getByRole('button', { name: view, exact: true }).click();
       await page.getByRole('heading', { level: 1, name: view }).waitFor();
+      await settle(page);
     },
 
     async scrollTo(position) {
@@ -322,6 +363,9 @@ function handleFor(page: Page): Chief {
           // Nothing is dispatched when it was already in that position.
           requestAnimationFrame(() => requestAnimationFrame(() => settled()));
         });
+
+        // The view may react to a reader moving; let it finish before measuring.
+        await (window as unknown as { __chief: Bridge }).__chief.settle();
       }, position);
     },
 
