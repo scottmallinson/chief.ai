@@ -1,10 +1,20 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type UIEvent,
+} from 'react';
 import { Send } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { useChat } from '@/hooks/use-chat';
 import { cn } from '@/lib/utils';
 import type { ChatMessage } from '@/lib/agent';
+
+/** How close to the bottom still counts as reading the live end, in pixels. */
+const FOLLOW_THRESHOLD = 32;
 
 function Bubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
@@ -63,15 +73,29 @@ function EmptyState() {
 export function ChatView() {
   const { messages, status, partial, activity, error, send } = useChat();
   const [draft, setDraft] = useState('');
-  const end = useRef<HTMLDivElement>(null);
+  const transcript = useRef<HTMLDivElement>(null);
+  // Whether the reader is at the live end of the answer. Someone who has
+  // scrolled up to re-read something is not dragged back down by the next token.
+  const following = useRef(true);
 
   const isThinking = status === 'thinking';
 
-  // Follow the answer as it is written, rather than letting it run off the
-  // bottom of the window.
+  // Follow the answer as it is written. This sets `scrollTop` on the transcript
+  // itself rather than calling `scrollIntoView`, which walks *every* scrollable
+  // ancestor — including the document — and so can scroll the window rather
+  // than the conversation.
   useEffect(() => {
-    end.current?.scrollIntoView({ block: 'end' });
+    const container = transcript.current;
+    if (container === null || !following.current) return;
+
+    container.scrollTop = container.scrollHeight;
   }, [messages, partial, activity]);
+
+  function trackPosition(event: UIEvent<HTMLDivElement>) {
+    const { scrollTop, scrollHeight, clientHeight } = event.currentTarget;
+
+    following.current = scrollHeight - scrollTop - clientHeight <= FOLLOW_THRESHOLD;
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -91,7 +115,7 @@ export function ChatView() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto" ref={transcript} onScroll={trackPosition}>
         {messages.length === 0 ? (
           <EmptyState />
         ) : (
@@ -105,9 +129,6 @@ export function ChatView() {
                 {activity === null ? 'Thinking…' : `${activity}…`}
               </li>
             )}
-            <li aria-hidden>
-              <div ref={end} />
-            </li>
           </ul>
         )}
       </div>

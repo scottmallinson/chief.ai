@@ -41,56 +41,58 @@ export function WorkLogView() {
   const { entries, status, error, reload } = useWorkLog();
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <p className="text-xs text-muted-foreground">
-          Filled in automatically from your connected tools, summarised on this machine.
-        </p>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={reload}
-          disabled={status === 'loading'}
-          aria-label="Refresh work log"
-        >
-          <RefreshCw aria-hidden />
-          Refresh
-        </Button>
-      </div>
-
-      {status === 'loading' && (
-        <p className="text-sm text-muted-foreground" role="status">
-          Reading your local work log…
-        </p>
-      )}
-
-      {status === 'error' && (
-        <div className="rounded-lg border border-destructive/50 p-6" role="alert">
-          <h2 className="text-sm font-semibold">Could not read the work log</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{error}</p>
-          <Button variant="outline" size="sm" className="mt-4" onClick={reload}>
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-3xl p-6">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <p className="text-xs text-muted-foreground">
+            Filled in automatically from your connected tools, summarised on this machine.
+          </p>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={reload}
+            disabled={status === 'loading'}
+            aria-label="Refresh work log"
+          >
             <RefreshCw aria-hidden />
-            Try again
+            Refresh
           </Button>
         </div>
-      )}
 
-      {status === 'ready' &&
-        (entries.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border p-10 text-center">
-            <h2 className="text-sm font-semibold">No entries yet</h2>
-            <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
-              Your daily log will fill in from your connected tools once the background summariser
-              is in place.
-            </p>
+        {status === 'loading' && (
+          <p className="text-sm text-muted-foreground" role="status">
+            Reading your local work log…
+          </p>
+        )}
+
+        {status === 'error' && (
+          <div className="rounded-lg border border-destructive/50 p-6" role="alert">
+            <h2 className="text-sm font-semibold">Could not read the work log</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{error}</p>
+            <Button variant="outline" size="sm" className="mt-4" onClick={reload}>
+              <RefreshCw aria-hidden />
+              Try again
+            </Button>
           </div>
-        ) : (
-          <ul className="space-y-3">
-            {entries.map((entry) => (
-              <Entry key={entry.id} entry={entry} />
-            ))}
-          </ul>
-        ))}
+        )}
+
+        {status === 'ready' &&
+          (entries.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border p-10 text-center">
+              <h2 className="text-sm font-semibold">No entries yet</h2>
+              <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
+                Your daily log will fill in from your connected tools once the background summariser
+                is in place.
+              </p>
+            </div>
+          ) : (
+            <ul className="space-y-3">
+              {entries.map((entry) => (
+                <Entry key={entry.id} entry={entry} />
+              ))}
+            </ul>
+          ))}
+      </div>
     </div>
   );
 }
