@@ -91,98 +91,100 @@ export function SetupView({ onSkip }: SetupViewProps) {
   const problem = error ?? (ollamaRunning ? null : (readiness?.problem ?? null));
 
   return (
-    <div className="mx-auto flex h-full max-w-xl flex-col justify-center p-6">
-      <header className="mb-6">
-        <h1 className="text-lg font-semibold">Set up Chief</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Chief answers questions using a model that runs on this machine. Two things to sort out
-          first — both stay entirely local.
-        </p>
-      </header>
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex min-h-full max-w-xl flex-col justify-center p-6">
+        <header className="mb-6">
+          <h1 className="text-lg font-semibold">Set up Chief</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Chief answers questions using a model that runs on this machine. Two things to sort out
+            first — both stay entirely local.
+          </p>
+        </header>
 
-      <ol className="space-y-3">
-        <Step
-          index={1}
-          title="Install Ollama"
-          description={
-            ollamaRunning
-              ? `Running${readiness?.ollamaVersion !== null ? ` (version ${readiness?.ollamaVersion})` : ''}.`
-              : 'Ollama runs the model locally. Install it, then check again.'
-          }
-          done={ollamaRunning}
-        >
-          {!ollamaRunning && (
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                onClick={() => {
-                  void openUrl(OLLAMA_DOWNLOAD_URL);
-                }}
-              >
-                <ExternalLink aria-hidden />
-                Get Ollama
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={recheck}
-                disabled={status === 'checking'}
-              >
-                <RefreshCw aria-hidden />
-                Check again
-              </Button>
-            </div>
-          )}
-        </Step>
+        <ol className="space-y-3">
+          <Step
+            index={1}
+            title="Install Ollama"
+            description={
+              ollamaRunning
+                ? `Running${readiness?.ollamaVersion !== null ? ` (version ${readiness?.ollamaVersion})` : ''}.`
+                : 'Ollama runs the model locally. Install it, then check again.'
+            }
+            done={ollamaRunning}
+          >
+            {!ollamaRunning && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    void openUrl(OLLAMA_DOWNLOAD_URL);
+                  }}
+                >
+                  <ExternalLink aria-hidden />
+                  Get Ollama
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={recheck}
+                  disabled={status === 'checking'}
+                >
+                  <RefreshCw aria-hidden />
+                  Check again
+                </Button>
+              </div>
+            )}
+          </Step>
 
-        <Step
-          index={2}
-          title="Download the model"
-          description={
-            modelInstalled
-              ? `${readiness?.model} is installed.`
-              : `Chief uses ${readiness?.model ?? 'a small local model'}, about 2 GB. It is downloaded once.`
-          }
-          done={modelInstalled}
-        >
-          {ollamaRunning && !modelInstalled && (
-            <>
-              <Button size="sm" className="mt-3" onClick={download} disabled={isDownloading}>
-                {isDownloading ? (
-                  <Loader2 className="animate-spin" aria-hidden />
-                ) : (
-                  <Download aria-hidden />
-                )}
-                {isDownloading ? 'Downloading…' : 'Download model'}
-              </Button>
-              {progress !== null && <ProgressBar progress={progress} />}
-            </>
-          )}
-        </Step>
-      </ol>
+          <Step
+            index={2}
+            title="Download the model"
+            description={
+              modelInstalled
+                ? `${readiness?.model} is installed.`
+                : `Chief uses ${readiness?.model ?? 'a small local model'}, about 2 GB. It is downloaded once.`
+            }
+            done={modelInstalled}
+          >
+            {ollamaRunning && !modelInstalled && (
+              <>
+                <Button size="sm" className="mt-3" onClick={download} disabled={isDownloading}>
+                  {isDownloading ? (
+                    <Loader2 className="animate-spin" aria-hidden />
+                  ) : (
+                    <Download aria-hidden />
+                  )}
+                  {isDownloading ? 'Downloading…' : 'Download model'}
+                </Button>
+                {progress !== null && <ProgressBar progress={progress} />}
+              </>
+            )}
+          </Step>
+        </ol>
 
-      {problem !== null && (
-        <p
-          className="mt-4 rounded-md border border-destructive/50 p-3 text-sm text-muted-foreground"
-          role="alert"
-        >
-          {problem}
-        </p>
-      )}
-
-      <div className="mt-6 flex items-center justify-between gap-4">
-        <button
-          type="button"
-          onClick={onSkip}
-          className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
-        >
-          Skip for now
-        </button>
-        {isReady(readiness) && (
-          <Button size="sm" onClick={onSkip}>
-            Start using Chief
-          </Button>
+        {problem !== null && (
+          <p
+            className="mt-4 rounded-md border border-destructive/50 p-3 text-sm text-muted-foreground"
+            role="alert"
+          >
+            {problem}
+          </p>
         )}
+
+        <div className="mt-6 flex items-center justify-between gap-4">
+          <button
+            type="button"
+            onClick={onSkip}
+            className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+          >
+            Skip for now
+          </button>
+          {isReady(readiness) && (
+            <Button size="sm" onClick={onSkip}>
+              Start using Chief
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   );

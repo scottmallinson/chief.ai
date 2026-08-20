@@ -10,14 +10,17 @@ interface LayoutProps {
 }
 
 /**
- * The application shell: a fixed navigation rail beside a scrollable content
- * area. Every view renders inside `children`.
+ * The application shell: a fixed navigation rail beside the active view.
+ *
+ * The shell is pinned to the window and does not scroll. `main` clips rather
+ * than scrolls, because a view that stacks two scroll regions gets two
+ * scrollbars and no clear owner of the wheel — each view brings its own.
  */
 export function Layout({ activeView, onNavigate, children }: LayoutProps) {
   const current = NAV_ITEMS.find((item) => item.id === activeView);
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-background">
+    <div className="flex h-screen w-full overflow-hidden bg-background">
       <Sidebar activeView={activeView} onNavigate={onNavigate} />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -28,7 +31,7 @@ export function Layout({ activeView, onNavigate, children }: LayoutProps) {
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+        <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
       </div>
     </div>
   );

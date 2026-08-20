@@ -105,6 +105,15 @@
     height: 100%;
   }
 
+  /* The shell is a window, not a page: it fills the frame exactly and never
+     scrolls as a whole. A view that needs to scroll owns its own region, so a
+     long answer moves within the transcript instead of dragging the header and
+     the navigation rail out of the window. */
+  html,
+  body {
+    overflow: hidden;
+  }
+
   body {
     @apply overscroll-none bg-background text-foreground antialiased;
     font-family:

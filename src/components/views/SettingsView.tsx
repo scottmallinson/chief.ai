@@ -94,18 +94,20 @@ function GithubIntegration() {
 /** Configuration surface for the model, integrations and local data. */
 export function SettingsView() {
   return (
-    <div className="mx-auto max-w-3xl space-y-4 p-6">
-      <SettingsSection
-        title="Local model"
-        description="Chief talks to an Ollama instance on http://localhost:11434. The client refuses any address that is not on this machine."
-        status="llama3.2:3b"
-      />
-      <GithubIntegration />
-      <SettingsSection
-        title="Local data"
-        description="Your work log and integration tokens live in a SQLite file inside this app's config directory. Nothing is synchronised anywhere."
-        status="Ready"
-      />
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-3xl space-y-4 p-6">
+        <SettingsSection
+          title="Local model"
+          description="Chief talks to an Ollama instance on http://localhost:11434. The client refuses any address that is not on this machine."
+          status="llama3.2:3b"
+        />
+        <GithubIntegration />
+        <SettingsSection
+          title="Local data"
+          description="Your work log and integration tokens live in a SQLite file inside this app's config directory. Nothing is synchronised anywhere."
+          status="Ready"
+        />
+      </div>
     </div>
   );
 }
