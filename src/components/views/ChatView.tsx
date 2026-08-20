@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Send } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -25,6 +25,23 @@ function Bubble({ message }: { message: ChatMessage }) {
   );
 }
 
+/** The answer as it is being written, with a cursor to show it is still going. */
+function Writing({ text }: { text: string }) {
+  return (
+    <li className="flex justify-start">
+      <div
+        className="max-w-[80%] rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap text-foreground"
+        aria-live="polite"
+        data-selectable
+      >
+        <span className="sr-only">Chief is saying: </span>
+        {text}
+        <span className="ml-0.5 inline-block h-4 w-px animate-pulse bg-foreground align-middle" />
+      </div>
+    </li>
+  );
+}
+
 function EmptyState() {
   return (
     <div className="flex h-full items-center justify-center p-6">
@@ -44,10 +61,17 @@ function EmptyState() {
 
 /** Chat surface for the agent, backed by the local model. */
 export function ChatView() {
-  const { messages, status, error, send } = useChat();
+  const { messages, status, partial, activity, error, send } = useChat();
   const [draft, setDraft] = useState('');
+  const end = useRef<HTMLDivElement>(null);
 
   const isThinking = status === 'thinking';
+
+  // Follow the answer as it is written, rather than letting it run off the
+  // bottom of the window.
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: 'end' });
+  }, [messages, partial, activity]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -75,11 +99,15 @@ export function ChatView() {
             {messages.map((message) => (
               <Bubble key={message.id} message={message} />
             ))}
-            {isThinking && (
+            {isThinking && partial !== '' && <Writing text={partial} />}
+            {isThinking && partial === '' && (
               <li className="text-sm text-muted-foreground" role="status">
-                Thinking…
+                {activity === null ? 'Thinking…' : `${activity}…`}
               </li>
             )}
+            <li aria-hidden>
+              <div ref={end} />
+            </li>
           </ul>
         )}
       </div>

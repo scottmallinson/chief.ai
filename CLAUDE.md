@@ -100,6 +100,26 @@ migrate at startup, so the pool is ready before the first command runs.
 - `agent::respond` is the orchestration loop: ask, run any `tool_calls`, append each result as a
   `tool` message, repeat until the model answers in words. It is bounded by `MAX_TOOL_ROUNDS` so a
   model that will not stop calling tools cannot spin forever.
+- Answers **stream**. `Client::chat_stream` reads Ollama's newline-delimited reply and `respond`
+  forwards each piece to the window on the `agent-stream` event, tagged with the `requestId` the
+  renderer generated. The finished answer is still returned from `ask_agent`, so a dropped event
+  costs a frame and nothing more. A model this size writes at reading speed but takes tens of
+  seconds to finish, and waiting for all of it before showing any of it is what made the app feel
+  broken.
+- An `Update` is one of three things: `delta` (append this), `restart` (what was shown turned out to
+  be preamble to a tool call — discard it) or `tool` (a tool is running, so the wait has a reason to
+  show).
+- `ollama::Options` is sent with every request. `num_predict` is the ceiling on how long a question
+  can take. `num_ctx` is deliberately **identical for every request Chief makes**, including the
+  daemon's: Ollama loads a model per context size, so varying it evicts the copy already in memory.
+  `keep_alive` holds the model there for half an hour, because otherwise the next question pays to
+  read the weights off disk again.
+- `agent::warm_up` loads the model while the window is still opening, so the first question does not
+  pay for it either. It fails silently — on a fresh machine Ollama may not be installed, which is
+  what the setup screen is for.
+- `agent::Attention` counts the questions the user is waiting on. Ollama answers one request at a
+  time per model, so the daemon reads this and steps aside rather than putting a background summary
+  ahead of a person.
 - `src-tauri/src/tools.rs` holds the catalogue and the dispatcher. A tool failure — bad arguments, an
   unknown name — is reported back to the _model_ as an `error` payload, not raised to the user: it
   can then explain itself or try something else instead of collapsing the conversation.
@@ -162,6 +182,8 @@ model to turn each merge into a one-sentence achievement, and write it to `work_
   the unique index added in migration v2 means the same merge is never logged twice. Entries the
   user writes by hand have no `external_id`, which is why that index is partial.
 - Work already in the log is skipped _before_ the model is asked, so a caught-up pass costs nothing.
+- A pass stops between items when `Attention` says the user is waiting on an answer. The rest keeps
+  until the next pass; their question is worth more than the log being current.
 - If summarising fails, nothing is written for that item. Writing an unsummarised row would mean it
   is never revisited, since the dedupe key would already be present.
 - `run_once` takes a `Context` rather than an `AppHandle`, so a whole pass runs in tests against an

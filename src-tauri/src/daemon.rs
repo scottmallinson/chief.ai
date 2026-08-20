@@ -12,10 +12,11 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::agent::Attention;
 use crate::db;
 use crate::github::{self, PullRequest, State};
 use crate::integrations;
-use crate::ollama::{self, ChatRequest, Message};
+use crate::ollama::{self, ChatRequest, Message, Options};
 use crate::session::Session;
 use crate::work_log::{self, NewWorkLogEntry};
 
@@ -31,6 +32,11 @@ const BATCH: u8 = 25;
 
 /// Summaries should be a sentence, so this needs very few tokens.
 const SUMMARY_MODEL: &str = crate::agent::DEFAULT_MODEL;
+
+/// A sentence, and Ollama should stop there rather than write an essay nobody
+/// reads. The context size is left alone: changing it would make Ollama reload
+/// the model and take the chat's copy out of memory with it.
+const SUMMARY_OPTIONS: Options = Options::new().with_answer_length(80);
 
 const SUMMARY_PROMPT: &str = "\
 You turn a developer's activity into a work log. Summarise the activity into a
@@ -55,6 +61,8 @@ pub struct Context {
     pub pool: sqlx::SqlitePool,
     pub github: github::Client,
     pub ollama: ollama::Client,
+    /// Whether the user is waiting on an answer right now.
+    pub attention: Attention,
 }
 
 /// Start the daemon. Returns immediately; the work happens on the async runtime.
@@ -86,6 +94,7 @@ async fn context<R: Runtime>(app: &AppHandle<R>) -> Result<Context, db::Error> {
         pool: db::pool(app).await?,
         github: app.state::<github::Client>().inner().clone(),
         ollama: app.state::<ollama::Client>().inner().clone(),
+        attention: app.state::<Attention>().inner().clone(),
     })
 }
 
@@ -108,6 +117,13 @@ pub async fn run_once(context: &Context) -> Result<usize, Error> {
     let mut written = 0;
 
     for pull_request in merged {
+        // Summarising uses the same local model the user is talking to, and
+        // Ollama runs one request at a time: carrying on here would put their
+        // question behind ours. The rest of the log keeps until the next pass.
+        if context.attention.is_engaged() {
+            break;
+        }
+
         if log_one(context, &pull_request).await? {
             written += 1;
         }
@@ -165,7 +181,8 @@ async fn summarise(client: &ollama::Client, activity: &str) -> Result<String, ol
             Message::system(SUMMARY_PROMPT),
             Message::user(activity.to_string()),
         ],
-    );
+    )
+    .with_options(SUMMARY_OPTIONS);
 
     let reply = client.chat(&request).await?;
 
@@ -242,7 +259,26 @@ mod tests {
             pool,
             github: github::Client::against(github_host).expect("should build a github client"),
             ollama: ollama::Client::with_base_url(ollama_host).expect("loopback is allowed"),
+            attention: Attention::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn steps_aside_while_the_user_is_waiting_on_an_answer() {
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", MERGED_PRS)]);
+        // No Ollama stub at all: the pass must not get as far as summarising.
+        let context = context_for(&github_host, "http://127.0.0.1:1", true).await;
+        let _waiting = context.attention.begin();
+
+        let written = run_once(&context).await.expect("a pass should not fail");
+
+        assert_eq!(written, 0, "the user's question comes first");
+        assert!(work_log::fetch(&context.pool, None)
+            .await
+            .expect("read")
+            .is_empty());
+
+        github_server.await.expect("GitHub stub should finish");
     }
 
     #[tokio::test]
