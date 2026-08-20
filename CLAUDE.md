@@ -41,6 +41,7 @@ pnpm tauri:dev            # run the desktop app with hot reload
 pnpm dev                  # run the frontend alone in a browser
 pnpm check                # format:check + lint + typecheck + test — run before every commit
 pnpm test:watch           # vitest in watch mode
+pnpm test:e2e             # layout tests in a real browser (builds first; not part of `check`)
 pnpm build                # typecheck + build the frontend bundle
 pnpm tauri build --no-bundle   # compile the desktop binary without packaging installers
 pnpm rust:fmt             # cargo fmt
@@ -65,6 +66,7 @@ src/                     React frontend
   lib/                   Shared helpers (cn, navigation model)
   styles/globals.css     Tailwind entry point and design tokens
   test/setup.ts          Vitest + Testing Library setup
+e2e/                     Layout tests driven through a real browser
 src-tauri/               Rust backend
   src/lib.rs             Tauri builder — plugins and command registration
   src/main.rs            Desktop entry point
@@ -229,6 +231,21 @@ progress that is forwarded to the renderer as `model-pull-progress` events.
 
 - Vitest + Testing Library, colocated as `*.test.tsx`.
 - Test behaviour through the accessible surface (roles, labels), not implementation details.
+- jsdom has no layout engine: it reports every height as zero, so it cannot see a scrollbar, a
+  clipped composer or a window that scrolls when it should not. Anything that depends on layout
+  belongs in `e2e/`, which runs the built app in Chromium under Playwright and measures the result.
+- `e2e/fixtures.ts` replaces `window.__TAURI_INTERNALS__` rather than the components, so the real
+  views, the real CSS and the real event plumbing run against answers a test chooses. It can hold a
+  question open and push `agent-stream` updates, which is how the streaming states are measured.
+- Projects cover a comfortable window, a small one, and one with scrollbars that take space out of
+  the layout the way Windows does — Playwright hides scrollbars in headless Chromium by default,
+  which no user ever sees, so that project turns them back on. A test asserts the two agree, so the
+  project cannot quietly become a duplicate of the default one.
+- What this cannot cover is the webview Chief ships in. Chromium is close to WebView2 and WKWebView
+  but is neither, so a rendering difference peculiar to one of those still gets through; catching
+  those means driving the packaged binary with `tauri-driver`.
+- These are kept out of `pnpm check` because they need a build and a browser. CI runs them as the
+  **Layout** job.
 
 ## Commits and pull requests
 
