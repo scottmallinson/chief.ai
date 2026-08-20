@@ -67,6 +67,20 @@ export default tseslint.config(
     },
   },
 
+  // Browser tests are Node code that also hands functions to a page to run.
+  // There is no React here: Playwright's fixture callbacks take a `use`
+  // argument, which the hooks rule would otherwise read as a hook call.
+  {
+    files: ['e2e/**/*.ts', 'playwright.config.ts'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+    },
+    rules: {
+      'react-hooks/rules-of-hooks': 'off',
+      'react-refresh/only-export-components': 'off',
+    },
+  },
+
   // Plain JS tooling configs are not part of a TypeScript project.
   {
     files: ['**/*.{js,mjs,cjs}'],

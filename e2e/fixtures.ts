@@ -1,0 +1,366 @@
+/**
+ * Driving the real frontend in a real browser.
+ *
+ * jsdom has no layout engine: it reports every height as zero, so it cannot see
+ * a scrollbar, a clipped composer or a window that scrolls when it should not.
+ * These tests run the built app in Chromium instead and measure the result.
+ *
+ * The Rust side is replaced rather than the components: `@tauri-apps/api` talks
+ * to the shell through `window.__TAURI_INTERNALS__`, so standing in for that one
+ * object is enough to exercise the real views, the real CSS and the real event
+ * plumbing against answers a test chooses.
+ *
+ * What this cannot do is test the webview Chief actually ships in. Chromium is
+ * close to WebView2 and WKWebView but is not either of them, so a rendering
+ * difference peculiar to one of those will still get through. Catching those
+ * would mean driving the packaged binary with `tauri-driver`.
+ */
+
+import { test as base, type Locator, type Page } from '@playwright/test';
+
+/** An entry as `list_work_logs` returns it. */
+export interface WorkLogEntry {
+  id: number;
+  timestamp: string;
+  source: string;
+  content: string;
+  summary: string | null;
+  externalId: string | null;
+}
+
+/** A step in an answer, as `agent::Update` serialises it. */
+export type AgentUpdate =
+  { kind: 'delta'; text: string } | { kind: 'restart' } | { kind: 'tool'; name: string };
+
+/** What the Rust side should answer for one test. */
+export interface Backend {
+  /** What `ask_agent` resolves with. */
+  answer?: string;
+  /** What the work log is filled with. */
+  workLog?: WorkLogEntry[];
+  /**
+   * Leave questions unanswered until {@link Chief.finish} is called, so the
+   * streaming states can be held still and measured.
+   */
+  holdAnswers?: boolean;
+}
+
+/** Where the window and its scroll regions sit right now. */
+export interface Measurements {
+  /** Whether the document itself can scroll. It never should: this is a window. */
+  windowScrolls: boolean;
+  windowScrollTop: number;
+  /** How many elements are actually scrolling — one scrollbar each. */
+  scrollingRegions: number;
+  /**
+   * How many scroll regions are stacked inside one another around the content.
+   *
+   * More than one means the wheel has no single owner: whether the inner or the
+   * outer region moves depends on where the pointer is and which reached its
+   * end first. Only one of them shows a scrollbar until the content is long
+   * enough, which is why {@link scrollingRegions} alone would not catch it.
+   */
+  nestedScrollRegions: number;
+  /** Distance from the top of the window to the header, or null if there is none. */
+  headerTop: number | null;
+  /** Whether the composer is still inside the window rather than pushed below it. */
+  composerWithinWindow: boolean;
+  /** Width the view's scrollbar takes out of the layout — 0 when it overlays. */
+  scrollbarWidth: number;
+}
+
+/** Where a reader is within the scrolling part of the current view. */
+export interface Position {
+  scrollTop: number;
+  furthest: number;
+  atBottom: boolean;
+}
+
+/** Options a project sets to describe the browser Chief is standing in for. */
+export interface ShellOptions {
+  /**
+   * Whether this project renders scrollbars that take space out of the layout,
+   * the way Windows does, rather than ones that take none, the way macOS does.
+   *
+   * The switch itself is `ignoreDefaultArgs: ['--hide-scrollbars']` in the
+   * project's `launchOptions` — Playwright hides scrollbars in headless Chromium
+   * by default, which no real user ever sees. This flag only tells the tests
+   * which of the two they are looking at; one of them checks the pair agree.
+   */
+  classicScrollbars: boolean;
+}
+
+/** The handle a test drives the app through. */
+export interface Chief {
+  open(backend?: Backend): Promise<void>;
+  ask(question: string): Promise<void>;
+  /** Push one update on `agent-stream`, as `agent::respond` would. */
+  stream(update: AgentUpdate): Promise<void>;
+  /** Answer the question in flight, ending the stream. */
+  finish(answer: string): Promise<void>;
+  goTo(view: 'Chat' | 'Work Log' | 'Settings'): Promise<void>;
+  /** Move the scrolling part of the view, the way a reader would. */
+  scrollTo(position: 'top' | 'bottom'): Promise<void>;
+  measure(): Promise<Measurements>;
+  /** Where the reader is within the scrolling part of the view. */
+  position(): Promise<Position>;
+  composer: Locator;
+}
+
+interface Setup {
+  answer: string;
+  workLog: WorkLogEntry[];
+  holdAnswers: boolean;
+}
+
+/**
+ * The bridge a test reaches the page through, once installed.
+ *
+ * Everything a test needs to run *inside* the page hangs off here, because a
+ * function handed to `page.evaluate` is serialised without its surroundings and
+ * so cannot call anything defined in this module.
+ */
+interface Bridge {
+  stream: (update: AgentUpdate) => void;
+  finish: (answer: string) => void;
+  /**
+   * The part of the current view that scrolls, found by looking rather than by
+   * selector — so it holds for whichever view is showing, and a test notices if
+   * the region turns up somewhere unexpected.
+   */
+  scroller: () => HTMLElement | null;
+}
+
+/**
+ * Stand in for the Rust side. Serialised into the page before anything else
+ * runs, so it must not reach outside its own arguments.
+ */
+function installBackend(setup: Setup) {
+  const callbacks = new Map<number, (event: unknown) => void>();
+  const listeners = new Map<string, Array<(event: unknown) => void>>();
+  let nextCallbackId = 1;
+  let requestId: string | null = null;
+  let answerInFlight: ((answer: string) => void) | null = null;
+
+  const emit = (event: string, payload: unknown) => {
+    for (const listener of listeners.get(event) ?? []) {
+      listener({ event, id: 0, payload });
+    }
+  };
+
+  const bridge: Bridge = {
+    stream: (update) => emit('agent-stream', { requestId, ...update }),
+    finish: (answer) => {
+      answerInFlight?.(answer);
+      answerInFlight = null;
+    },
+    scroller: () =>
+      [...document.querySelectorAll<HTMLElement>('main *')].find((element) => {
+        const overflow = getComputedStyle(element).overflowY;
+
+        return overflow === 'auto' || overflow === 'scroll';
+      }) ?? null,
+  };
+
+  const internals = {
+    transformCallback(callback: (event: unknown) => void) {
+      const id = nextCallbackId++;
+      callbacks.set(id, callback);
+      return id;
+    },
+
+    invoke(command: string, args?: Record<string, unknown>): Promise<unknown> {
+      switch (command) {
+        case 'check_readiness':
+          return Promise.resolve({
+            ollamaRunning: true,
+            ollamaVersion: '0.5.1',
+            model: 'llama3.2:3b',
+            modelInstalled: true,
+            problem: null,
+          });
+
+        case 'ask_agent': {
+          requestId = (args?.requestId as string | undefined) ?? null;
+          if (!setup.holdAnswers) return Promise.resolve(setup.answer);
+
+          return new Promise<string>((resolve) => {
+            answerInFlight = resolve;
+          });
+        }
+
+        case 'list_work_logs':
+          return Promise.resolve(setup.workLog);
+
+        case 'github_connection':
+          return Promise.resolve({ connected: false, account: null, connectedAt: null });
+
+        case 'plugin:event|listen': {
+          const event = args?.event as string;
+          const handler = args?.handler as number;
+          const callback = callbacks.get(handler);
+
+          if (callback !== undefined) {
+            listeners.set(event, [...(listeners.get(event) ?? []), callback]);
+          }
+
+          return Promise.resolve(handler);
+        }
+
+        default:
+          return Promise.resolve(null);
+      }
+    },
+  };
+
+  const target = window as unknown as { __TAURI_INTERNALS__: unknown; __chief: Bridge };
+  target.__TAURI_INTERNALS__ = internals;
+  target.__chief = bridge;
+}
+
+/** Read the window and its scroll regions from inside the page. */
+function readMeasurements(): Measurements {
+  const doc = document.scrollingElement ?? document.documentElement;
+  const header = document.querySelector('header');
+  const composer = document.querySelector('form');
+  const region = (window as unknown as { __chief: Bridge }).__chief.scroller();
+
+  const scrollingRegions = [...document.querySelectorAll('*')].filter((element) => {
+    const overflow = getComputedStyle(element).overflowY;
+    const scrollable = overflow === 'auto' || overflow === 'scroll';
+
+    return scrollable && element.scrollHeight > element.clientHeight + 1;
+  }).length;
+
+  let nestedScrollRegions = 0;
+  for (let element = region; element !== null; element = element.parentElement) {
+    const overflow = getComputedStyle(element).overflowY;
+
+    if (overflow === 'auto' || overflow === 'scroll') nestedScrollRegions += 1;
+  }
+
+  return {
+    windowScrolls: doc.scrollHeight > doc.clientHeight + 1,
+    windowScrollTop: doc.scrollTop,
+    scrollingRegions,
+    nestedScrollRegions,
+    headerTop: header === null ? null : Math.round(header.getBoundingClientRect().top),
+    composerWithinWindow:
+      composer === null ||
+      Math.round(composer.getBoundingClientRect().bottom) <= window.innerHeight,
+    scrollbarWidth: region === null ? 0 : region.offsetWidth - region.clientWidth,
+  };
+}
+
+/** Read the reader's position within the scrolling part of the view. */
+function readPosition(): Position {
+  const region = (window as unknown as { __chief: Bridge }).__chief.scroller();
+
+  if (region === null) return { scrollTop: 0, furthest: 0, atBottom: true };
+
+  const furthest = region.scrollHeight - region.clientHeight;
+
+  return {
+    scrollTop: Math.round(region.scrollTop),
+    furthest: Math.round(furthest),
+    atBottom: furthest - region.scrollTop <= 2,
+  };
+}
+
+function handleFor(page: Page): Chief {
+  const composer = page.getByRole('textbox', { name: 'Message your chief of staff' });
+
+  return {
+    composer,
+
+    async open(backend: Backend = {}) {
+      await page.addInitScript(installBackend, {
+        answer: backend.answer ?? 'Two pull requests are waiting on review.',
+        workLog: backend.workLog ?? [],
+        holdAnswers: backend.holdAnswers ?? false,
+      });
+
+      await page.goto('/');
+      await composer.waitFor();
+    },
+
+    async ask(question: string) {
+      await composer.fill(question);
+      await composer.press('Enter');
+      await page.waitForFunction(() => document.querySelectorAll('main li').length > 0);
+    },
+
+    async stream(update: AgentUpdate) {
+      await page.evaluate((sent) => {
+        (window as unknown as { __chief: Bridge }).__chief.stream(sent);
+      }, update);
+    },
+
+    async finish(answer: string) {
+      await page.evaluate((sent) => {
+        (window as unknown as { __chief: Bridge }).__chief.finish(sent);
+      }, answer);
+    },
+
+    async goTo(view) {
+      await page.getByRole('button', { name: view, exact: true }).click();
+      await page.getByRole('heading', { level: 1, name: view }).waitFor();
+    },
+
+    async scrollTo(position) {
+      await page.evaluate(async (to) => {
+        const region = (window as unknown as { __chief: Bridge }).__chief.scroller();
+        if (region === null) return;
+
+        // A real reader's scroll reaches the view long before the next token
+        // does. Setting `scrollTop` fires the event asynchronously, so wait for
+        // the view to have seen it rather than racing the next assertion.
+        await new Promise<void>((settled) => {
+          region.addEventListener('scroll', () => settled(), { once: true });
+          region.scrollTop = to === 'top' ? 0 : region.scrollHeight;
+
+          // Nothing is dispatched when it was already in that position.
+          requestAnimationFrame(() => requestAnimationFrame(() => settled()));
+        });
+      }, position);
+    },
+
+    measure() {
+      return page.evaluate(readMeasurements);
+    },
+
+    position() {
+      return page.evaluate(readPosition);
+    },
+  };
+}
+
+export const test = base.extend<ShellOptions & { chief: Chief }>({
+  classicScrollbars: [false, { option: true }],
+
+  chief: async ({ page }, use) => {
+    await use(handleFor(page));
+  },
+});
+
+export { expect } from '@playwright/test';
+
+/** An answer far taller than any window these tests use. */
+export function longAnswer(lines = 60): string {
+  return Array.from(
+    { length: lines },
+    (_, index) => `* fix(stats): something that shipped (#${500 + index})`,
+  ).join('\n');
+}
+
+/** A work log long enough to need scrolling. */
+export function longWorkLog(entries = 40): WorkLogEntry[] {
+  return Array.from({ length: entries }, (_, index) => ({
+    id: index + 1,
+    timestamp: '2026-08-19T14:00:00Z',
+    source: 'github',
+    content: `Merged pull request #${index} in scottmallinson/chief.ai`,
+    summary: `Shipped something, number ${index}.`,
+    externalId: `scottmallinson/chief.ai#${index}`,
+  }));
+}
