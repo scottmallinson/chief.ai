@@ -5,6 +5,7 @@
 //! No component of this crate may talk to a remote service on its own.
 
 mod agent;
+mod clock;
 mod connect;
 mod daemon;
 mod db;

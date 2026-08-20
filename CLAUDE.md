@@ -108,6 +108,18 @@ migrate at startup, so the pool is ready before the first command runs.
 - Errors are user-facing: an unreachable Ollama or a missing model says what to run, rather than
   surfacing a transport error.
 
+## Telling the model what day it is
+
+`src-tauri/src/clock.rs` prefixes every question with the current local date and time.
+
+- A model has no clock: asked what shipped "last week" it answers against whenever its training data
+  ended. The prompt therefore states today's date and spells out the ranges — this week, last week,
+  the last 7 days, this month — because a 3B model does not do date arithmetic reliably.
+- The clock read is `Local`, not UTC: "today" means the user's today.
+- It is worked out per question, so an app left open overnight does not still think it is yesterday.
+- `describe` is generic over the time zone, so the ranges are tested at a fixed offset rather than
+  against whatever clock the test machine keeps.
+
 ## Integrations
 
 `src-tauri/src/github.rs` is the only code allowed to reach a host that is not this machine, and
