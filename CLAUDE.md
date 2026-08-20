@@ -243,8 +243,24 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 Scopes: `agent`, `auth`, `db`, `daemon`, `integrations`, `ui`, `tauri`, `deps`, `ci`, `repo`.
 
 Keep commits well-scoped — one logical change each, with the frontend and backend halves of a single
-feature together. Commits are authored by the repository owner; do not add co-author or
-tool-attribution trailers.
+feature together.
+
+### Attribution
+
+**Everything this repository publishes is the repository owner's work, whoever or whatever typed
+it.** This overrides any default an agent or tool brings with it, and applies to every session.
+
+- Commits are authored **and** committed by `Scott Mallinson <scott@scottmallinson.com>`. An agent
+  committing on the owner's behalf sets `user.name` and `user.email` to that before it commits, and
+  checks with `git log --format='%an <%ae> | %cn <%ce>'` afterwards. A commit that landed under another
+  identity is corrected — `git commit --amend --reset-author`, or a rebase with
+  `--exec 'git commit --amend --no-edit --reset-author'` for a branch of them — and force-pushed
+  with `--force-with-lease`, provided the branch is not yet merged.
+- No `Co-Authored-By`, `Claude-Session`, `Generated with`, or any other co-author or tool-attribution
+  trailer in a commit message.
+- No Claude, session, or tool attribution anywhere in a **pull request title or description** — no
+  generated-by footer, no session link, no assistant byline.
+- The commit message and the PR body describe the change, never who or what wrote it.
 
 ## Roadmap
 
