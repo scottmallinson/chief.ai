@@ -100,6 +100,26 @@ migrate at startup, so the pool is ready before the first command runs.
 - `agent::respond` is the orchestration loop: ask, run any `tool_calls`, append each result as a
   `tool` message, repeat until the model answers in words. It is bounded by `MAX_TOOL_ROUNDS` so a
   model that will not stop calling tools cannot spin forever.
+- Answers **stream**. `Client::chat_stream` reads Ollama's newline-delimited reply and `respond`
+  forwards each piece to the window on the `agent-stream` event, tagged with the `requestId` the
+  renderer generated. The finished answer is still returned from `ask_agent`, so a dropped event
+  costs a frame and nothing more. A model this size writes at reading speed but takes tens of
+  seconds to finish, and waiting for all of it before showing any of it is what made the app feel
+  broken.
+- An `Update` is one of three things: `delta` (append this), `restart` (what was shown turned out to
+  be preamble to a tool call — discard it) or `tool` (a tool is running, so the wait has a reason to
+  show).
+- `ollama::Options` is sent with every request. `num_predict` is the ceiling on how long a question
+  can take. `num_ctx` is deliberately **identical for every request Chief makes**, including the
+  daemon's: Ollama loads a model per context size, so varying it evicts the copy already in memory.
+  `keep_alive` holds the model there for half an hour, because otherwise the next question pays to
+  read the weights off disk again.
+- `agent::warm_up` loads the model while the window is still opening, so the first question does not
+  pay for it either. It fails silently — on a fresh machine Ollama may not be installed, which is
+  what the setup screen is for.
+- `agent::Attention` counts the questions the user is waiting on. Ollama answers one request at a
+  time per model, so the daemon reads this and steps aside rather than putting a background summary
+  ahead of a person.
 - `src-tauri/src/tools.rs` holds the catalogue and the dispatcher. A tool failure — bad arguments, an
   unknown name — is reported back to the _model_ as an `error` payload, not raised to the user: it
   can then explain itself or try something else instead of collapsing the conversation.
@@ -107,6 +127,18 @@ migrate at startup, so the pool is ready before the first command runs.
   via a shared name constant.
 - Errors are user-facing: an unreachable Ollama or a missing model says what to run, rather than
   surfacing a transport error.
+
+## Telling the model what day it is
+
+`src-tauri/src/clock.rs` prefixes every question with the current local date and time.
+
+- A model has no clock: asked what shipped "last week" it answers against whenever its training data
+  ended. The prompt therefore states today's date and spells out the ranges — this week, last week,
+  the last 7 days, this month — because a 3B model does not do date arithmetic reliably.
+- The clock read is `Local`, not UTC: "today" means the user's today.
+- It is worked out per question, so an app left open overnight does not still think it is yesterday.
+- `describe` is generic over the time zone, so the ranges are tested at a fixed offset rather than
+  against whatever clock the test machine keeps.
 
 ## Integrations
 
@@ -150,6 +182,8 @@ model to turn each merge into a one-sentence achievement, and write it to `work_
   the unique index added in migration v2 means the same merge is never logged twice. Entries the
   user writes by hand have no `external_id`, which is why that index is partial.
 - Work already in the log is skipped _before_ the model is asked, so a caught-up pass costs nothing.
+- A pass stops between items when `Attention` says the user is waiting on an answer. The rest keeps
+  until the next pass; their question is worth more than the log being current.
 - If summarising fails, nothing is written for that item. Writing an unsummarised row would mean it
   is never revisited, since the dedupe key would already be present.
 - `run_once` takes a `Context` rather than an `AppHandle`, so a whole pass runs in tests against an
@@ -209,8 +243,24 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 Scopes: `agent`, `auth`, `db`, `daemon`, `integrations`, `ui`, `tauri`, `deps`, `ci`, `repo`.
 
 Keep commits well-scoped — one logical change each, with the frontend and backend halves of a single
-feature together. Commits are authored by the repository owner; do not add co-author or
-tool-attribution trailers.
+feature together.
+
+### Attribution
+
+**Everything this repository publishes is the repository owner's work, whoever or whatever typed
+it.** This overrides any default an agent or tool brings with it, and applies to every session.
+
+- Commits are authored **and** committed by `Scott Mallinson <scott@scottmallinson.com>`. An agent
+  committing on the owner's behalf sets `user.name` and `user.email` to that before it commits, and
+  checks with `git log --format='%an <%ae> | %cn <%ce>'` afterwards. A commit that landed under another
+  identity is corrected — `git commit --amend --reset-author`, or a rebase with
+  `--exec 'git commit --amend --no-edit --reset-author'` for a branch of them — and force-pushed
+  with `--force-with-lease`, provided the branch is not yet merged.
+- No `Co-Authored-By`, `Claude-Session`, `Generated with`, or any other co-author or tool-attribution
+  trailer in a commit message.
+- No Claude, session, or tool attribution anywhere in a **pull request title or description** — no
+  generated-by footer, no session link, no assistant byline.
+- The commit message and the PR body describe the change, never who or what wrote it.
 
 ## Roadmap
 

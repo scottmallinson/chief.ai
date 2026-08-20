@@ -5,6 +5,7 @@
 //! No component of this crate may talk to a remote service on its own.
 
 mod agent;
+mod clock;
 mod connect;
 mod daemon;
 mod db;
@@ -35,6 +36,11 @@ pub fn run() {
             tauri::Manager::manage(app, ollama::Client::new()?);
             tauri::Manager::manage(app, github::Client::new()?);
             tauri::Manager::manage(app, connect::Pending::default());
+            tauri::Manager::manage(app, agent::Attention::default());
+
+            // Load the model while the window is still opening, so the first
+            // question does not wait for a couple of gigabytes off disk.
+            agent::warm_up(&app.handle().clone());
 
             // Keeps the work log up to date in the background.
             daemon::spawn(&app.handle().clone());
