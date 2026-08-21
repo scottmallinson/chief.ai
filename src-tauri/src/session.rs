@@ -90,7 +90,7 @@ impl<'a> Session<'a> {
 mod tests {
     use super::*;
     use crate::db::test_support::migrated_pool;
-    use crate::ollama::test_support::serve;
+    use crate::llama::test_support::serve;
 
     const SEARCH_RESULTS: &str = r#"{
         "total_count": 1,
@@ -156,7 +156,7 @@ mod tests {
         assert_eq!(requests.len(), 3, "expected read, renew, read");
 
         // The renewal must not send a client secret: the device flow has none.
-        let (_, renewal) = crate::ollama::test_support::split(&requests[1]);
+        let (_, renewal) = crate::llama::test_support::split(&requests[1]);
         assert!(
             renewal.contains("grant_type=refresh_token"),
             "unexpected renewal body: {renewal}"

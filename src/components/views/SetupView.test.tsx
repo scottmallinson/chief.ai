@@ -6,80 +6,66 @@ import { SetupView } from '@/components/views/SetupView';
 
 const invoke = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn());
-const openUrl = vi.hoisted(() => vi.fn());
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
-vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl }));
-
-const noOllama = {
-  ollamaRunning: false,
-  ollamaVersion: null,
-  model: 'llama3.2:3b',
-  modelInstalled: false,
-  problem: 'could not reach Ollama at http://localhost:11434/. Is it running?',
-};
 
 const noModel = {
-  ollamaRunning: true,
-  ollamaVersion: '0.5.1',
-  model: 'llama3.2:3b',
+  model: 'Llama 3.2 3B Instruct (Q4_K_M)',
   modelInstalled: false,
-  problem: null,
+  engine: 'down',
+  problem: 'the model has not been downloaded yet.',
 };
 
-const allSet = { ...noModel, modelInstalled: true };
+const stoppedEngine = {
+  ...noModel,
+  modelInstalled: true,
+  problem: 'the inference engine started but never began answering.',
+};
+
+const loadingEngine = { ...stoppedEngine, engine: 'loading', problem: null };
+
+const allSet = { ...stoppedEngine, engine: 'ready', problem: null };
 
 describe('SetupView', () => {
   beforeEach(() => {
     invoke.mockReset();
     listen.mockReset();
-    openUrl.mockReset();
     listen.mockResolvedValue(() => undefined);
-    openUrl.mockResolvedValue(undefined);
   });
 
-  it('offers to install Ollama when it is not running', async () => {
-    invoke.mockResolvedValue(noOllama);
-
-    render(<SetupView onSkip={vi.fn()} />);
-
-    expect(await screen.findByRole('button', { name: 'Get Ollama' })).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent('could not reach Ollama');
-  });
-
-  it('opens the download page in the browser', async () => {
-    invoke.mockResolvedValue(noOllama);
-
-    render(<SetupView onSkip={vi.fn()} />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Get Ollama' }));
-
-    expect(openUrl).toHaveBeenCalledWith('https://ollama.com/download');
-  });
-
-  it('offers the model download once Ollama is running', async () => {
+  it('asks for the model first, and says why nothing works without it', async () => {
     invoke.mockResolvedValue(noModel);
 
     render(<SetupView onSkip={vi.fn()} />);
 
     expect(await screen.findByRole('button', { name: 'Download model' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Get Ollama' })).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('not been downloaded');
+  });
+
+  it('does not offer to start an engine with no model to load', async () => {
+    invoke.mockResolvedValue(noModel);
+
+    render(<SetupView onSkip={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Download model' });
+
+    expect(screen.queryByRole('button', { name: 'Start engine' })).not.toBeInTheDocument();
   });
 
   it('downloads the model and rechecks when it finishes', async () => {
     invoke.mockImplementation((command: string) =>
-      Promise.resolve(command === 'pull_model' ? undefined : noModel),
+      Promise.resolve(command === 'download_model' ? undefined : noModel),
     );
 
     render(<SetupView onSkip={vi.fn()} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Download model' }));
 
-    expect(invoke).toHaveBeenCalledWith('pull_model');
+    expect(invoke).toHaveBeenCalledWith('download_model');
   });
 
   it('surfaces a download failure', async () => {
     invoke.mockImplementation((command: string) =>
-      command === 'pull_model'
+      command === 'download_model'
         ? Promise.reject(new Error('no space left on device'))
         : Promise.resolve(noModel),
     );
@@ -88,6 +74,40 @@ describe('SetupView', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Download model' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('no space left on device');
+  });
+
+  it('offers to start the engine once the model is here', async () => {
+    invoke.mockImplementation((command: string) =>
+      Promise.resolve(command === 'start_engine' ? undefined : stoppedEngine),
+    );
+
+    render(<SetupView onSkip={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Start engine' }));
+
+    expect(invoke).toHaveBeenCalledWith('start_engine');
+    expect(screen.queryByRole('button', { name: 'Download model' })).not.toBeInTheDocument();
+  });
+
+  it('surfaces an engine that will not start', async () => {
+    invoke.mockImplementation((command: string) =>
+      command === 'start_engine'
+        ? Promise.reject(new Error("Chief's inference engine is missing from this installation."))
+        : Promise.resolve(stoppedEngine),
+    );
+
+    render(<SetupView onSkip={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Start engine' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('engine is missing');
+  });
+
+  it('waits rather than complaining while the model loads', async () => {
+    invoke.mockResolvedValue(loadingEngine);
+
+    render(<SetupView onSkip={vi.fn()} />);
+
+    expect(await screen.findByRole('button', { name: 'Starting…' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('invites the user in once everything is in place', async () => {

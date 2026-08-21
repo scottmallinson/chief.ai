@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::SqlitePool;
 
 use crate::github::{self, State as PrState};
-use crate::ollama::{Tool, ToolCall, ToolFunction};
+use crate::llama::{Tool, ToolCall, ToolCallFunction, ToolFunction};
 use crate::session::Session;
 
 /// What the tools need to do their work: the user's local database, and a
@@ -86,7 +86,7 @@ pub fn catalog() -> Vec<Tool> {
 /// collapsing the whole conversation.
 pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
     match call.function.name.as_str() {
-        FETCH_GITHUB_PRS => match parse(&call.function.arguments) {
+        FETCH_GITHUB_PRS => match parse(&call.function) {
             Ok(args) => match fetch_github_prs(context, args.state).await {
                 Ok(result) => result,
                 Err(error) => json!({ "error": error.to_string() }),
@@ -99,13 +99,15 @@ pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
     }
 }
 
-fn parse(arguments: &Value) -> Result<FetchGithubPrsArgs, String> {
+fn parse(function: &ToolCallFunction) -> Result<FetchGithubPrsArgs, String> {
+    let arguments = function.arguments()?;
+
     // Models sometimes send an empty value instead of an empty object.
     if arguments.is_null() {
         return Ok(FetchGithubPrsArgs::default());
     }
 
-    serde_json::from_value(arguments.clone())
+    serde_json::from_value(arguments)
         .map_err(|error| format!("could not read the arguments: {error}"))
 }
 
@@ -126,8 +128,7 @@ mod tests {
     use super::*;
     use crate::db::test_support::migrated_pool;
     use crate::integrations;
-    use crate::ollama::test_support::serve;
-    use crate::ollama::ToolCallFunction;
+    use crate::llama::test_support::serve;
 
     /// One page of GitHub search results, trimmed to the fields we read.
     const SEARCH_RESULTS: &str = r#"{
@@ -143,13 +144,19 @@ mod tests {
         }]
     }"#;
 
+    /// A call as it arrives from the engine: the arguments are a JSON string,
+    /// not an object.
     fn call(name: &str, arguments: Value) -> ToolCall {
-        ToolCall {
-            function: ToolCallFunction {
+        ToolCall::new(
+            "call_1",
+            ToolCallFunction {
                 name: name.to_string(),
-                arguments,
+                arguments: match arguments {
+                    Value::Null => String::new(),
+                    other => other.to_string(),
+                },
             },
-        }
+        )
     }
 
     /// A context whose GitHub client talks to `host`.
@@ -170,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn advertises_the_github_tool_in_ollamas_format() {
+    fn advertises_the_github_tool_in_the_openai_format() {
         let tools = catalog();
         let schema = serde_json::to_value(&tools).expect("should serialize");
 
@@ -199,7 +206,7 @@ mod tests {
         assert_eq!(prs[0]["state"], json!("open"));
 
         let requests = server.await.expect("the stub should finish");
-        let (request_line, _) = crate::ollama::test_support::split(&requests[0]);
+        let (request_line, _) = crate::llama::test_support::split(&requests[0]);
 
         assert!(
             request_line.contains("/search/issues"),
@@ -230,7 +237,7 @@ mod tests {
         .await;
 
         let requests = server.await.expect("the stub should finish");
-        let (request_line, _) = crate::ollama::test_support::split(&requests[0]);
+        let (request_line, _) = crate::llama::test_support::split(&requests[0]);
 
         assert!(
             request_line.contains("is%3Aclosed"),

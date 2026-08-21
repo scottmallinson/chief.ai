@@ -9,16 +9,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::clock;
 use crate::db;
+use crate::engine;
 use crate::github;
-use crate::ollama::{self, ChatRequest, Client, Message, Role};
+use crate::llama::{self, ChatRequest, Client, Message, Role};
 use crate::tools;
 
-/// A small model that runs comfortably on a laptop.
-pub const DEFAULT_MODEL: &str = "llama3.2:3b";
+/// The model the engine is serving. It runs one, under the name it was given
+/// when it started, so this identifies the model rather than choosing it.
+pub const DEFAULT_MODEL: &str = engine::MODEL_ALIAS;
 
 /// How many times we will run tools before insisting on an answer. A model that
 /// keeps calling tools would otherwise loop forever.
@@ -71,9 +73,9 @@ struct StreamEvent {
 
 /// How many answers the user is waiting on right now.
 ///
-/// The background summariser uses the same local model, and Ollama runs one
-/// request at a time per model: a pass in flight is a question that answers
-/// seconds late. The daemon reads this and steps aside.
+/// The background summariser shares the engine, which decodes one request at a
+/// time: a pass in flight is a question that answers seconds late. The daemon
+/// reads this and steps aside.
 #[derive(Debug, Clone, Default)]
 pub struct Attention(Arc<AtomicUsize>);
 
@@ -104,7 +106,7 @@ impl Drop for Waiting {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Ollama(#[from] ollama::Error),
+    Engine(#[from] llama::Error),
     #[error(transparent)]
     Storage(#[from] db::Error),
     #[error("the model kept asking for tools without answering")]
@@ -189,12 +191,7 @@ where
 
             let result = tools::dispatch(context, call).await;
 
-            messages.push(Message {
-                role: Role::Tool,
-                content: result.to_string(),
-                tool_calls: Vec::new(),
-                tool_name: Some(call.function.name.clone()),
-            });
+            messages.push(Message::tool_result(call, result.to_string()));
         }
     }
 
@@ -222,7 +219,7 @@ pub async fn ask_agent<R: Runtime>(
         github: github.inner().clone(),
     };
 
-    // The daemon shares this model. Hold the door while someone is waiting.
+    // The daemon shares this engine. Hold the door while someone is waiting.
     let _waiting = attention.begin();
 
     let conversation = conversation(messages, &clock::present());
@@ -239,20 +236,6 @@ pub async fn ask_agent<R: Runtime>(
         );
     })
     .await
-}
-
-/// Load the model in the background, so the first question does not wait for it.
-///
-/// Failure is expected and ignored: on a fresh machine Ollama may not be
-/// installed yet, which is what the setup screen is for.
-pub fn warm_up<R: Runtime>(app: &AppHandle<R>) {
-    let client = app.state::<Client>().inner().clone();
-
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = client.preload(DEFAULT_MODEL).await {
-            eprintln!("could not load the model ahead of time: {error}");
-        }
-    });
 }
 
 /// Build a transcript turn, shared by the test modules below.
@@ -393,14 +376,14 @@ mod tests {
     }
 }
 
-/// The orchestration loop, driven against the stub Ollama in
-/// [`crate::ollama::test_support`].
+/// The orchestration loop, driven against the stub engine in
+/// [`crate::llama::test_support`].
 #[cfg(test)]
 mod orchestration_tests {
     use super::*;
     use crate::db::test_support::migrated_pool;
     use crate::integrations;
-    use crate::ollama::test_support::{serve, split};
+    use crate::llama::test_support::{events, serve, split};
     use serde_json::{json, Value};
 
     /// One page of GitHub search results, trimmed to the fields we read.
@@ -431,25 +414,43 @@ mod orchestration_tests {
         }
     }
 
-    /// Ollama streams a reply as one JSON object per line, so the stubs below
-    /// are written the way the wire actually looks.
-    const ASKS_FOR_PRS: &str = concat!(
-        r#"{"model":"llama3.2:3b","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"fetch_github_prs","arguments":{"state":"open"}}}]},"done":false}"#,
-        "\n",
-        r#"{"model":"llama3.2:3b","message":{"role":"assistant","content":""},"done":true}"#,
-        "\n"
-    );
+    /// A streamed reply that asks for the pull request tool, in the shape
+    /// `llama-server` writes it: server-sent events whose deltas carry the call.
+    fn asks_for_prs() -> String {
+        events(&[
+            json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "fetch_github_prs",
+                                "arguments": "{\"state\":\"open\"}",
+                            },
+                        }],
+                    },
+                }],
+            }),
+            json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }] }),
+        ])
+    }
 
-    const ANSWERS: &str = concat!(
-        r#"{"model":"llama3.2:3b","message":{"role":"assistant","content":"One pull request "},"done":false}"#,
-        "\n",
-        r#"{"model":"llama3.2:3b","message":{"role":"assistant","content":"is waiting on review."},"done":false}"#,
-        "\n",
-        r#"{"model":"llama3.2:3b","message":{"role":"assistant","content":""},"done":true}"#,
-        "\n"
-    );
+    /// A streamed reply in words, split the way a model writes it.
+    fn answers() -> String {
+        events(&[
+            json!({ "choices": [{ "index": 0, "delta": { "content": "One pull request " } }] }),
+            json!({ "choices": [{ "index": 0, "delta": { "content": "is waiting on review." } }] }),
+            json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }] }),
+        ])
+    }
 
     const ANSWER: &str = "One pull request is waiting on review.";
+
+    /// The model this suite pretends the engine is serving.
+    const MODEL: &str = DEFAULT_MODEL;
 
     fn body_of(request: &str) -> Value {
         let (_, body) = split(request);
@@ -462,11 +463,11 @@ mod orchestration_tests {
 
     #[tokio::test]
     async fn answers_directly_when_no_tool_is_needed() {
-        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", ANSWERS)]);
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", answers())]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
         let context = context_connected_to("http://127.0.0.1:1").await;
-        let answer = respond(&client, &context, "llama3.2:3b", asked("Hello"), |_| {})
+        let answer = respond(&client, &context, MODEL, asked("Hello"), |_| {})
             .await
             .expect("the stub should answer");
 
@@ -478,12 +479,12 @@ mod orchestration_tests {
 
     #[tokio::test]
     async fn hands_the_answer_over_as_it_is_written() {
-        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", ANSWERS)]);
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", answers())]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
         let context = context_connected_to("http://127.0.0.1:1").await;
         let mut updates = Vec::new();
-        respond(&client, &context, "llama3.2:3b", asked("Hello"), |update| {
+        respond(&client, &context, MODEL, asked("Hello"), |update| {
             updates.push(update)
         })
         .await
@@ -506,11 +507,11 @@ mod orchestration_tests {
 
     #[tokio::test]
     async fn offers_the_tools_on_every_request() {
-        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", ANSWERS)]);
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", answers())]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
         let context = context_connected_to("http://127.0.0.1:1").await;
-        respond(&client, &context, "llama3.2:3b", asked("Hello"), |_| {})
+        respond(&client, &context, MODEL, asked("Hello"), |_| {})
             .await
             .expect("the stub should answer");
 
@@ -527,8 +528,8 @@ mod orchestration_tests {
     #[tokio::test]
     async fn runs_the_tool_and_feeds_the_result_back() {
         let (base_url, server) = serve(vec![
-            ("HTTP/1.1 200 OK", ASKS_FOR_PRS),
-            ("HTTP/1.1 200 OK", ANSWERS),
+            ("HTTP/1.1 200 OK", asks_for_prs()),
+            ("HTTP/1.1 200 OK", answers()),
         ]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
@@ -538,7 +539,7 @@ mod orchestration_tests {
         let answer = respond(
             &client,
             &context,
-            "llama3.2:3b",
+            MODEL,
             asked("What is waiting on me?"),
             |_| {},
         )
@@ -567,7 +568,11 @@ mod orchestration_tests {
 
         let result = &messages[3];
         assert_eq!(result["role"], json!("tool"));
-        assert_eq!(result["tool_name"], json!("fetch_github_prs"));
+        assert_eq!(
+            result["tool_call_id"],
+            json!("call_1"),
+            "the result should name the call it answers"
+        );
 
         let payload: Value = serde_json::from_str(
             result["content"]
@@ -594,8 +599,8 @@ mod orchestration_tests {
     #[tokio::test]
     async fn says_which_tool_it_is_waiting_on() {
         let (base_url, server) = serve(vec![
-            ("HTTP/1.1 200 OK", ASKS_FOR_PRS),
-            ("HTTP/1.1 200 OK", ANSWERS),
+            ("HTTP/1.1 200 OK", asks_for_prs()),
+            ("HTTP/1.1 200 OK", answers()),
         ]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
@@ -606,7 +611,7 @@ mod orchestration_tests {
         respond(
             &client,
             &context,
-            "llama3.2:3b",
+            MODEL,
             asked("What is waiting on me?"),
             |update| updates.push(update),
         )
@@ -627,16 +632,27 @@ mod orchestration_tests {
 
     #[tokio::test]
     async fn takes_back_thinking_out_loud_that_turned_into_a_tool_call() {
-        const MUSES_THEN_ASKS: &str = concat!(
-            r#"{"model":"llama3.2:3b","message":{"role":"assistant","content":"Let me look."},"done":false}"#,
-            "\n",
-            r#"{"model":"llama3.2:3b","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"fetch_github_prs","arguments":{}}}]},"done":true}"#,
-            "\n"
-        );
+        let muses_then_asks = events(&[
+            json!({ "choices": [{ "index": 0, "delta": { "content": "Let me look." } }] }),
+            json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_2",
+                            "type": "function",
+                            "function": { "name": "fetch_github_prs", "arguments": "{}" },
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+            }),
+        ]);
 
         let (base_url, server) = serve(vec![
-            ("HTTP/1.1 200 OK", MUSES_THEN_ASKS),
-            ("HTTP/1.1 200 OK", ANSWERS),
+            ("HTTP/1.1 200 OK", muses_then_asks),
+            ("HTTP/1.1 200 OK", answers()),
         ]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
@@ -647,7 +663,7 @@ mod orchestration_tests {
         let answer = respond(
             &client,
             &context,
-            "llama3.2:3b",
+            MODEL,
             asked("What is waiting on me?"),
             |update| updates.push(update),
         )
@@ -667,27 +683,31 @@ mod orchestration_tests {
 
     #[tokio::test]
     async fn reports_an_unknown_tool_to_the_model_rather_than_failing() {
-        const ASKS_FOR_NONSENSE: &str = concat!(
-            r#"{"model":"llama3.2:3b","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"not_a_tool","arguments":{}}}]},"done":true}"#,
-            "\n"
-        );
+        let asks_for_nonsense = events(&[json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_3",
+                        "type": "function",
+                        "function": { "name": "not_a_tool", "arguments": "{}" },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+        })]);
 
         let (base_url, server) = serve(vec![
-            ("HTTP/1.1 200 OK", ASKS_FOR_NONSENSE),
-            ("HTTP/1.1 200 OK", ANSWERS),
+            ("HTTP/1.1 200 OK", asks_for_nonsense),
+            ("HTTP/1.1 200 OK", answers()),
         ]);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
         let context = context_connected_to("http://127.0.0.1:1").await;
-        let answer = respond(
-            &client,
-            &context,
-            "llama3.2:3b",
-            asked("Do something odd"),
-            |_| {},
-        )
-        .await
-        .expect("an unknown tool should not end the conversation");
+        let answer = respond(&client, &context, MODEL, asked("Do something odd"), |_| {})
+            .await
+            .expect("an unknown tool should not end the conversation");
 
         assert_eq!(answer, ANSWER);
 
@@ -705,7 +725,7 @@ mod orchestration_tests {
 
     #[tokio::test]
     async fn gives_up_when_the_model_will_not_stop_calling_tools() {
-        let replies = vec![("HTTP/1.1 200 OK", ASKS_FOR_PRS); MAX_TOOL_ROUNDS];
+        let replies = vec![("HTTP/1.1 200 OK", asks_for_prs()); MAX_TOOL_ROUNDS];
         let (base_url, server) = serve(replies);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
@@ -713,15 +733,9 @@ mod orchestration_tests {
         let (github_host, github_server) = serve(github_replies);
         let context = context_connected_to(&github_host).await;
 
-        let error = respond(
-            &client,
-            &context,
-            "llama3.2:3b",
-            asked("Loop forever"),
-            |_| {},
-        )
-        .await
-        .expect_err("the loop should be bounded");
+        let error = respond(&client, &context, MODEL, asked("Loop forever"), |_| {})
+            .await
+            .expect_err("the loop should be bounded");
 
         assert!(matches!(error, Error::TooManyToolRounds), "got {error:?}");
 

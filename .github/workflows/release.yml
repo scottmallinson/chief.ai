@@ -76,6 +76,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The engine is bundled, so it has to be on disk before Tauri builds. The
+      # script is idempotent and pins the llama.cpp build.
+      - name: Fetch the llama.cpp engine
+        run: pnpm engine:fetch
+
       # A missing variable would silently produce a binary whose "Connect
       # GitHub" button never works, and nobody would find out until after they
       # had installed it.

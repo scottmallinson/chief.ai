@@ -30,7 +30,9 @@ thiserror = "2.0.20"
 # own clock rather than guessing. Already in the tree by way of Tauri.
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls", "http2", "form", "query", "stream"] }
-tokio = { version = "1.53.1", features = ["time"] }
+# `process` supervises the bundled llama.cpp server; `fs`/`io-util` stream the
+# model file to disk while it downloads.
+tokio = { version = "1.53.1", features = ["fs", "io-util", "process", "time"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 
 [lints.rust]

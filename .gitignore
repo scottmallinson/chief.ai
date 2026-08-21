@@ -41,3 +41,11 @@ playwright/.cache
 *.sqlite
 *.sqlite3
 *.db
+
+# The bundled llama.cpp engine. Fetched per-platform by `pnpm engine:fetch`,
+# not committed — it is tens of megabytes of prebuilt binary.
+src-tauri/binaries
+
+# Model weights, wherever one is left lying around. The app keeps its own in
+# the OS app-data directory.
+*.gguf

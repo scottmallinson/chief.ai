@@ -98,8 +98,8 @@ export function SettingsView() {
       <div className="mx-auto max-w-3xl space-y-4 p-6">
         <SettingsSection
           title="Local model"
-          description="Chief talks to an Ollama instance on http://localhost:11434. The client refuses any address that is not on this machine."
-          status="llama3.2:3b"
+          description="Chief runs llama.cpp itself, on a loopback address only this machine can reach. The engine ships with the app and stops when you close it; the client refuses any address that is not local."
+          status="Llama 3.2 3B Instruct"
         />
         <GithubIntegration />
         <SettingsSection
