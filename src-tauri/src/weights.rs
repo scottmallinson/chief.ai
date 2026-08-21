@@ -364,4 +364,91 @@ mod tests {
     fn describes_the_model_for_the_setup_screen() {
         assert_eq!(describe(), "Llama 3.2 3B Instruct (Q4_K_M)");
     }
+
+    /// The real download, against the real host.
+    ///
+    /// Everything else here is offline, because the one outbound request in
+    /// this app should not be something a routine `cargo test` makes. But the
+    /// pinned URL, the HTTPS-only redirect policy and the resume path are all
+    /// promises about a host nobody here controls, and a stub server cannot
+    /// keep them: Hugging Face answers `/resolve/` with a redirect to a CDN
+    /// that may or may not honour a `Range` header. So this test exists, and
+    /// is run deliberately:
+    ///
+    /// ```text
+    /// cargo test --manifest-path src-tauri/Cargo.toml \
+    ///   weights::tests::downloads_the_real_weights -- --ignored --nocapture
+    /// ```
+    ///
+    /// It seeds a part file first, so the request it makes is the resume one —
+    /// the harder of the two paths, and the one a dropped connection uses.
+    #[tokio::test]
+    #[ignore = "downloads two gigabytes from huggingface.co"]
+    async fn downloads_the_real_weights_and_resumes_a_partial_one() {
+        let dir = std::env::temp_dir().join(format!("chief-weights-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("should create");
+
+        let destination = path(&dir);
+        let partial = part_path(&destination);
+        tokio::fs::create_dir_all(destination.parent().expect("has a parent"))
+            .await
+            .expect("should create");
+
+        // A download that got 8 MiB in and then dropped.
+        const SEEDED: u64 = 8 * 1024 * 1024;
+        let head = reqwest::Client::new()
+            .get(SOURCE)
+            .header(reqwest::header::RANGE, format!("bytes=0-{}", SEEDED - 1))
+            .send()
+            .await
+            .expect("should reach the model host")
+            .bytes()
+            .await
+            .expect("should read the first megabytes");
+
+        assert_eq!(head.len() as u64, SEEDED, "the host should honour a range");
+        tokio::fs::write(&partial, &head)
+            .await
+            .expect("should write");
+
+        let mut last = None;
+        download(&destination, |progress| last = Some(progress))
+            .await
+            .expect("should download the weights");
+
+        let finished = last.expect("should have reported progress");
+        assert_eq!(finished.status, "Done");
+        assert_eq!(
+            finished.completed, finished.total,
+            "a finished download should have reported the whole file"
+        );
+
+        let written = tokio::fs::metadata(&destination)
+            .await
+            .expect("should be on disk")
+            .len();
+
+        assert_eq!(
+            written, finished.total,
+            "the file should be the size reported"
+        );
+        assert!(
+            written > SEEDED,
+            "the resumed download should have added to the part file"
+        );
+        assert!(
+            looks_like_a_model(&destination).await.expect("should read"),
+            "what arrived should be a GGUF model, not a login wall"
+        );
+        assert!(
+            !partial.exists(),
+            "the part file should have been renamed into place"
+        );
+
+        tokio::fs::remove_dir_all(&dir)
+            .await
+            .expect("should clean up");
+    }
 }

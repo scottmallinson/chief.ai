@@ -41,7 +41,7 @@ test.describe('a conversation taller than the window', () => {
 
     expect(shell.headerTop, 'the header should stay at the top of the window').toBe(0);
     await expect(page.getByRole('button', { name: 'Chat', exact: true })).toBeInViewport();
-    await expect(page.getByText('On-device only')).toBeInViewport();
+    await expect(page.getByText(/^on-device/)).toBeInViewport();
   });
 
   test('keeps the composer inside the window', async ({ chief }) => {

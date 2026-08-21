@@ -4,50 +4,64 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
   type UIEvent,
 } from 'react';
 import { Send } from 'lucide-react';
 
+import { ChiefMark } from '@/components/ChiefMark';
 import { Button } from '@/components/ui/button';
+import { Caret, Sweep } from '@/components/ui/activity';
 import { useChat } from '@/hooks/use-chat';
-import { cn } from '@/lib/utils';
+import { useElapsed } from '@/hooks/use-elapsed';
 import type { ChatMessage } from '@/lib/agent';
 
 /** How close to the bottom still counts as reading the live end, in pixels. */
 const FOLLOW_THRESHOLD = 32;
 
-function Bubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === 'user';
+/** After this long the caption starts saying how long it has been. */
+const SAY_HOW_LONG = 3;
 
+/** After this long the wait is worth explaining rather than just counting. */
+const EXPLAIN_THE_WAIT = 15;
+
+/** Questions worth having on hand, in the words the system would use. */
+const OPENERS = ['What did I ship this week?', 'Draft my standup', 'What is waiting on me?'];
+
+const clockFormat = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
+
+function clock(timestamp: string): string {
+  const parsed = new Date(timestamp);
+  return Number.isNaN(parsed.getTime()) ? '' : clockFormat.format(parsed);
+}
+
+/** The question, as the reader asked it. */
+function Question({ message }: { message: ChatMessage }) {
   return (
-    <li className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
-      <div
-        className={cn(
-          'max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap',
-          isUser ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground',
-        )}
-        data-selectable
-      >
-        <span className="sr-only">{isUser ? 'You said: ' : 'Chief said: '}</span>
+    <li>
+      <p className="micro text-muted-foreground">you · {clock(message.at)}</p>
+      <p className="mt-1.5 text-[15px] font-semibold tracking-[-0.015em]" data-selectable>
+        <span className="sr-only">You said: </span>
         {message.content}
-      </div>
+      </p>
     </li>
   );
 }
 
-/** The answer as it is being written, with a cursor to show it is still going. */
-function Writing({ text }: { text: string }) {
+/**
+ * An answer, or an answer being worked on.
+ *
+ * A rule down the left rather than a bubble: this is a briefing, and a chief of
+ * staff reports rather than chats. The label says where the answer came from
+ * before the answer does.
+ */
+function Answer({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
-    <li className="flex justify-start">
-      <div
-        className="max-w-[80%] rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap text-foreground"
-        aria-live="polite"
-        data-selectable
-      >
-        <span className="sr-only">Chief is saying: </span>
-        {text}
-        <span className="ml-0.5 inline-block h-4 w-px animate-pulse bg-foreground align-middle" />
-      </div>
+    <li className="border-l-2 border-border pl-3.5">
+      {label}
+      <p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap" data-selectable>
+        {children}
+      </p>
     </li>
   );
 }
@@ -55,14 +69,10 @@ function Writing({ text }: { text: string }) {
 function EmptyState() {
   return (
     <div className="flex h-full items-center justify-center p-6">
-      <div className="max-w-md text-center">
-        <h2 className="text-lg font-semibold">Ask about your work</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          &ldquo;What did I ship this week?&rdquo; &middot; &ldquo;Which pull requests are still
-          waiting on me?&rdquo;
-        </p>
-        <p className="mt-6 text-xs text-muted-foreground">
-          Answers come from a model running on this machine. Nothing you type is sent anywhere else.
+      <div className="max-w-[420px] rounded-lg border border-dashed border-input p-6 text-center">
+        <h2 className="text-[15px] font-semibold tracking-[-0.015em]">Ask about your work</h2>
+        <p className="mx-auto mt-1.5 max-w-[280px] text-[13px] leading-snug text-muted-foreground">
+          Answers come from a model running on this machine. Nothing you type leaves it.
         </p>
       </div>
     </div>
@@ -74,11 +84,14 @@ export function ChatView() {
   const { messages, status, partial, activity, error, send } = useChat();
   const [draft, setDraft] = useState('');
   const transcript = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   // Whether the reader is at the live end of the answer. Someone who has
   // scrolled up to re-read something is not dragged back down by the next token.
   const following = useRef(true);
 
   const isThinking = status === 'thinking';
+  const isWriting = isThinking && partial !== '';
+  const elapsed = useElapsed(isThinking);
 
   // Follow the answer as it is written. This sets `scrollTop` on the transcript
   // itself rather than calling `scrollIntoView`, which walks *every* scrollable
@@ -113,30 +126,74 @@ export function ChatView() {
     }
   }
 
+  // Only one thing moves at a time, and it always means work is in flight: the
+  // mark turns until the model says something, the hairline sweeps while a tool
+  // runs, and the caret sits at the live end of the text once it is writing.
+  const step = activity ?? 'Sent to model';
+  const caption = elapsed < SAY_HOW_LONG ? step : `${step} · ${elapsed}s`;
+
+  const working = (
+    <p className="flex items-center gap-2 micro text-verified-text" role="status">
+      {activity === null ? <ChiefMark size={16} tone="thinking" breathing /> : <Sweep />}
+      local · {caption}
+    </p>
+  );
+
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto" ref={transcript} onScroll={trackPosition}>
         {messages.length === 0 ? (
           <EmptyState />
         ) : (
-          <ul className="mx-auto max-w-3xl space-y-3 p-6">
-            {messages.map((message) => (
-              <Bubble key={message.id} message={message} />
-            ))}
-            {isThinking && partial !== '' && <Writing text={partial} />}
-            {isThinking && partial === '' && (
-              <li className="text-sm text-muted-foreground" role="status">
-                {activity === null ? 'Thinking…' : `${activity}…`}
-              </li>
-            )}
-          </ul>
+          <div className="px-7 py-6">
+            <ul className="flex max-w-[680px] flex-col gap-6">
+              {messages.map((message) =>
+                message.role === 'user' ? (
+                  <Question key={message.id} message={message} />
+                ) : (
+                  <Answer
+                    key={message.id}
+                    label={
+                      <p className="micro text-verified-text">
+                        chief · local
+                        {message.sources > 0 &&
+                          ` · ${message.sources} source${message.sources === 1 ? '' : 's'}`}
+                      </p>
+                    }
+                  >
+                    <span className="sr-only">Chief said: </span>
+                    {message.content}
+                  </Answer>
+                ),
+              )}
+
+              {isWriting && (
+                <Answer label={working}>
+                  <span className="sr-only">Chief is saying: </span>
+                  {partial}
+                  <Caret />
+                </Answer>
+              )}
+
+              {isThinking && partial === '' && (
+                <li className="border-l-2 border-border pl-3.5">
+                  {working}
+                  {elapsed >= EXPLAIN_THE_WAIT && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      A local model takes this long on a busy machine. Nothing has stalled.
+                    </p>
+                  )}
+                </li>
+              )}
+            </ul>
+          </div>
         )}
       </div>
 
       {error !== null && (
-        <div className="mx-auto w-full max-w-3xl px-4">
+        <div className="px-7">
           <p
-            className="rounded-md border border-destructive/50 p-3 text-sm text-muted-foreground"
+            className="max-w-[680px] rounded-md border border-destructive bg-destructive-surface px-3.5 py-3 text-[13px] leading-snug text-destructive-text"
             role="alert"
           >
             {error}
@@ -144,21 +201,41 @@ export function ChatView() {
         </div>
       )}
 
-      <form className="border-t border-border p-4" onSubmit={submit}>
-        <div className="mx-auto flex max-w-3xl items-end gap-2">
-          <textarea
-            rows={1}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Message your chief of staff…"
-            aria-label="Message your chief of staff"
-            className="max-h-40 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60"
-          />
-          <Button type="submit" size="icon" disabled={isThinking || draft.trim() === ''}>
-            <Send aria-hidden />
-            <span className="sr-only">Send message</span>
-          </Button>
+      <form className="border-t border-border px-7 py-3.5" onSubmit={submit}>
+        <div className="flex max-w-[680px] flex-col gap-2.5">
+          {/* Chip-shaped, but not `Chip`: chips carry state, never actions. */}
+          <div className="flex flex-wrap gap-1.5">
+            {OPENERS.map((opener) => (
+              <button
+                key={opener}
+                type="button"
+                onClick={() => {
+                  setDraft(opener);
+                  composer.current?.focus();
+                }}
+                className="rounded-sm border border-input px-[9px] py-[3px] text-[11px] text-muted-foreground transition-colors duration-[120ms] ease-instrument hover:bg-accent hover:text-accent-foreground"
+              >
+                {opener}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-end gap-2">
+            <textarea
+              ref={composer}
+              rows={1}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask about your work…"
+              aria-label="Message your chief of staff"
+              className="max-h-40 min-h-[34px] flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm disabled:opacity-60"
+            />
+            <Button type="submit" size="icon" disabled={isThinking || draft.trim() === ''}>
+              <Send aria-hidden />
+              <span className="sr-only">Send message</span>
+            </Button>
+          </div>
         </div>
       </form>
     </div>

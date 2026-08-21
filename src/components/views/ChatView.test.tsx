@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { act } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -116,7 +116,7 @@ describe('ChatView', () => {
     stream({ requestId: 'a-different-question', kind: 'delta', text: 'Not for you.' });
 
     expect(screen.queryByText('Not for you.')).not.toBeInTheDocument();
-    expect(await screen.findByRole('status')).toHaveTextContent('Thinking…');
+    expect(await screen.findByRole('status')).toHaveTextContent('local · Sent to model');
   });
 
   it('says which tool it is waiting on', async () => {
@@ -128,7 +128,7 @@ describe('ChatView', () => {
     stream({ requestId: requestId(), kind: 'tool', name: 'fetch_github_prs' });
 
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'Reading your pull requests on GitHub…',
+      'local · Reading your pull requests on GitHub',
     );
   });
 
@@ -220,6 +220,94 @@ describe('ChatView', () => {
 
     expect(await screen.findByText('Answered.')).toBeInTheDocument();
     expect(handlers).toHaveLength(0);
+  });
+
+  it('says how many sources an answer drew on, so it is not taken on trust', async () => {
+    holdTheAnswer();
+
+    render(<ChatView />);
+    await ask('What is waiting on me?');
+
+    stream({ requestId: requestId(), kind: 'tool', name: 'fetch_github_prs' });
+    // The same tool twice is still one source.
+    stream({ requestId: requestId(), kind: 'tool', name: 'fetch_github_prs' });
+    answer('Two are waiting on you.');
+
+    expect(await screen.findByText('chief · local · 1 source')).toBeInTheDocument();
+  });
+
+  it('claims no sources for an answer the model wrote unaided', async () => {
+    invoke.mockResolvedValue('Nothing is waiting on you.');
+
+    render(<ChatView />);
+    await ask('What is waiting on me?');
+
+    expect(await screen.findByText('chief · local')).toBeInTheDocument();
+  });
+
+  /**
+   * Ask without `userEvent`, which waits on real timers of its own and so
+   * cannot be driven while the clock is mocked. The wait these two are about
+   * starts the moment the question is sent, so the clock has to be mocked
+   * before that happens.
+   */
+  function askOnAMockedClock(question: string) {
+    const composer = screen.getByRole('textbox', { name: 'Message your chief of staff' });
+
+    fireEvent.change(composer, { target: { value: question } });
+    fireEvent.submit(composer.closest('form') as HTMLFormElement);
+  }
+
+  it('says how long a wait has been going once it passes three seconds', async () => {
+    vi.useFakeTimers();
+
+    try {
+      holdTheAnswer();
+      render(<ChatView />);
+      askOnAMockedClock('What did I ship?');
+
+      expect(screen.getByRole('status')).toHaveTextContent('local · Sent to model');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+
+      expect(screen.getByRole('status')).toHaveTextContent('local · Sent to model · 4s');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('explains a long wait rather than leaving the reader guessing', async () => {
+    vi.useFakeTimers();
+
+    try {
+      holdTheAnswer();
+      render(<ChatView />);
+      askOnAMockedClock('What did I ship?');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+      expect(screen.queryByText(/Nothing has stalled/)).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(12_000);
+      });
+      expect(screen.getByText(/Nothing has stalled/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('offers an opening question and puts it in the composer', async () => {
+    render(<ChatView />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Draft my standup' }));
+
+    expect(screen.getByRole('textbox', { name: 'Message your chief of staff' })).toHaveValue(
+      'Draft my standup',
+    );
   });
 
   it('will not send an empty question', async () => {

@@ -23,6 +23,9 @@ export function useChat(): UseChat {
   const [activity, setActivity] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const nextId = useRef(0);
+  // The tools this answer reached for, counted once each however often the
+  // model called them.
+  const sources = useRef(new Set<string>());
 
   const identify = useCallback((kind: string) => {
     nextId.current += 1;
@@ -40,7 +43,13 @@ export function useChat(): UseChat {
       const question = content.trim();
       if (question === '' || status === 'thinking') return;
 
-      const asked: ChatMessage = { id: identify('message'), role: 'user', content: question };
+      const asked: ChatMessage = {
+        id: identify('message'),
+        role: 'user',
+        content: question,
+        at: new Date().toISOString(),
+        sources: 0,
+      };
       const transcript = [...messages, asked];
 
       setMessages(transcript);
@@ -48,6 +57,7 @@ export function useChat(): UseChat {
       setPartial('');
       setActivity(null);
       setError(null);
+      sources.current = new Set();
 
       askAgent(
         transcript.map(({ role, content: text }) => ({ role, content: text })),
@@ -64,6 +74,7 @@ export function useChat(): UseChat {
               break;
             case 'tool':
               setPartial('');
+              sources.current.add(update.name);
               setActivity(describeTool(update.name));
               break;
           }
@@ -72,10 +83,18 @@ export function useChat(): UseChat {
         .then((reply) => {
           // Cleared in the same update as the finished message, so the answer
           // is never on screen twice.
+          const drawnOn = sources.current.size;
+
           settle();
           setMessages((current) => [
             ...current,
-            { id: identify('message'), role: 'assistant', content: reply },
+            {
+              id: identify('message'),
+              role: 'assistant',
+              content: reply,
+              at: new Date().toISOString(),
+              sources: drawnOn,
+            },
           ]);
         })
         .catch((cause: unknown) => {
