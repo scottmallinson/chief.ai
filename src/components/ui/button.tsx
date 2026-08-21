@@ -4,23 +4,32 @@ import type * as React from 'react';
 
 import { cn } from '@/lib/utils';
 
+/**
+ * Buttons are 6px rectangles at one of three heights: 30, 34, 44. No pills.
+ * Weight 500 is reserved for exactly this — prose is 400 and anything that
+ * leads is 600 — and icons are 15px, taking the text colour rather than
+ * carrying one of their own.
+ *
+ * Focus is the 3px slate ring set once in `globals.css`, so it is the same
+ * shape on every control and every platform.
+ */
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-2 rounded-md font-medium whitespace-nowrap transition-colors duration-[120ms] ease-instrument disabled:pointer-events-none disabled:opacity-40 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-[15px] [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default: 'bg-primary text-primary-foreground hover:bg-primary/90',
         destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
         outline: 'border border-input bg-background hover:bg-accent hover:text-accent-foreground',
-        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-        ghost: 'hover:bg-accent hover:text-accent-foreground',
-        link: 'text-primary underline-offset-4 hover:underline',
+        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary-hover',
+        ghost: 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+        link: 'text-thinking underline underline-offset-[3px] hover:brightness-90',
       },
       size: {
-        default: 'h-9 px-4 py-2',
-        sm: 'h-8 rounded-md px-3 text-xs',
-        lg: 'h-10 rounded-md px-6',
-        icon: 'size-9',
+        default: 'h-[34px] px-4 text-[13px]',
+        sm: 'h-[30px] gap-[7px] px-3 text-xs',
+        lg: 'h-11 gap-[9px] px-5 text-[15px]',
+        icon: 'size-[34px]',
       },
     },
     defaultVariants: {

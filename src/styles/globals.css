@@ -1,65 +1,113 @@
 @import 'tailwindcss';
 
+/*
+ * Instrument Sans for everything, IBM Plex Mono for machine facts.
+ *
+ * Both faces are bundled rather than fetched: the CSP allows `font-src 'self'`
+ * only, and a design system that phones a font CDN on launch would break the
+ * one rule this app has. The variable sans covers 400–700 in a single file;
+ * only the two mono weights the system uses are shipped.
+ */
+@import '@fontsource-variable/instrument-sans/wght.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
 @custom-variant dark (&:is(.dark *));
 
 /*
- * Design tokens (shadcn/ui "new-york", slate base).
- * Values are plain CSS variables so components stay theme-agnostic.
+ * Chief design system 1.0 — "Instrument".
+ *
+ * Cool graphite on paper, one slate blue, green for verified, amber for
+ * attention. Five colours: everything else is grey doing the work. Values are
+ * plain CSS variables so components stay theme-agnostic.
  */
 :root {
-  --radius: 0.625rem;
+  /* sm 4 · md 6 · lg 8 · xl 12 — chips · buttons and fields · cards · windows */
+  --radius: 0.5rem;
 
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.129 0.042 264.695);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.129 0.042 264.695);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.129 0.042 264.695);
-  --primary: oklch(0.208 0.042 265.755);
-  --primary-foreground: oklch(0.984 0.003 247.858);
-  --secondary: oklch(0.968 0.007 247.896);
-  --secondary-foreground: oklch(0.208 0.042 265.755);
-  --muted: oklch(0.968 0.007 247.896);
-  --muted-foreground: oklch(0.554 0.046 257.417);
-  --accent: oklch(0.968 0.007 247.896);
-  --accent-foreground: oklch(0.208 0.042 265.755);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.984 0.003 247.858);
-  --border: oklch(0.929 0.013 255.508);
-  --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.704 0.04 256.788);
-  --sidebar: oklch(0.984 0.003 247.858);
-  --sidebar-foreground: oklch(0.129 0.042 264.695);
-  --sidebar-accent: oklch(0.968 0.007 247.896);
-  --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
-  --sidebar-border: oklch(0.929 0.013 255.508);
+  --background: #f4f5f3;
+  --foreground: #14171a;
+  --card: #fafbf9;
+  --card-foreground: #14171a;
+  --popover: #fafbf9;
+  --popover-foreground: #14171a;
+  --primary: #14171a;
+  --primary-foreground: #f4f5f3;
+  --secondary: #e7e9e5;
+  --secondary-foreground: #14171a;
+  --secondary-hover: #dde0db;
+  --muted: #eaece9;
+  --muted-foreground: #5a6169;
+  --accent: #e7e9e5;
+  --accent-foreground: #14171a;
+  --border: #d6d9d4;
+  --input: #bfc3be;
+  --ring: #2c5c7a;
+  --sidebar: #edefeb;
+  --sidebar-foreground: #14171a;
+  --sidebar-accent: #e0e3de;
+  --sidebar-accent-foreground: #14171a;
+  --sidebar-border: #d6d9d4;
+
+  /*
+   * Signal colours. Each has a fill, a tint to sit small text on, and the text
+   * colour that goes with the tint — "no solid brand colour behind small type".
+   */
+  --thinking: #2c5c7a;
+  --thinking-surface: #e7ebef;
+  --thinking-text: #26506a;
+  --verified: #3f6b4f;
+  --verified-surface: #e7ede8;
+  --verified-text: #2f5a3d;
+  --attention: #b8761f;
+  --attention-surface: #f5ebdc;
+  --attention-text: #8a5510;
+  --destructive: #a3352b;
+  --destructive-foreground: #f4f5f3;
+  --destructive-surface: #f4e3e1;
+  --destructive-text: #8e2e25;
 }
 
 .dark {
-  --background: oklch(0.129 0.042 264.695);
-  --foreground: oklch(0.984 0.003 247.858);
-  --card: oklch(0.208 0.042 265.755);
-  --card-foreground: oklch(0.984 0.003 247.858);
-  --popover: oklch(0.208 0.042 265.755);
-  --popover-foreground: oklch(0.984 0.003 247.858);
-  --primary: oklch(0.929 0.013 255.508);
-  --primary-foreground: oklch(0.208 0.042 265.755);
-  --secondary: oklch(0.279 0.041 260.031);
-  --secondary-foreground: oklch(0.984 0.003 247.858);
-  --muted: oklch(0.279 0.041 260.031);
-  --muted-foreground: oklch(0.704 0.04 256.788);
-  --accent: oklch(0.279 0.041 260.031);
-  --accent-foreground: oklch(0.984 0.003 247.858);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.984 0.003 247.858);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.551 0.027 264.364);
-  --sidebar: oklch(0.208 0.042 265.755);
-  --sidebar-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-accent: oklch(0.279 0.041 260.031);
-  --sidebar-accent-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-border: oklch(1 0 0 / 10%);
+  --background: #14171a;
+  --foreground: #edefec;
+  --card: #1b1f23;
+  --card-foreground: #edefec;
+  --popover: #1b1f23;
+  --popover-foreground: #edefec;
+  --primary: #edefec;
+  --primary-foreground: #14171a;
+  --secondary: #232a2f;
+  --secondary-foreground: #edefec;
+  --secondary-hover: #282e33;
+  --muted: #232a2f;
+  --muted-foreground: #8b9299;
+  --accent: #282e33;
+  --accent-foreground: #edefec;
+  --border: rgb(237 239 236 / 10%);
+  --input: rgb(237 239 236 / 18%);
+  --ring: #8fb7ce;
+  --sidebar: #1b1f23;
+  --sidebar-foreground: #edefec;
+  --sidebar-accent: #282e33;
+  --sidebar-accent-foreground: #edefec;
+  --sidebar-border: rgb(237 239 236 / 10%);
+
+  /* Amber is the one colour that changes role between themes: on paper it
+     fills and #8A5510 carries the text; on graphite #D9903A does both. */
+  --thinking: #8fb7ce;
+  --thinking-surface: rgb(143 183 206 / 16%);
+  --thinking-text: #8fb7ce;
+  --verified: #7fa98a;
+  --verified-surface: rgb(127 169 138 / 16%);
+  --verified-text: #7fa98a;
+  --attention: #d9903a;
+  --attention-surface: rgb(217 144 58 / 16%);
+  --attention-text: #d9903a;
+  --destructive: #e0705f;
+  --destructive-foreground: #14171a;
+  --destructive-surface: rgb(224 112 95 / 16%);
+  --destructive-text: #e0705f;
 }
 
 @theme inline {
@@ -67,6 +115,16 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans:
+    'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* The one size below the app scale: the uppercase machine label. */
+  --text-micro: 0.625rem;
+  --text-micro--line-height: 1.2;
+  --text-micro--letter-spacing: 0.1em;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -78,12 +136,24 @@
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary-hover: var(--secondary-hover);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-surface: var(--destructive-surface);
+  --color-destructive-text: var(--destructive-text);
+  --color-thinking: var(--thinking);
+  --color-thinking-surface: var(--thinking-surface);
+  --color-thinking-text: var(--thinking-text);
+  --color-verified: var(--verified);
+  --color-verified-surface: var(--verified-surface);
+  --color-verified-text: var(--verified-text);
+  --color-attention: var(--attention);
+  --color-attention-surface: var(--attention-surface);
+  --color-attention-text: var(--attention-text);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -92,11 +162,59 @@
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
+
+  /* One curve, four durations, four loops. Nothing springs or bounces. */
+  --ease-instrument: cubic-bezier(0.2, 0, 0, 1);
+  --animate-dot: chief-dot 1.2s ease-in-out infinite;
+  --animate-sweep: chief-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  --animate-caret: chief-pulse 2s ease-in-out infinite;
+  --animate-breathe: chief-breathe 2.4s cubic-bezier(0.2, 0, 0, 1) infinite;
+
+  @keyframes chief-dot {
+    0%,
+    100% {
+      opacity: 0.25;
+      transform: translateY(0);
+    }
+    40% {
+      opacity: 1;
+      transform: translateY(-2px);
+    }
+  }
+
+  @keyframes chief-sweep {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(300%);
+    }
+  }
+
+  @keyframes chief-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  @keyframes chief-breathe {
+    0%,
+    100% {
+      transform: rotate(0deg);
+    }
+    50% {
+      transform: rotate(180deg);
+    }
+  }
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
   }
 
   html,
@@ -115,13 +233,9 @@
   }
 
   body {
-    @apply overscroll-none bg-background text-foreground antialiased;
-    font-family:
-      ui-sans-serif,
-      system-ui,
-      -apple-system,
-      'Segoe UI',
-      sans-serif;
+    @apply overscroll-none bg-background font-sans text-foreground antialiased;
+    font-size: 14px;
+    line-height: 1.6;
   }
 
   /* A desktop shell should not feel like a web page. */
@@ -134,5 +248,43 @@
   [contenteditable='true'],
   [data-selectable] {
     user-select: text;
+  }
+
+  /* Focus is always a 3px slate ring, on every platform. */
+  :focus-visible {
+    outline: none;
+    border-color: var(--ring);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 24%, transparent);
+  }
+}
+
+@utility micro {
+  /* The only uppercase in the product: 10px mono at 0.1em tracking. */
+  @apply font-mono text-micro uppercase;
+}
+
+/*
+ * `prefers-reduced-motion` swaps every loop for a static dot and the same
+ * caption, so the indicator still says work is in flight. Both halves are in
+ * the markup and CSS picks one, which keeps it out of React.
+ */
+.motion-still {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-loop {
+    display: none !important;
+  }
+
+  .motion-still {
+    display: inline-flex;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
   }
 }

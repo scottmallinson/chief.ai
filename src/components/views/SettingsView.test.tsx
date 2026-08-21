@@ -32,6 +32,24 @@ describe('SettingsView', () => {
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
   });
 
+  it('carries the connection as state, not as an action', async () => {
+    invoke.mockResolvedValue(disconnected);
+
+    render(<SettingsView />);
+
+    expect(await screen.findByText('Not connected')).toBeInTheDocument();
+    expect(screen.getByText('On this machine')).toBeInTheDocument();
+    expect(screen.getByText('llama-3.2-3b-instruct')).toBeInTheDocument();
+  });
+
+  it('says when a connected account was connected', async () => {
+    invoke.mockResolvedValue(connected);
+
+    render(<SettingsView />);
+
+    expect(await screen.findByText(/^Connected /)).toBeInTheDocument();
+  });
+
   it('shows the device code and opens the browser', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'github_connection') return Promise.resolve(disconnected);

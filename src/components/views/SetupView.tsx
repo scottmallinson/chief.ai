@@ -1,6 +1,9 @@
-import { Check, Cpu, Download, Loader2, RefreshCw } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Check, Cpu, Download, RefreshCw } from 'lucide-react';
 
+import { ChiefMark } from '@/components/ChiefMark';
 import { Button } from '@/components/ui/button';
+import { Dots } from '@/components/ui/activity';
 import { useSetup } from '@/hooks/use-setup';
 import { cn } from '@/lib/utils';
 import { isReady, type DownloadProgress } from '@/lib/setup';
@@ -10,27 +13,27 @@ interface StepProps {
   title: string;
   description: string;
   done: boolean;
-  children?: React.ReactNode;
+  children?: ReactNode;
 }
 
 function Step({ index, title, description, done, children }: StepProps) {
   return (
-    <li className="rounded-lg border border-border p-4">
+    <li className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-start gap-3">
         <span
           className={cn(
-            'flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium',
-            done ? 'bg-primary text-primary-foreground' : 'border border-border',
+            'flex size-[22px] shrink-0 items-center justify-center rounded-sm font-mono text-[11px]',
+            done ? 'bg-verified text-background' : 'border border-input',
           )}
         >
-          {done ? <Check className="size-3.5" aria-hidden /> : index}
+          {done ? <Check className="size-[13px]" aria-hidden /> : index}
         </span>
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-medium">
             {title}
             {done && <span className="sr-only"> — done</span>}
           </h2>
-          <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{description}</p>
           {children}
         </div>
       </div>
@@ -42,25 +45,36 @@ function megabytes(bytes: number): string {
   return `${Math.round(bytes / 1_000_000)} MB`;
 }
 
+/**
+ * The one determinate bar in the product.
+ *
+ * A download reports real bytes, so it is allowed to fill. Before the total is
+ * known there is nothing honest to fill towards, so the same track sweeps
+ * instead of sitting at 100%.
+ */
 function ProgressBar({ progress }: { progress: DownloadProgress }) {
   const fraction = progress.total > 0 ? Math.min(progress.completed / progress.total, 1) : null;
 
   return (
     <div className="mt-3">
       <div
-        className="h-2 w-full overflow-hidden rounded-full bg-muted"
+        className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}
         {...(fraction !== null ? { 'aria-valuenow': Math.round(fraction * 100) } : {})}
         aria-label="Model download progress"
       >
-        <div
-          className="h-full bg-primary transition-[width] duration-300"
-          style={{ width: fraction !== null ? `${fraction * 100}%` : '100%' }}
-        />
+        {fraction === null ? (
+          <div className="motion-loop h-full w-1/3 animate-sweep rounded-full bg-thinking" />
+        ) : (
+          <div
+            className="h-full bg-primary transition-[width] duration-[240ms] ease-instrument"
+            style={{ width: `${fraction * 100}%` }}
+          />
+        )}
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
+      <p className="mt-2 font-mono text-xs text-muted-foreground">
         {progress.status}
         {progress.total > 0 &&
           ` — ${megabytes(progress.completed)} of ${megabytes(progress.total)}`}
@@ -95,16 +109,21 @@ export function SetupView({ onSkip }: SetupViewProps) {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex min-h-full max-w-xl flex-col justify-center p-6">
-        <header className="mb-6">
-          <h1 className="text-lg font-semibold">Set up Chief</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Chief answers questions using a model that runs on this machine. It came with the engine
-            that runs it, so there is one thing left to fetch — and it stays entirely local.
-          </p>
+      <div className="mx-auto flex min-h-full max-w-[560px] flex-col justify-center p-7">
+        <header className="mb-6 flex items-start gap-4">
+          <ChiefMark size={40} />
+          <div>
+            {/* 20px is the largest type inside the product. */}
+            <h1 className="text-xl leading-tight font-semibold tracking-[-0.02em]">Set up Chief</h1>
+            <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+              Chief answers questions using a model that runs on this machine. It came with the
+              engine that runs it, so there is one thing left to fetch — and it stays entirely
+              local.
+            </p>
+          </div>
         </header>
 
-        <ol className="space-y-3">
+        <ol className="flex flex-col gap-3">
           <Step
             index={1}
             title="Download the model"
@@ -118,11 +137,7 @@ export function SetupView({ onSkip }: SetupViewProps) {
             {!modelInstalled && (
               <>
                 <Button size="sm" className="mt-3" onClick={download} disabled={isDownloading}>
-                  {isDownloading ? (
-                    <Loader2 className="animate-spin" aria-hidden />
-                  ) : (
-                    <Download aria-hidden />
-                  )}
+                  {isDownloading ? <Dots /> : <Download aria-hidden />}
                   {isDownloading ? 'Downloading…' : 'Download model'}
                 </Button>
                 {progress !== null && <ProgressBar progress={progress} />}
@@ -145,11 +160,7 @@ export function SetupView({ onSkip }: SetupViewProps) {
             {modelInstalled && engine !== 'ready' && (
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <Button size="sm" onClick={start} disabled={isStarting}>
-                  {isStarting ? (
-                    <Loader2 className="animate-spin" aria-hidden />
-                  ) : (
-                    <Cpu aria-hidden />
-                  )}
+                  {isStarting ? <Dots /> : <Cpu aria-hidden />}
                   {isStarting ? 'Starting…' : 'Start engine'}
                 </Button>
                 <Button
@@ -168,7 +179,7 @@ export function SetupView({ onSkip }: SetupViewProps) {
 
         {problem !== null && (
           <p
-            className="mt-4 rounded-md border border-destructive/50 p-3 text-sm text-muted-foreground"
+            className="mt-4 rounded-md border border-destructive bg-destructive-surface px-3.5 py-3 text-[13px] leading-snug text-destructive-text"
             role="alert"
           >
             {problem}
@@ -176,13 +187,9 @@ export function SetupView({ onSkip }: SetupViewProps) {
         )}
 
         <div className="mt-6 flex items-center justify-between gap-4">
-          <button
-            type="button"
-            onClick={onSkip}
-            className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
-          >
+          <Button variant="link" size="sm" className="px-0" onClick={onSkip}>
             Skip for now
-          </button>
+          </Button>
           {isReady(readiness) && (
             <Button size="sm" onClick={onSkip}>
               Start using Chief

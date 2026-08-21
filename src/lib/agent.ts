@@ -9,6 +9,14 @@ export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  /** When the turn joined the transcript, for its `you · 14:02` label. */
+  at: string;
+  /**
+   * How many tools the answer drew on, so the transcript can say `local · 3
+   * sources` rather than asking the reader to take the answer on trust. Zero
+   * for a question, and for an answer the model wrote from what it already had.
+   */
+  sources: number;
 }
 
 /** A turn as the backend expects it. */

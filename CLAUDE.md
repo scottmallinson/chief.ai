@@ -289,6 +289,54 @@ and waits until it can answer.
 - Progress is reported every few megabytes, not every chunk: a progress event per packet is
   thousands a second and tells the user nothing more.
 
+## The design system
+
+**Chief design system 1.0 — "Instrument".** Software that will be read by a security team should
+look like an instrument, not a campaign. The whole system lives in `src/styles/globals.css` plus a
+handful of components; nothing here is decorative, so a change to one of these numbers is a change
+to the system rather than to one screen.
+
+- **Four principles.** On-device is the headline, stated in words rather than implied by a padlock.
+  Declarative, never chatty. Instrument, not poster — flat fields, hairline rules, one shadow level,
+  no gradients. Always show the work.
+- **Five colours.** Graphite `#14171A`, paper `#F4F5F3`, slate `#2C5C7A`, verified `#3F6B4F`,
+  attention `#B8761F`. Grey does everything else. Both token sets are complete and carry equal
+  weight; `index.html` ships with `class="dark"` on `<html>`, and removing it gives the light one.
+  Amber is the only colour that changes role between themes: on paper it fills and `#8A5510` carries
+  the text, on graphite `#D9903A` does both — which is why every signal colour has a `-surface` and
+  a `-text` token beside it. Chips are always a tinted fill with dark text, never solid colour
+  behind 11px type.
+- **Two faces, bundled.** Instrument Sans for everything, IBM Plex Mono for machine facts — ports,
+  models, codes, paths, timestamps, counts, never prose. They come from `@fontsource*` packages and
+  are served from the app itself: the CSP allows `font-src 'self'`, and a design system that phones
+  a font CDN on launch would break the one rule this app has. An e2e test asserts the app fetches
+  nothing off its own origin.
+- **Sizes are fixed.** Type is 10, 12, 14, 16, 20 — nothing between and nothing above, so the
+  largest type in the product is a 20px headline in sentence case. The only uppercase is the 10px
+  mono micro-label (`.micro`) at 0.1em tracking. Radius is 4 chips / 6 buttons and fields / 8 cards
+  / 12 windows, which falls out of `--radius: 0.5rem`. No pills.
+- **The shell** is a 56px icon rail, a 48px header, and a detail measure that stops at 680px. Rail
+  items are 32px tiles with 15px icons and no labels — the name arrives as a tooltip after 500ms,
+  which is a CSS transition delay rather than the platform's own `title` timing. The header says
+  where the data is on every screen. `e2e/shell.spec.ts` measures all of this in a real browser,
+  because jsdom reports every height as zero.
+- **Four things may move, and only while work is in flight** (`src/components/ui/activity.tsx`).
+  The mark turns half a revolution over 2.4s once a question is dispatched; a 3px slate hairline
+  sweeps every 1.4s while a tool runs, captioned with the step actually running; a 1px caret sits at
+  the live end of the text while it is written; three dots mark a control being waited on.
+  Indicators are slate or green, never amber — amber means _you_ are needed, and a machine working
+  is not that. Only the model download knows a total, so it is the only bar that fills.
+- **A slow machine says so.** Past three seconds the caption gains elapsed time; past fifteen it
+  gains a sentence saying nothing has stalled. Silence is the thing to avoid.
+- **`prefers-reduced-motion` swaps every loop for a static dot and the same caption**, via the
+  `.motion-loop` / `.motion-still` pair in `globals.css`. It is CSS rather than React so no
+  component has to know about it.
+
+The design canvas this was built from also specifies three platform title bars and a 240px list
+pane between the rail and the detail. Neither is here: the title bar is still the platform's own,
+and the list pane needs per-view content the app does not have yet. Both are additions to the
+shell rather than changes to it.
+
 ## Conventions
 
 **TypeScript**
@@ -311,6 +359,8 @@ and waits until it can answer.
 - Tailwind v4 with CSS-first config. Design tokens are CSS variables in `src/styles/globals.css`;
   use semantic classes (`bg-background`, `text-muted-foreground`) rather than raw palette colours.
 - Add shadcn/ui components with `pnpm dlx shadcn@latest add <component>`.
+- The look is the **Chief design system 1.0, "Instrument"** — see the section below before changing
+  a colour, a size or anything that moves.
 
 **Tests**
 
