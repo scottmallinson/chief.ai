@@ -14,13 +14,6 @@ no cloud backend, no remote model, no proxy server.
 
 - [Node.js](https://nodejs.org) 20.19+ and [pnpm](https://pnpm.io) 10 (`corepack enable`)
 - [Rust](https://rustup.rs) 1.77.2+
-- [Ollama](https://ollama.com) running locally, with the default model pulled:
-
-  ```bash
-  ollama serve
-  ollama pull llama3.2:3b
-  ```
-
 - Linux only — the WebKitGTK toolchain:
 
   ```bash
@@ -30,11 +23,24 @@ no cloud backend, no remote model, no proxy server.
 
 See the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for macOS and Windows.
 
+## The engine
+
+Chief runs [llama.cpp](https://github.com/ggml-org/llama.cpp) itself. `llama-server` is bundled into
+the installer and started as a child process on a loopback port, so there is no separate runtime to
+install and nothing left running once you close the app.
+
+The binary is not in this repository — it is tens of megabytes of prebuilt CPU build, pinned to one
+llama.cpp release. `pnpm engine:fetch` downloads the right one for your machine into
+`src-tauri/binaries/`, and `pnpm tauri:dev` and `pnpm tauri:build` run it for you.
+
+To work against a `llama-server` you are running yourself, set `CHIEF_LLAMA_BASE_URL` to its address
+(loopback only) and Chief will use that instead of starting one.
+
 ## First run
 
-Chief needs a model running on your machine. The app checks for one when it starts and walks you
-through it — install Ollama if it is missing, then download the model with a progress bar. No
-terminal required.
+Chief needs a model to run. The app checks for one when it starts and walks you through it: one
+button downloads the weights with a progress bar, and the engine starts on them. No terminal
+required, and an interrupted download resumes where it left off.
 
 Connecting GitHub is one click in Settings: Chief shows a short code, opens your browser, and waits
 while you authorise it. Your access token is stored in the local database and sent only to GitHub.
@@ -55,6 +61,7 @@ pnpm tauri:dev
 | Command                         | What it does                              |
 | ------------------------------- | ----------------------------------------- |
 | `pnpm tauri:dev`                | Run the desktop app with hot reload       |
+| `pnpm engine:fetch`             | Download the bundled llama.cpp server     |
 | `pnpm check`                    | Format check, lint, typecheck and tests   |
 | `pnpm test` / `pnpm test:watch` | Vitest                                    |
 | `pnpm build`                    | Typecheck and build the frontend bundle   |
@@ -70,7 +77,11 @@ twice.
 
 ## How it stays private
 
-- Inference runs against Ollama on `http://localhost:11434`.
+- Inference runs in a llama.cpp server Chief starts on `http://127.0.0.1:11435`. The client refuses
+  any address that is not on this machine, and the server is bound to loopback.
+- The model weights are downloaded once, from Hugging Face, when you ask for them. That request
+  carries no token, no cookie and nothing about you — it is the only thing in the app that talks to
+  a host you did not connect yourself.
 - Your work log, integration tokens and embeddings live in a local SQLite database in this app's
   config directory.
 - Integrations authenticate with PKCE OAuth directly from the app — there is no server in between,

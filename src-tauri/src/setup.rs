@@ -1,90 +1,117 @@
 //! First-run readiness.
 //!
-//! Chief needs a local model before it can answer anything. Rather than asking
-//! the user to open a terminal, the app checks for Ollama itself and can pull
-//! the model on their behalf — every call here goes to `localhost`.
+//! Chief needs a model before it can answer anything. The engine itself is part
+//! of the installation, so there is only one thing left to fetch — the weights
+//! — and this module answers two questions for the frontend: are they here, and
+//! is the engine answering?
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
 
-use crate::agent::DEFAULT_MODEL;
-use crate::ollama::{self, Client, PullProgress};
+use crate::engine::{self, Engine};
+use crate::llama::{Client, Health};
+use crate::weights::{self, DownloadProgress};
 
 /// The event carrying download progress to the setup screen.
-pub const PULL_PROGRESS_EVENT: &str = "model-pull-progress";
+pub const DOWNLOAD_PROGRESS_EVENT: &str = "model-download-progress";
 
 /// What the setup screen needs to know.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Readiness {
-    /// Whether Ollama answered on this machine.
-    pub ollama_running: bool,
-    /// Ollama's version, when it is running.
-    pub ollama_version: Option<String>,
-    /// The model Chief will use.
+    /// The model Chief runs, named for a person to read.
     pub model: String,
-    /// Whether that model is already installed.
+    /// Whether the weights have been downloaded to this machine.
     pub model_installed: bool,
-    /// Why Ollama could not be reached, phrased for the person reading it.
+    /// Whether the engine is answering, still loading, or not running.
+    pub engine: Health,
+    /// Why the engine is not answering, phrased for the person reading it.
     pub problem: Option<String>,
 }
 
-impl Readiness {
-    /// Nothing works until both of these are true.
-    fn stopped(problem: &ollama::Error) -> Self {
-        Self {
-            ollama_running: false,
-            ollama_version: None,
-            model: DEFAULT_MODEL.to_string(),
-            model_installed: false,
-            problem: Some(problem.to_string()),
-        }
+/// What can go wrong getting this machine ready.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Download(#[from] weights::Error),
+    #[error(transparent)]
+    Engine(#[from] engine::Error),
+}
+
+impl serde::Serialize for Error {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
     }
 }
 
-/// A model is installed if its name matches, with or without an explicit tag.
-fn installed(models: &[String], wanted: &str) -> bool {
-    let bare = wanted.split_once(':').map_or(wanted, |(name, _)| name);
+/// Why the engine is not up, given what we know about this machine.
+///
+/// Only worth saying while it is actually down: once it is answering, the
+/// reason it was not is stale. Ordered by how fundamental the problem is, so
+/// the user is told about a broken installation before a missing download.
+fn problem(engine: Health, available: bool, model_installed: bool) -> Option<String> {
+    if engine != Health::Down {
+        return None;
+    }
 
-    models.iter().any(|model| {
-        model == wanted || model == bare || model.split_once(':').is_some_and(|(n, _)| n == bare)
-    })
+    Some(
+        if !available {
+            engine::Error::Missing
+        } else if !model_installed {
+            engine::Error::NoWeights
+        } else {
+            engine::Error::NeverReady
+        }
+        .to_string(),
+    )
 }
 
 /// Is the machine ready to answer questions?
 #[tauri::command]
-pub async fn check_readiness(client: State<'_, Client>) -> Result<Readiness, ollama::Error> {
-    let version = match client.version().await {
-        Ok(version) => version,
-        // Not running, or not installed at all. Either way there is nothing to
-        // report but the reason, and the screen offers the fix.
-        Err(problem) => return Ok(Readiness::stopped(&problem)),
-    };
-
-    let models = client.installed_models().await.unwrap_or_default();
+pub async fn check_readiness(
+    engine: State<'_, Engine>,
+    client: State<'_, Client>,
+) -> Result<Readiness, Error> {
+    let health = client.health().await;
+    let model_installed = engine.has_weights();
 
     Ok(Readiness {
-        ollama_running: true,
-        ollama_version: Some(version),
-        model_installed: installed(&models, DEFAULT_MODEL),
-        model: DEFAULT_MODEL.to_string(),
-        problem: None,
+        model: weights::describe(),
+        model_installed,
+        engine: health,
+        problem: problem(health, engine.is_available(), model_installed),
     })
 }
 
-/// Download the model, emitting progress as it goes.
+/// Download the model, emitting progress as it goes, then start the engine on
+/// it so the user does not have to press a second button.
 #[tauri::command]
-pub async fn pull_model<R: Runtime>(
+pub async fn download_model<R: Runtime>(
     app: AppHandle<R>,
+    engine: State<'_, Engine>,
     client: State<'_, Client>,
-) -> Result<(), ollama::Error> {
-    client
-        .pull(DEFAULT_MODEL, |progress: PullProgress| {
-            // A dropped event only costs a progress tick, so it is not worth
-            // failing the download over.
-            let _ = app.emit(PULL_PROGRESS_EVENT, &progress);
-        })
-        .await
+) -> Result<(), Error> {
+    weights::download(engine.weights(), |progress: DownloadProgress| {
+        // A dropped event only costs a progress tick, so it is not worth
+        // failing the download over.
+        let _ = app.emit(DOWNLOAD_PROGRESS_EVENT, &progress);
+    })
+    .await?;
+
+    engine.ensure_running(client.inner()).await?;
+
+    Ok(())
+}
+
+/// Start the engine, and do not answer until it can answer.
+#[tauri::command]
+pub async fn start_engine(
+    engine: State<'_, Engine>,
+    client: State<'_, Client>,
+) -> Result<(), Error> {
+    engine.start_and_wait(client.inner()).await?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -92,22 +119,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_a_model_however_it_is_tagged() {
-        let installed_models = vec!["llama3.2:3b".to_string()];
+    fn says_the_model_is_missing_when_it_has_not_been_downloaded() {
+        let reason = problem(Health::Down, true, false).expect("should explain itself");
 
-        assert!(installed(&installed_models, "llama3.2:3b"));
-        assert!(installed(&installed_models, "llama3.2"));
+        assert!(reason.contains("not been downloaded"), "got {reason}");
     }
 
     #[test]
-    fn does_not_match_a_different_model() {
-        let installed_models = vec!["llama3.1:8b".to_string(), "mistral:latest".to_string()];
+    fn says_the_engine_did_not_start_when_the_model_is_there() {
+        let reason = problem(Health::Down, true, true).expect("should explain itself");
 
-        assert!(!installed(&installed_models, "llama3.2:3b"));
+        assert!(reason.contains("never began answering"), "got {reason}");
     }
 
     #[test]
-    fn nothing_is_installed_on_a_fresh_machine() {
-        assert!(!installed(&[], "llama3.2:3b"));
+    fn a_broken_installation_is_reported_before_a_missing_download() {
+        // Downloading two gigabytes would not help if there is nothing to run
+        // it, so that is the thing to say.
+        let reason = problem(Health::Down, false, false).expect("should explain itself");
+
+        assert!(
+            reason.contains("missing from this installation"),
+            "got {reason}"
+        );
+    }
+
+    #[test]
+    fn stops_explaining_once_the_engine_is_up() {
+        assert_eq!(problem(Health::Ready, true, true), None);
+        assert_eq!(
+            problem(Health::Loading, true, true),
+            None,
+            "a model that is still loading is not a problem to report"
+        );
+    }
+
+    #[test]
+    fn describes_readiness_for_the_setup_screen() {
+        let readiness = Readiness {
+            model: weights::describe(),
+            model_installed: false,
+            engine: Health::Down,
+            problem: problem(Health::Down, true, false),
+        };
+
+        let body = serde_json::to_value(&readiness).expect("should serialize");
+
+        assert_eq!(body["modelInstalled"], serde_json::json!(false));
+        assert_eq!(body["engine"], serde_json::json!("down"));
+        assert_eq!(body["model"], serde_json::json!(weights::describe()));
     }
 }

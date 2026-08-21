@@ -176,5 +176,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The engine is bundled, so it has to be on disk before Tauri builds. The
+      # script is idempotent and pins the llama.cpp build.
+      - name: Fetch the llama.cpp engine
+        run: pnpm engine:fetch
+
       - name: Build the desktop app
         run: pnpm tauri build --no-bundle

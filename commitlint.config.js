@@ -9,7 +9,7 @@ export default {
       2,
       'always',
       [
-        'agent', // Ollama client, prompt + tool-calling orchestration
+        'agent', // llama.cpp client, prompt + tool-calling orchestration
         'auth', // Local PKCE OAuth flows
         'db', // SQLite schema, migrations, queries
         'daemon', // Background work-log daemon

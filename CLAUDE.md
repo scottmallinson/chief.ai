@@ -12,11 +12,14 @@ about your work by reading your tools, keeping a local work log, and reasoning w
 **Everything runs on the user's machine.** There is no cloud backend, no remote LLM, and no proxy
 server. Concretely:
 
-- Inference goes to a local Ollama instance at `http://localhost:11434`. Never to a hosted model.
+- Inference goes to a llama.cpp server Chief bundles, starts and stops itself, on loopback at
+  `http://127.0.0.1:11435`. Never to a hosted model.
 - All persistence is a local SQLite database in the OS app-data directory.
 - OAuth is PKCE, done from the desktop app itself. There is no server to exchange codes.
-- The only outbound traffic permitted is (a) `localhost`, and (b) direct calls to a SaaS API the
-  user has explicitly connected (e.g. `api.github.com`), made from Rust with that user's token.
+- The only outbound traffic permitted is (a) `localhost`, (b) direct calls to a SaaS API the user has
+  explicitly connected (e.g. `api.github.com`), made from Rust with that user's token, and (c) the
+  one-off download of the model weights from `huggingface.co`, which carries no token, no cookie and
+  nothing about the user. That third one lives in `src-tauri/src/weights.rs` and nowhere else.
 - Telemetry, crash reporting and analytics are out of scope. Do not add them.
 
 If a change would send user data anywhere else, it is wrong — stop and raise it instead.
@@ -28,7 +31,7 @@ If a change would send user data anywhere else, it is wrong — stop and raise i
 | Shell    | Tauri v2                                                  |
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS v4, shadcn/ui    |
 | Backend  | Rust                                                      |
-| LLM      | `reqwest` → local Ollama (`/api/chat`, tool calling)      |
+| LLM      | Bundled `llama-server` (llama.cpp), OpenAI chat API       |
 | Database | SQLite via `@tauri-apps/plugin-sql`                       |
 | Vectors  | `sqlite-vec`, or cosine similarity in Rust for the MVP    |
 | Auth     | Local PKCE OAuth via deep link (`chief://oauth/callback`) |
@@ -37,6 +40,7 @@ If a change would send user data anywhere else, it is wrong — stop and raise i
 
 ```bash
 pnpm install              # install (pnpm is the package manager — do not use npm/yarn)
+pnpm engine:fetch         # download the bundled llama.cpp server for this machine
 pnpm tauri:dev            # run the desktop app with hot reload
 pnpm dev                  # run the frontend alone in a browser
 pnpm check                # format:check + lint + typecheck + test — run before every commit
@@ -69,6 +73,10 @@ platforms in CI's matrix are unverified until someone builds there — the Rust 
 WebKitGTK/WebView2/WKWebView differences are not. And the PR _title_ is linted by CI rather than by
 commitlint here; `verify:commits` checks the commit messages the title is usually taken from.
 
+Anything that builds or runs the desktop app needs `llama-server` on disk first, which is why
+`tauri:dev`, `tauri:build` and `verify:app` all run `pnpm engine:fetch`. It is idempotent — a rerun
+with the pinned build does nothing — and CI runs it as its own step.
+
 Building the desktop app on Linux needs the WebKitGTK toolchain:
 
 ```bash
@@ -87,9 +95,11 @@ src/                     React frontend
   styles/globals.css     Tailwind entry point and design tokens
   test/setup.ts          Vitest + Testing Library setup
 e2e/                     Layout tests driven through a real browser
+scripts/                 Build-time tooling (fetching the llama.cpp engine)
 src-tauri/               Rust backend
   src/lib.rs             Tauri builder — plugins and command registration
   src/main.rs            Desktop entry point
+  binaries/              The fetched llama-server and its libraries (gitignored)
   capabilities/          Tauri permission scopes
   tauri.conf.json        Window, bundle and CSP configuration
 ```
@@ -109,46 +119,80 @@ migrate at startup, so the pool is ready before the first command runs.
   database access goes through typed commands. If direct queries are ever wanted, add `sql:default`
   to `src-tauri/capabilities/default.json` — deliberately, not by reflex.
 
+## The engine
+
+`src-tauri/src/engine.rs` owns the `llama-server` process. Chief ships llama.cpp rather than asking
+the user to install a runtime, which is the whole reason the engine is a module rather than a URL.
+
+- `scripts/fetch-llama-server.mjs` puts a pinned CPU build in `src-tauri/binaries/`:
+  `llama-server-<host triple>` for `externalBin`, and its shared libraries in `lib/` for
+  `bundle.resources`. Only CPU builds — a binary that runs on a machine with no GPU and no AVX-512,
+  picking the best instruction set it finds at run time, is the point.
+- `Engine::discover` finds that binary next to the app executable (where Tauri puts a sidecar, in
+  both a release install and `tauri dev`), then a `llama-server` on `PATH`, then gives up and says
+  so through the setup screen.
+- `llama-server` finds its libraries by `$ORIGIN`, which works where the sidecar and the resources
+  land in the same directory — Linux and Windows — but not on macOS, where the bundle splits
+  `Contents/MacOS` from `Contents/Resources`. `library_dirs` therefore sets the platform's loader
+  path explicitly. A debug build also looks in `src-tauri/binaries/lib`, so the source tree works
+  before anything has been bundled.
+- `ensure_running` is idempotent and never starts a second server: a health check comes first, so a
+  `tauri dev` reload or a server the user is running themselves is left alone.
+  `CHIEF_LLAMA_BASE_URL` points Chief at somebody else's server, and marks it not-ours to start or
+  kill.
+- The process is killed on `RunEvent::Exit`. Nothing else would stop it, and a resident model holds
+  a couple of gigabytes after the window has gone.
+- Two things llama.cpp makes unnecessary that Ollama needed. The **context window** is a launch flag
+  (`--ctx-size`), not a per-request option, so no request can evict the weights and there is no
+  keep-alive to negotiate — the server owns one model for its lifetime. And it **warms itself** as
+  it starts, so there is no warm-up to schedule.
+- `--jinja` is not optional: tool calling goes through the model's own chat template, which
+  llama.cpp only applies in Jinja mode.
+
 ## Agent layer
 
-`src-tauri/src/ollama.rs` is the only place that speaks HTTP to a model.
+`src-tauri/src/llama.rs` is the only place that speaks HTTP to a model.
 
 - [`Client`] **refuses any base URL that is not loopback**, so a misconfiguration cannot turn into a
   hosted model reading the user's work. Proxies are disabled on the client for the same reason.
-- The `tools` array is modelled in Ollama's function-calling format and is omitted from the payload
-  when empty.
+- `llama-server` speaks the OpenAI chat completions contract, so that is what this module models:
+  `POST /v1/chat/completions`, tool calls whose `arguments` are a JSON **string**, and results
+  returned under the `tool_call_id` that asked for them. The `tools` array is omitted from the
+  payload when empty.
+- Two shapes have to be tolerated on the way in, because llama.cpp emits both: a `content` of `null`
+  where the model said nothing but a tool call, and `arguments` as an object rather than a string on
+  some template paths. Both are normalised at the edge so nothing downstream has to care.
 - `src-tauri/src/agent.rs` owns the system prompt and drops any `system` turn sent by the renderer —
   how the agent is instructed is not the frontend's to change.
 - `agent::respond` is the orchestration loop: ask, run any `tool_calls`, append each result as a
   `tool` message, repeat until the model answers in words. It is bounded by `MAX_TOOL_ROUNDS` so a
   model that will not stop calling tools cannot spin forever.
-- Answers **stream**. `Client::chat_stream` reads Ollama's newline-delimited reply and `respond`
-  forwards each piece to the window on the `agent-stream` event, tagged with the `requestId` the
-  renderer generated. The finished answer is still returned from `ask_agent`, so a dropped event
-  costs a frame and nothing more. A model this size writes at reading speed but takes tens of
-  seconds to finish, and waiting for all of it before showing any of it is what made the app feel
-  broken.
+- Answers **stream**. `Client::chat_stream` reads the server-sent events `llama-server` writes and
+  `respond` forwards each piece to the window on the `agent-stream` event, tagged with the
+  `requestId` the renderer generated. The finished answer is still returned from `ask_agent`, so a
+  dropped event costs a frame and nothing more. A model this size writes at reading speed but takes
+  tens of seconds to finish, and waiting for all of it before showing any of it is what made the app
+  feel broken.
+- A streamed **tool call arrives in fragments**: the name once, then the arguments a few characters
+  at a time, with `index` saying which call each fragment belongs to. `PartialToolCalls` folds them
+  back together, which is why a server that sends a whole call in one event and one that dribbles it
+  out both work.
 - An `Update` is one of three things: `delta` (append this), `restart` (what was shown turned out to
   be preamble to a tool call — discard it) or `tool` (a tool is running, so the wait has a reason to
   show).
-- `ollama::Options` is sent with every request. `num_predict` is the ceiling on how long a question
-  can take. `num_ctx` is deliberately **identical for every request Chief makes**, including the
-  daemon's: Ollama loads a model per context size, so varying it evicts the copy already in memory.
-  `keep_alive` holds the model there for half an hour, because otherwise the next question pays to
-  read the weights off disk again.
-- `agent::warm_up` loads the model while the window is still opening, so the first question does not
-  pay for it either. It fails silently — on a fresh machine Ollama may not be installed, which is
-  what the setup screen is for.
-- `agent::Attention` counts the questions the user is waiting on. Ollama answers one request at a
-  time per model, so the daemon reads this and steps aside rather than putting a background summary
-  ahead of a person.
+- `llama::Options` rides in the request body, OpenAI-style. `max_tokens` is the ceiling on how long
+  a question can take; `temperature` is low because these answers are about what the tools returned.
+  Nothing a request carries can change how the engine itself is running.
+- `agent::Attention` counts the questions the user is waiting on. The engine decodes one request at
+  a time, so the daemon reads this and steps aside rather than putting a background summary ahead of
+  a person.
 - `src-tauri/src/tools.rs` holds the catalogue and the dispatcher. A tool failure — bad arguments, an
   unknown name — is reported back to the _model_ as an `error` payload, not raised to the user: it
   can then explain itself or try something else instead of collapsing the conversation.
 - Add a tool by writing its schema in `catalog()` and its arm in `dispatch()`. Keep the two in step
   via a shared name constant.
-- Errors are user-facing: an unreachable Ollama or a missing model says what to run, rather than
-  surfacing a transport error.
+- Errors are user-facing: an engine that is not running, or one still reading the weights, says so
+  in those words rather than surfacing a transport error.
 
 ## Telling the model what day it is
 
@@ -199,7 +243,7 @@ from here to GitHub.
 model to turn each merge into a one-sentence achievement, and write it to `work_logs`.
 
 - It runs shortly after launch and then on an interval. A failing pass is never fatal — GitHub may
-  be unreachable or Ollama may not be running — so it reports and tries again next time.
+  be unreachable or the engine may still be loading — so it reports and tries again next time.
 - Every pass is **idempotent**: entries carry the pull request's identifier in `external_id`, and
   the unique index added in migration v2 means the same merge is never logged twice. Entries the
   user writes by hand have no `external_id`, which is why that index is partial.
@@ -209,20 +253,41 @@ model to turn each merge into a one-sentence achievement, and write it to `work_
 - If summarising fails, nothing is written for that item. Writing an unsummarised row would mean it
   is never revisited, since the dedupe key would already be present.
 - `run_once` takes a `Context` rather than an `AppHandle`, so a whole pass runs in tests against an
-  in-memory database and stub GitHub and Ollama servers.
+  in-memory database and stub GitHub and engine servers.
 
 ## First-run setup
 
 `src-tauri/src/setup.rs` answers one question for the frontend: can this machine answer anything
-yet? `check_readiness` reports whether Ollama is up (`/api/version`) and whether the model is
-installed (`/api/tags`); `pull_model` downloads it (`/api/pull`), streaming newline-delimited
-progress that is forwarded to the renderer as `model-pull-progress` events.
+yet? `check_readiness` reports whether the weights are on disk and what `/health` says — `ready`,
+`loading`, or `down`. `download_model` fetches the weights and then starts the engine on them,
+forwarding progress to the renderer as `model-download-progress` events; `start_engine` starts one
+and waits until it can answer.
 
-- `App` renders `SetupView` instead of the shell until both are true, with a "Skip for now" escape.
-- Ollama is not bundled: it is a gigabyte-scale install with its own GPU runtimes and system
-  service. Detecting it and offering the download is the honest trade.
-- Ollama reports a failed pull _inside_ a 200 response, so the stream parser treats an `error` field
-  as a failure.
+- `App` renders `SetupView` instead of the shell until the model is here and the engine is ready,
+  with a "Skip for now" escape.
+- There is only one thing left to install, because the engine ships with the app. That is the whole
+  benefit of llama.cpp over Ollama here: a gigabyte-scale runtime with its own GPU stack and system
+  service could not be bundled, and a 30 MB CPU server can.
+- `loading` is a state, not a failure. The setup screen shows it as "Starting…" and re-checks itself
+  until it resolves, because reading a couple of gigabytes takes a few seconds and telling the user
+  it failed would be wrong.
+
+## Model weights
+
+`src-tauri/src/weights.rs` owns the GGUF file: where it belongs, and how to get it the first time.
+
+- The download is **the only outbound request in the app that is not to a host the user connected**.
+  It goes to one pinned HTTPS URL on `huggingface.co` with no token, no cookie and no body. Every
+  redirect hop is required to stay on HTTPS.
+- It **resumes**. Two gigabytes is too much to throw away because a connection dropped, so a partial
+  download lands in a `.part` file beside the destination and a retry sends a `Range` header. A host
+  that ignores the range answers 200 rather than 206, and the part file is started over rather than
+  appended to.
+- The finished file is checked for GGUF's magic bytes before it is renamed into place. A login wall,
+  an error page or a truncated transfer saved under the model's name would otherwise be handed to
+  the engine, which would fail in a much less obvious way.
+- Progress is reported every few megabytes, not every chunk: a progress event per packet is
+  thousands a second and tells the user nothing more.
 
 ## Conventions
 
@@ -306,7 +371,8 @@ Build strictly in order, and stop for review at each step:
 1. **Project scaffolding & UI foundation** — Tauri v2 + React + Vite, Tailwind, app shell. ✅
 2. **SQLite local database** — `@tauri-apps/plugin-sql`, migrations for `work_logs` and
    `integrations`, Tauri commands to read/write the log. ✅
-3. **Local LLM engine** — Rust service posting to Ollama `/api/chat`, `ask_agent` command. ✅
+3. **Local LLM engine** — bundled `llama-server`, Rust client posting to `/v1/chat/completions`,
+   `ask_agent` command. ✅
 4. **Tool calling orchestrator** — `fetch_github_prs` schema, intercept `tool_calls`, feed results
    back to the model. ✅
 5. **GitHub sign-in** — device flow from the desktop app, token stored in `integrations`, and

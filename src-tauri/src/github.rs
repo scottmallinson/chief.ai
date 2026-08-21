@@ -454,7 +454,7 @@ pub fn as_tool_result(pull_requests: &[PullRequest]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ollama::test_support::{serve, split};
+    use crate::llama::test_support::{serve, split};
 
     const DEVICE_CODE: &str = r#"{
         "device_code": "3584d83530557fdd1f46af8289938c8ef79f9dc5",

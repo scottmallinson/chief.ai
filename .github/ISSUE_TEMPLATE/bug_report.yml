@@ -25,7 +25,9 @@ body:
     validations:
       required: true
   - type: input
-    id: ollama
+    id: engine
     attributes:
-      label: Ollama version and model
-      description: Output of `ollama --version` and the model you are running, if relevant.
+      label: Model and engine
+      description: >-
+        What Settings shows under "Local model", if relevant. If you pointed Chief at your own
+        llama-server with CHIEF_LLAMA_BASE_URL, say so and give its build.

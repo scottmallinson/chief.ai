@@ -38,8 +38,8 @@ export default tseslint.config(
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
       // The privacy mandate: the renderer never talks to the network directly.
-      // Inference goes to Ollama on localhost and integrations are fetched from
-      // Rust, both behind Tauri commands.
+      // Inference goes to the local llama.cpp server and integrations are
+      // fetched from Rust, both behind Tauri commands.
       'no-restricted-globals': [
         'error',
         {

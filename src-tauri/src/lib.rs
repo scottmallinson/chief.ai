@@ -1,25 +1,30 @@
 //! Chief — a privacy-first, on-device AI chief of staff.
 //!
 //! Everything this application does happens on the user's machine: inference
-//! runs against a local Ollama instance, and all persistence is local SQLite.
-//! No component of this crate may talk to a remote service on its own.
+//! runs in a llama.cpp server Chief ships and supervises itself, and all
+//! persistence is local SQLite. No component of this crate may talk to a remote
+//! service on its own.
 
 mod agent;
 mod clock;
 mod connect;
 mod daemon;
 mod db;
+mod engine;
 mod github;
 mod integrations;
 mod session;
 mod setup;
 mod tools;
+mod weights;
 mod work_log;
 
-// The Ollama client is a self-contained piece of this crate's library API: it
-// models the whole chat contract, including the tool-calling payload the
-// orchestrator uses in the next step.
-pub mod ollama;
+// The llama.cpp client is a self-contained piece of this crate's library API:
+// it models the whole chat contract, including the tool-calling payload the
+// orchestrator depends on.
+pub mod llama;
+
+use tauri::{Manager, RunEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,16 +36,21 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            // One pooled client each, for the lifetime of the app. The Ollama
-            // client is pinned to loopback; the GitHub one is pinned to GitHub.
-            tauri::Manager::manage(app, ollama::Client::new()?);
-            tauri::Manager::manage(app, github::Client::new()?);
-            tauri::Manager::manage(app, connect::Pending::default());
-            tauri::Manager::manage(app, agent::Attention::default());
+            // The engine decides where inference happens; the client is pointed
+            // at it and refuses to be pointed anywhere off this machine.
+            let engine = engine::Engine::discover(&app.handle().clone())?;
+            let llama = llama::Client::with_base_url(engine.base_url())?;
 
-            // Load the model while the window is still opening, so the first
-            // question does not wait for a couple of gigabytes off disk.
-            agent::warm_up(&app.handle().clone());
+            app.manage(engine);
+            app.manage(llama);
+            // Pinned to GitHub, for the account the user connected.
+            app.manage(github::Client::new()?);
+            app.manage(connect::Pending::default());
+            app.manage(agent::Attention::default());
+
+            // Start the model server while the window is still opening, so the
+            // first question does not wait for the weights to come off disk.
+            engine::start(&app.handle().clone());
 
             // Keeps the work log up to date in the background.
             daemon::spawn(&app.handle().clone());
@@ -54,10 +64,19 @@ pub fn run() {
             connect::github_connection,
             connect::disconnect_github,
             setup::check_readiness,
-            setup::pull_model,
+            setup::download_model,
+            setup::start_engine,
             work_log::list_work_logs,
             work_log::create_work_log
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // The engine is our child process. Nothing else will stop it, and a
+            // model left resident would hold a couple of gigabytes after the
+            // window has gone.
+            if let RunEvent::Exit = event {
+                app.state::<engine::Engine>().stop();
+            }
+        });
 }

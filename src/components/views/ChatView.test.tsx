@@ -197,7 +197,7 @@ describe('ChatView', () => {
 
   it('tells the user when the local model cannot be reached', async () => {
     invoke.mockRejectedValue(
-      new Error('could not reach Ollama at http://localhost:11434/. Is it running?'),
+      new Error("Chief's local model engine is not running at http://127.0.0.1:11435/."),
     );
 
     render(<ChatView />);
@@ -206,7 +206,7 @@ describe('ChatView', () => {
       'Anything there?{Enter}',
     );
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('could not reach Ollama');
+    expect(await screen.findByRole('alert')).toHaveTextContent('local model engine is not running');
   });
 
   it('stops listening once a question is answered', async () => {

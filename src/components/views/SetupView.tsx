@@ -1,10 +1,9 @@
-import { Check, Download, ExternalLink, Loader2, RefreshCw } from 'lucide-react';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { Check, Cpu, Download, Loader2, RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { useSetup } from '@/hooks/use-setup';
 import { cn } from '@/lib/utils';
-import { isReady, OLLAMA_DOWNLOAD_URL, type PullProgress } from '@/lib/setup';
+import { isReady, type DownloadProgress } from '@/lib/setup';
 
 interface StepProps {
   index: number;
@@ -43,8 +42,8 @@ function megabytes(bytes: number): string {
   return `${Math.round(bytes / 1_000_000)} MB`;
 }
 
-function ProgressBar({ progress }: { progress: PullProgress }) {
-  const fraction = progress.total > 0 ? progress.completed / progress.total : null;
+function ProgressBar({ progress }: { progress: DownloadProgress }) {
+  const fraction = progress.total > 0 ? Math.min(progress.completed / progress.total, 1) : null;
 
   return (
     <div className="mt-3">
@@ -71,24 +70,28 @@ function ProgressBar({ progress }: { progress: PullProgress }) {
 }
 
 interface SetupViewProps {
-  /** Let the user in anyway; Chat will not work until Ollama is running. */
+  /** Let the user in anyway; Chat will not work until the engine is running. */
   onSkip: () => void;
 }
 
 /**
- * First-run screen. Chief needs a local model before it can answer anything,
- * so this checks for one and offers to fetch it — no terminal required.
+ * First-run screen.
+ *
+ * The engine ships with Chief, so there is nothing to install: the only thing
+ * this machine is missing is the model itself, and starting the engine on it is
+ * a button rather than a terminal.
  */
 export function SetupView({ onSkip }: SetupViewProps) {
-  const { readiness, status, progress, error, recheck, download } = useSetup();
+  const { readiness, status, progress, error, recheck, download, start } = useSetup();
 
-  const ollamaRunning = readiness?.ollamaRunning === true;
   const modelInstalled = readiness?.modelInstalled === true;
+  const engine = readiness?.engine ?? 'down';
   const isDownloading = status === 'downloading';
+  const isStarting = status === 'starting' || engine === 'loading';
 
-  // Anything that went wrong. Ollama being unreachable is only worth repeating
-  // while it still is — once it is running, that message is stale.
-  const problem = error ?? (ollamaRunning ? null : (readiness?.problem ?? null));
+  // Anything that went wrong. A stopped engine is only worth repeating while it
+  // still is — once it is answering, that message is stale.
+  const problem = error ?? (engine === 'down' ? (readiness?.problem ?? null) : null);
 
   return (
     <div className="h-full overflow-y-auto">
@@ -96,57 +99,23 @@ export function SetupView({ onSkip }: SetupViewProps) {
         <header className="mb-6">
           <h1 className="text-lg font-semibold">Set up Chief</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Chief answers questions using a model that runs on this machine. Two things to sort out
-            first — both stay entirely local.
+            Chief answers questions using a model that runs on this machine. It came with the engine
+            that runs it, so there is one thing left to fetch — and it stays entirely local.
           </p>
         </header>
 
         <ol className="space-y-3">
           <Step
             index={1}
-            title="Install Ollama"
-            description={
-              ollamaRunning
-                ? `Running${readiness?.ollamaVersion !== null ? ` (version ${readiness?.ollamaVersion})` : ''}.`
-                : 'Ollama runs the model locally. Install it, then check again.'
-            }
-            done={ollamaRunning}
-          >
-            {!ollamaRunning && (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    void openUrl(OLLAMA_DOWNLOAD_URL);
-                  }}
-                >
-                  <ExternalLink aria-hidden />
-                  Get Ollama
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={recheck}
-                  disabled={status === 'checking'}
-                >
-                  <RefreshCw aria-hidden />
-                  Check again
-                </Button>
-              </div>
-            )}
-          </Step>
-
-          <Step
-            index={2}
             title="Download the model"
             description={
               modelInstalled
-                ? `${readiness?.model} is installed.`
-                : `Chief uses ${readiness?.model ?? 'a small local model'}, about 2 GB. It is downloaded once.`
+                ? `${readiness?.model} is on this machine.`
+                : `Chief uses ${readiness?.model ?? 'a small local model'}, about 2 GB. It is downloaded once, and an interrupted download resumes where it left off.`
             }
             done={modelInstalled}
           >
-            {ollamaRunning && !modelInstalled && (
+            {!modelInstalled && (
               <>
                 <Button size="sm" className="mt-3" onClick={download} disabled={isDownloading}>
                   {isDownloading ? (
@@ -158,6 +127,41 @@ export function SetupView({ onSkip }: SetupViewProps) {
                 </Button>
                 {progress !== null && <ProgressBar progress={progress} />}
               </>
+            )}
+          </Step>
+
+          <Step
+            index={2}
+            title="Start the engine"
+            description={
+              engine === 'ready'
+                ? 'Running on this machine, on a loopback address only Chief can reach.'
+                : engine === 'loading'
+                  ? 'Reading the model into memory. This takes a few seconds.'
+                  : 'The engine runs the model here, in a process Chief starts and stops with it.'
+            }
+            done={engine === 'ready'}
+          >
+            {modelInstalled && engine !== 'ready' && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={start} disabled={isStarting}>
+                  {isStarting ? (
+                    <Loader2 className="animate-spin" aria-hidden />
+                  ) : (
+                    <Cpu aria-hidden />
+                  )}
+                  {isStarting ? 'Starting…' : 'Start engine'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={recheck}
+                  disabled={status === 'checking'}
+                >
+                  <RefreshCw aria-hidden />
+                  Check again
+                </Button>
+              </div>
             )}
           </Step>
         </ol>

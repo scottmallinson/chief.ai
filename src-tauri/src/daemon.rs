@@ -16,7 +16,7 @@ use crate::agent::Attention;
 use crate::db;
 use crate::github::{self, PullRequest, State};
 use crate::integrations;
-use crate::ollama::{self, ChatRequest, Message, Options};
+use crate::llama::{self, ChatRequest, Message, Options};
 use crate::session::Session;
 use crate::work_log::{self, NewWorkLogEntry};
 
@@ -33,9 +33,9 @@ const BATCH: u8 = 25;
 /// Summaries should be a sentence, so this needs very few tokens.
 const SUMMARY_MODEL: &str = crate::agent::DEFAULT_MODEL;
 
-/// A sentence, and Ollama should stop there rather than write an essay nobody
-/// reads. The context size is left alone: changing it would make Ollama reload
-/// the model and take the chat's copy out of memory with it.
+/// A sentence, and the model should stop there rather than write an essay
+/// nobody reads. Nothing else about how the engine runs is touched: the
+/// context window belongs to the server, not to a request.
 const SUMMARY_OPTIONS: Options = Options::new().with_answer_length(80);
 
 const SUMMARY_PROMPT: &str = "\
@@ -52,7 +52,7 @@ pub enum Error {
     #[error(transparent)]
     Storage(#[from] db::Error),
     #[error("could not summarise the activity: {0}")]
-    Summary(#[from] ollama::Error),
+    Summary(#[from] llama::Error),
 }
 
 /// Everything a pass needs. Passed in so the whole thing runs in tests against
@@ -60,7 +60,7 @@ pub enum Error {
 pub struct Context {
     pub pool: sqlx::SqlitePool,
     pub github: github::Client,
-    pub ollama: ollama::Client,
+    pub engine: llama::Client,
     /// Whether the user is waiting on an answer right now.
     pub attention: Attention,
 }
@@ -76,7 +76,7 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
             match context(&app).await {
                 Ok(context) => {
                     // A pass failing is not fatal: GitHub may be unreachable or
-                    // Ollama may not be running. Try again next time.
+                    // the engine may still be loading. Try again next time.
                     if let Err(error) = run_once(&context).await {
                         eprintln!("work log pass failed: {error}");
                     }
@@ -93,7 +93,7 @@ async fn context<R: Runtime>(app: &AppHandle<R>) -> Result<Context, db::Error> {
     Ok(Context {
         pool: db::pool(app).await?,
         github: app.state::<github::Client>().inner().clone(),
-        ollama: app.state::<ollama::Client>().inner().clone(),
+        engine: app.state::<llama::Client>().inner().clone(),
         attention: app.state::<Attention>().inner().clone(),
     })
 }
@@ -118,8 +118,8 @@ pub async fn run_once(context: &Context) -> Result<usize, Error> {
 
     for pull_request in merged {
         // Summarising uses the same local model the user is talking to, and
-        // Ollama runs one request at a time: carrying on here would put their
-        // question behind ours. The rest of the log keeps until the next pass.
+        // the engine decodes one request at a time: carrying on here would put
+        // their question behind ours. The rest keeps until the next pass.
         if context.attention.is_engaged() {
             break;
         }
@@ -149,7 +149,7 @@ async fn log_one(context: &Context, pull_request: &PullRequest) -> Result<bool, 
     // If the model is unreachable we write nothing, rather than filling the log
     // with unsummarised rows that would never be revisited — the entry is
     // picked up on a later pass instead.
-    let summary = summarise(&context.ollama, &content).await?;
+    let summary = summarise(&context.engine, &content).await?;
 
     let entry = NewWorkLogEntry {
         source: "github".to_string(),
@@ -174,7 +174,7 @@ fn describe(pull_request: &PullRequest) -> String {
 }
 
 /// Ask the local model for a one-sentence achievement.
-async fn summarise(client: &ollama::Client, activity: &str) -> Result<String, ollama::Error> {
+async fn summarise(client: &llama::Client, activity: &str) -> Result<String, llama::Error> {
     let request = ChatRequest::new(
         SUMMARY_MODEL,
         vec![
@@ -186,7 +186,7 @@ async fn summarise(client: &ollama::Client, activity: &str) -> Result<String, ol
 
     let reply = client.chat(&request).await?;
 
-    Ok(tidy(&reply.message.content))
+    Ok(tidy(&reply.content))
 }
 
 /// Small models like to wrap an answer in quotes or a preamble. Take the first
@@ -210,7 +210,7 @@ fn tidy(summary: &str) -> String {
 mod tests {
     use super::*;
     use crate::db::test_support::migrated_pool;
-    use crate::ollama::test_support::serve;
+    use crate::llama::test_support::{answer, serve};
 
     const MERGED_PRS: &str = r#"{
         "total_count": 2,
@@ -240,13 +240,7 @@ mod tests {
 
     const NO_PRS: &str = r#"{"total_count":0,"items":[]}"#;
 
-    fn summary_reply(sentence: &str) -> String {
-        format!(
-            r#"{{"model":"llama3.2:3b","message":{{"role":"assistant","content":"{sentence}"}},"done":true}}"#
-        )
-    }
-
-    async fn context_for(github_host: &str, ollama_host: &str, connected: bool) -> Context {
+    async fn context_for(github_host: &str, engine_host: &str, connected: bool) -> Context {
         let pool = migrated_pool().await;
 
         if connected {
@@ -258,7 +252,7 @@ mod tests {
         Context {
             pool,
             github: github::Client::against(github_host).expect("should build a github client"),
-            ollama: ollama::Client::with_base_url(ollama_host).expect("loopback is allowed"),
+            engine: llama::Client::with_base_url(engine_host).expect("loopback is allowed"),
             attention: Attention::default(),
         }
     }
@@ -266,7 +260,7 @@ mod tests {
     #[tokio::test]
     async fn steps_aside_while_the_user_is_waiting_on_an_answer() {
         let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", MERGED_PRS)]);
-        // No Ollama stub at all: the pass must not get as far as summarising.
+        // No engine stub at all: the pass must not get as far as summarising.
         let context = context_for(&github_host, "http://127.0.0.1:1", true).await;
         let _waiting = context.attention.begin();
 
@@ -297,18 +291,15 @@ mod tests {
     #[tokio::test]
     async fn summarises_merged_pull_requests_into_the_log() {
         let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", MERGED_PRS)]);
-        let (ollama_host, ollama_server) = serve(vec![
+        let (engine_host, engine_server) = serve(vec![
             (
                 "HTTP/1.1 200 OK",
-                summary_reply("Shipped the tool calling orchestrator."),
+                answer("Shipped the tool calling orchestrator."),
             ),
-            (
-                "HTTP/1.1 200 OK",
-                summary_reply("Shipped the local database."),
-            ),
+            ("HTTP/1.1 200 OK", answer("Shipped the local database.")),
         ]);
 
-        let context = context_for(&github_host, &ollama_host, true).await;
+        let context = context_for(&github_host, &engine_host, true).await;
         let written = run_once(&context).await.expect("a pass should not fail");
 
         assert_eq!(written, 2);
@@ -336,7 +327,7 @@ mod tests {
         );
 
         github_server.await.expect("github stub should finish");
-        ollama_server.await.expect("ollama stub should finish");
+        engine_server.await.expect("engine stub should finish");
     }
 
     #[tokio::test]
@@ -347,7 +338,7 @@ mod tests {
         run_once(&context).await.expect("a pass should not fail");
 
         let requests = github_server.await.expect("github stub should finish");
-        let (request_line, _) = crate::ollama::test_support::split(&requests[0]);
+        let (request_line, _) = crate::llama::test_support::split(&requests[0]);
 
         assert!(
             request_line.contains("is%3Amerged"),
@@ -362,15 +353,12 @@ mod tests {
             ("HTTP/1.1 200 OK", MERGED_PRS),
         ]);
         // Only two model replies: a second pass must not ask again.
-        let (ollama_host, ollama_server) = serve(vec![
-            (
-                "HTTP/1.1 200 OK",
-                summary_reply("Shipped the orchestrator."),
-            ),
-            ("HTTP/1.1 200 OK", summary_reply("Shipped the database.")),
+        let (engine_host, engine_server) = serve(vec![
+            ("HTTP/1.1 200 OK", answer("Shipped the orchestrator.")),
+            ("HTTP/1.1 200 OK", answer("Shipped the database.")),
         ]);
 
-        let context = context_for(&github_host, &ollama_host, true).await;
+        let context = context_for(&github_host, &engine_host, true).await;
 
         assert_eq!(run_once(&context).await.expect("first pass"), 2);
         assert_eq!(
@@ -387,7 +375,7 @@ mod tests {
         );
 
         github_server.await.expect("github stub should finish");
-        ollama_server.await.expect("ollama stub should finish");
+        engine_server.await.expect("engine stub should finish");
     }
 
     #[tokio::test]
