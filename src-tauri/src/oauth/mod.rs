@@ -4,5 +4,5 @@
 //! these pieces do the protocol, so adding the second and third provider costs
 //! a description rather than a flow.
 
-// pub mod loopback;
+pub mod loopback;
 pub mod pkce;
