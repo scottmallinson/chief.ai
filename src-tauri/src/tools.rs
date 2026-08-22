@@ -64,7 +64,9 @@ pub fn catalog() -> Vec<Tool> {
         name: FETCH_GITHUB_PRS.to_string(),
         description: "Fetch the user's GitHub pull requests, including which are still \
              unmerged and who they are waiting on. Call this whenever the user asks about \
-             pull requests, code review, or what they have shipped."
+             pull requests, code review, or what they have shipped. Covers every GitHub \
+             account the user has connected; each pull request names the account it came \
+             from, and 'accounts' reports what was read from each."
             .to_string(),
         parameters: json!({
             "type": "object",
@@ -112,26 +114,71 @@ fn parse(function: &ToolCallFunction) -> Result<FetchGithubPrsArgs, String> {
         .map_err(|error| format!("could not read the arguments: {error}"))
 }
 
+/// What to call an account when the model has to say whose work this is: the
+/// name the user gave it, else who the provider says it is, else the key the
+/// credential is stored under. Something is always available, and the last of
+/// those is still recognisable to the person who connected it.
+fn describe(account: &integrations::Account) -> String {
+    account
+        .label
+        .clone()
+        .or_else(|| account.identity.clone())
+        .unwrap_or_else(|| account.account_key.clone())
+}
+
 /// Read the user's pull requests from GitHub with their own token.
 ///
-/// Reads the first connected account. Asking across several accounts is a
-/// question the tool schema cannot yet express, and inventing an argument the
-/// model would have to guess at would make answers worse, not better.
+/// Every connected account, and each pull request says which one it came from.
+/// Reading only the first was silently answering about half the work of anyone
+/// with a work and a personal account — the model could not tell it had half,
+/// and neither could the user. Adding a tool *argument* would only move the
+/// guess to the model, which knows less about the user's accounts than this
+/// does; reading all of them removes the guess instead.
+///
+/// An account that will not answer is reported beside the ones that did, so a
+/// single revoked token does not cost the user the rest of the answer. Nothing
+/// readable at all is an error, which is how "Reconnect GitHub" reaches them.
 async fn fetch_github_prs(
     context: &Context,
     state: PullRequestState,
 ) -> Result<Value, github::Error> {
-    let account = integrations::accounts(&context.pool, integrations::GITHUB)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or(github::Error::NotConnected)?;
+    let accounts = integrations::accounts(&context.pool, integrations::GITHUB).await?;
 
-    let pull_requests = GithubSession::new(&context.pool, &context.github, account.id)
-        .pull_requests(state.into(), PR_LIMIT)
-        .await?;
+    let mut pull_requests = Vec::new();
+    let mut reports = Vec::new();
+    let mut readable = 0;
+    let mut refused = None;
 
-    Ok(github::as_tool_result(&pull_requests))
+    for account in &accounts {
+        let name = describe(account);
+
+        match GithubSession::new(&context.pool, &context.github, account.id)
+            .pull_requests(state.into(), PR_LIMIT)
+            .await
+        {
+            Ok(found) => {
+                readable += 1;
+                reports.push(json!({ "account": name, "count": found.len() }));
+                pull_requests.extend(github::as_tool_entries(&name, &found));
+            }
+            Err(error) => {
+                reports.push(json!({ "account": name, "error": error.to_string() }));
+                refused = Some(error);
+            }
+        }
+    }
+
+    if readable == 0 {
+        // Whatever the last account said, or — with none connected — the
+        // sentence that tells the user what to do about it.
+        return Err(refused.unwrap_or(github::Error::NotConnected));
+    }
+
+    Ok(json!({
+        "pull_requests": pull_requests,
+        "count": pull_requests.len(),
+        "accounts": reports,
+    }))
 }
 
 #[cfg(test)]
@@ -177,15 +224,15 @@ mod tests {
         }
     }
 
-    /// The same, with one GitHub account connected.
-    async fn connected(host: &str) -> Context {
-        let context = context(host).await;
+    /// Connect one more GitHub account, named after itself the way a real
+    /// sign-in names one.
+    async fn connect(context: &Context, account_key: &str) {
         integrations::save(
             &context.pool,
             integrations::NewAccount {
                 service: integrations::GITHUB,
-                account_key: "octocat",
-                identity: Some("octocat"),
+                account_key,
+                identity: Some(account_key),
                 credential_kind: integrations::OAUTH,
                 access_token: "gho_token",
                 refresh_token: None,
@@ -197,6 +244,12 @@ mod tests {
         )
         .await
         .expect("should store a credential");
+    }
+
+    /// The same as [`context`], with one GitHub account connected.
+    async fn connected(host: &str) -> Context {
+        let context = context(host).await;
+        connect(&context, "octocat").await;
 
         context
     }
@@ -268,6 +321,104 @@ mod tests {
             request_line.contains("is%3Aclosed"),
             "unexpected request: {request_line}"
         );
+    }
+
+    #[tokio::test]
+    async fn reads_every_account_and_says_which_is_which() {
+        // Answering out of one account was answering about half of a two-account
+        // user's work, confidently and with nothing to say so.
+        let (host, server) = serve(vec![
+            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+        ]);
+        let context = connected(&host).await;
+        connect(&context, "hubot").await;
+
+        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+        let prs = result["pull_requests"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected a list, got {result}"));
+
+        assert_eq!(prs.len(), 2, "both accounts should have been read");
+        assert_eq!(result["count"], json!(2));
+        assert_eq!(prs[0]["account"], json!("octocat"));
+        assert_eq!(prs[1]["account"], json!("hubot"));
+
+        // And a per-account tally, so the model can say what it looked at even
+        // when an account has nothing to report.
+        let accounts = result["accounts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected a report per account, got {result}"));
+
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0]["account"], json!("octocat"));
+        assert_eq!(accounts[0]["count"], json!(1));
+
+        assert_eq!(
+            server.await.expect("the stub should finish").len(),
+            2,
+            "each account is a read of its own, with its own token"
+        );
+    }
+
+    #[tokio::test]
+    async fn answers_with_the_accounts_it_could_read() {
+        // One connection needing attention is worth saying; it is not worth
+        // withholding the work the other account did answer for.
+        let (host, server) = serve(vec![
+            (
+                "HTTP/1.1 401 Unauthorized",
+                r#"{"message":"Bad credentials"}"#,
+            ),
+            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+        ]);
+        let context = connected(&host).await;
+        connect(&context, "hubot").await;
+
+        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+        let prs = result["pull_requests"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected a list, got {result}"));
+
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0]["account"], json!("hubot"));
+
+        let accounts = result["accounts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected a report per account, got {result}"));
+
+        assert!(
+            accounts[0]["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("Reconnect GitHub")),
+            "the refused account should say so: {result}"
+        );
+
+        server.await.expect("the stub should finish");
+    }
+
+    #[tokio::test]
+    async fn calls_an_account_what_the_user_called_it() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = connected(&host).await;
+        let account = integrations::accounts(&context.pool, integrations::GITHUB)
+            .await
+            .expect("should read")[0]
+            .id;
+
+        integrations::set_label(&context.pool, account, Some("Work"))
+            .await
+            .expect("should label");
+
+        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+
+        assert_eq!(
+            result["pull_requests"][0]["account"],
+            json!("Work"),
+            "a name the user gave the account is the one they will recognise"
+        );
+
+        server.await.expect("the stub should finish");
     }
 
     #[tokio::test]

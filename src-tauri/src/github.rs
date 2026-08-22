@@ -471,12 +471,22 @@ fn pull_request_from(item: &Value) -> PullRequest {
     }
 }
 
-/// Shape pull requests into the payload the model reads.
-pub fn as_tool_result(pull_requests: &[PullRequest]) -> Value {
-    json!({
-        "pull_requests": pull_requests,
-        "count": pull_requests.len(),
-    })
+/// Shape one account's pull requests into the entries the model reads.
+///
+/// Each carries the account it was read from. A person with a work and a
+/// personal account gets one list covering both, and the only way the model can
+/// say whose a pull request is — or that two similar ones are not the same work
+/// twice — is if the entry says so itself.
+pub fn as_tool_entries(account: &str, pull_requests: &[PullRequest]) -> Vec<Value> {
+    pull_requests
+        .iter()
+        .map(|pull_request| {
+            let mut entry = json!(pull_request);
+            entry["account"] = json!(account);
+
+            entry
+        })
+        .collect()
 }
 
 impl crate::oauth::Provider for Client {
