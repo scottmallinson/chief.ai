@@ -9,7 +9,11 @@ use base64::Engine;
 use sha2::{Digest, Sha256};
 
 /// The secret half of a PKCE exchange: sent with the code, never before it.
-#[derive(Clone, PartialEq, Eq)]
+///
+/// Deliberately not `PartialEq`, for the reason [`State`] is not: nothing here
+/// needs to compare two verifiers, and `==` on a secret is a comparison that
+/// stops at the first differing byte.
+#[derive(Clone)]
 pub struct Verifier(String);
 
 /// The one genuinely secret value here, so it never renders itself: derived
@@ -110,7 +114,15 @@ mod tests {
 
     #[test]
     fn generates_a_different_verifier_every_time() {
-        assert_ne!(Verifier::generate(), Verifier::generate());
+        assert_ne!(Verifier::generate().as_str(), Verifier::generate().as_str());
+    }
+
+    #[test]
+    fn never_renders_the_verifier() {
+        let verifier = Verifier::generate();
+
+        let rendered = format!("{verifier:?}");
+        assert!(!rendered.contains(verifier.as_str()), "got {rendered}");
     }
 
     #[test]
