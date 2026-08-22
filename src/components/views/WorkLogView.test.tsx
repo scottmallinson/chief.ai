@@ -15,6 +15,8 @@ const entry: WorkLogEntry = {
   source: 'github',
   content: 'Merged pull request #4',
   summary: 'Shipped the app shell',
+  externalId: 'octocat/chief#4',
+  accountId: 1,
 };
 
 describe('WorkLogView', () => {

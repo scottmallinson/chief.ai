@@ -10,6 +10,10 @@ export interface WorkLogEntry {
   content: string;
   /** A one-line achievement, written by the local model in a later step. */
   summary: string | null;
+  /** What the entry was traced back to, or null when the user wrote it. */
+  externalId: string | null;
+  /** Which connected account it came from, and 0 when it came from none. */
+  accountId: number;
 }
 
 /** A new entry. The backend defaults the timestamp to now. */
