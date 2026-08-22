@@ -57,12 +57,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_work_logs_external_id
 /// personal mailbox could connect only one. SQLite cannot drop a constraint, so
 /// the table is rebuilt and its single row carried across.
 ///
-/// Three columns exist for providers Chief has not added yet, because adding
-/// them later would mean a migration for a value the provider hands over on the
-/// first day: `expires_at` (Graph tokens last an hour), and `client_id` /
+/// Three columns name an account and none of them substitutes for another.
+/// `account_key` is the provider's *stable* identifier, and the only one this
+/// schema keys on: it is half of `UNIQUE (service, account_key)`, so
+/// reconnecting the same account replaces its row instead of adding a second.
+/// The migration seeds it from the service name because a one-row-per-service
+/// database has nothing better to offer. `identity` is what the provider says
+/// the account is — a login, an email address, a workspace — filled in when a
+/// provider is asked, and shown to the user when there is no `label`. `label`
+/// is the name the *user* gave the account ("Work"), and nothing but the
+/// interface reads it.
+///
+/// `credential_kind` records how the credential was obtained rather than
+/// leaving it to be inferred from which columns happen to be NULL: `'oauth'`
+/// for a browser or device flow, `'token'` for one the user pasted in, `'dcr'`
+/// for a client minted at run time by Dynamic Client Registration. `scopes`
+/// records what was actually granted, which is not always what was asked for.
+///
+/// Three further columns exist for providers Chief has not added yet, because
+/// adding them later would mean a migration for a value the provider hands over
+/// on the first day: `expires_at` (Graph tokens last an hour), and `client_id` /
 /// `client_secret`, which hold either a registration the user brought or one
 /// minted at run time. Neither is a *shipped* secret — both belong to one
 /// installation and never leave this machine.
+///
+/// `work_logs.account_id` is `NOT NULL DEFAULT 0` rather than nullable, because
+/// it joins the dedupe key and SQLite does not consider two NULLs equal: a
+/// nullable column would exempt every unattributed entry from the very index
+/// that stops the daemon logging a merge twice. Zero is the sentinel for "no
+/// account", which `AUTOINCREMENT` never issues, and it is what the backfill
+/// writes for an entry whose service has no surviving credential — a database
+/// that had GitHub connected and then disconnected still has its log.
 const ADD_INTEGRATION_ACCOUNTS: &str = r"
 CREATE TABLE integration_accounts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,10 +113,13 @@ SELECT service_name, service_name, 'oauth', access_token, refresh_token, created
 
 DROP TABLE integrations;
 
-ALTER TABLE work_logs ADD COLUMN account_id INTEGER;
+ALTER TABLE work_logs ADD COLUMN account_id INTEGER NOT NULL DEFAULT 0;
 
 UPDATE work_logs
-   SET account_id = (SELECT id FROM integration_accounts WHERE service = work_logs.source)
+   SET account_id = ifnull(
+           (SELECT id FROM integration_accounts WHERE service = work_logs.source),
+           0
+       )
  WHERE external_id IS NOT NULL;
 
 DROP INDEX IF EXISTS idx_work_logs_external_id;
@@ -327,16 +355,24 @@ mod tests {
         assert_eq!(access_token, "gho_old");
         assert_eq!(kind, "oauth");
 
-        // The log entry survives and is attributed to that account, so the
+        // The log entry survives and is attributed to *that* account, so the
         // daemon does not log the same merge a second time.
-        let (content, account_id): (String, Option<i64>) =
+        let carried: i64 = sqlx::query_scalar("SELECT id FROM integration_accounts")
+            .fetch_one(&pool)
+            .await
+            .expect("the carried account should have an id");
+
+        let (content, account_id): (String, i64) =
             sqlx::query_as("SELECT content, account_id FROM work_logs")
                 .fetch_one(&pool)
                 .await
                 .expect("the existing entry should still be there");
 
         assert_eq!(content, "Merged PR #4");
-        assert!(account_id.is_some(), "the entry should be attributed");
+        assert_eq!(
+            account_id, carried,
+            "the entry should be attributed to the account it was carried onto"
+        );
 
         // The old table is gone.
         let leftover: Option<String> = sqlx::query_scalar(
@@ -347,5 +383,84 @@ mod tests {
         .expect("should read the schema");
 
         assert_eq!(leftover, None, "the v1 table should have been dropped");
+    }
+
+    #[tokio::test]
+    async fn an_unattributed_entry_is_still_logged_only_once() {
+        // `account_id` joins the dedupe key, and SQLite does not consider two
+        // NULLs equal — so an entry written without an account has to carry the
+        // sentinel rather than a NULL, or the index would not apply to it.
+        let pool = migrated_pool().await;
+
+        let insert = "INSERT INTO work_logs (source, content, external_id)
+                      VALUES ('github', 'Merged PR #4', 'owner/repo#4')";
+
+        sqlx::query(insert)
+            .execute(&pool)
+            .await
+            .expect("the first entry should insert");
+
+        let duplicate = sqlx::query(insert).execute(&pool).await;
+
+        assert!(
+            duplicate.is_err(),
+            "the same merge should not be loggable twice without an account"
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrading_from_v2_without_a_credential_keeps_the_log_deduped() {
+        // The common case: an install that never connected GitHub, or connected
+        // and then disconnected it, still has daemon-written entries.
+        let pool = super::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("failed to open in-memory database");
+
+        let mut applied = super::migrations().into_iter();
+
+        for migration in applied.by_ref().take(2) {
+            sqlx::raw_sql(migration.sql)
+                .execute(&pool)
+                .await
+                .expect("the first two migrations should apply");
+        }
+
+        sqlx::query(
+            "INSERT INTO work_logs (source, content, external_id)
+             VALUES ('github', 'Merged PR #4', 'owner/repo#4')",
+        )
+        .execute(&pool)
+        .await
+        .expect("an entry should be storable before the upgrade");
+
+        for migration in applied {
+            sqlx::raw_sql(migration.sql)
+                .execute(&pool)
+                .await
+                .expect("migration 3 should apply with no credential to carry");
+        }
+
+        // Nothing to attribute it to, so it carries the sentinel rather than a
+        // NULL that would fall outside the unique index.
+        let (content, account_id): (String, i64) =
+            sqlx::query_as("SELECT content, account_id FROM work_logs")
+                .fetch_one(&pool)
+                .await
+                .expect("the existing entry should still be there");
+
+        assert_eq!(content, "Merged PR #4");
+        assert_eq!(account_id, 0, "an unattributed entry carries the sentinel");
+
+        let duplicate = sqlx::query(
+            "INSERT INTO work_logs (source, content, external_id)
+             VALUES ('github', 'Merged PR #4', 'owner/repo#4')",
+        )
+        .execute(&pool)
+        .await;
+
+        assert!(
+            duplicate.is_err(),
+            "the same merge should not be loggable twice after the upgrade"
+        );
     }
 }
