@@ -82,8 +82,44 @@ fn account_from(row: AccountRow) -> Account {
     }
 }
 
+/// Claim the row an upgrade left behind, so a real login lands on it.
+///
+/// Migration v3 had no provider identifier to seed `account_key` with, so it
+/// wrote the service name as a placeholder and attributed every existing work
+/// log entry to that row. A genuine sign-in supplies a login, which never
+/// matches — so without this the upsert below inserts a *second* row, strands
+/// the migration's backfill on the first, and the daemon logs the whole history
+/// again under the new id.
+///
+/// Renaming the key is all it takes: the upsert then collides with this row and
+/// replaces its credential in place, keeping the id the work log points at.
+///
+/// Two conditions keep it from taking a row that is not a leftover. The service
+/// must have exactly one account, because the placeholder only ever exists
+/// alone — a second account means the first sign-in already adopted it. And a
+/// row that names itself is a real connection whose key happens to equal the
+/// service name: only a genuine sign-in stores an identity matching the key,
+/// where the migration could store neither.
+const ADOPT_PLACEHOLDER: &str = "\
+UPDATE integration_accounts SET account_key = ?2
+ WHERE service = ?1
+   AND account_key = ?1
+   AND (identity IS NULL OR identity <> account_key)
+   AND (SELECT count(*) FROM integration_accounts WHERE service = ?1) = 1";
+
 /// Store a credential, replacing any previous one for the same account.
+///
+/// Adoption and the write are one transaction, so a daemon pass reading
+/// accounts alongside cannot see the moment between them.
 pub async fn save(pool: &SqlitePool, account: NewAccount<'_>) -> Result<Account, Error> {
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query(ADOPT_PLACEHOLDER)
+        .bind(account.service)
+        .bind(account.account_key)
+        .execute(&mut *transaction)
+        .await?;
+
     let row = sqlx::query_as::<_, AccountRow>(&format!(
         "INSERT INTO integration_accounts
              (service, account_key, identity, credential_kind, access_token,
@@ -111,8 +147,10 @@ pub async fn save(pool: &SqlitePool, account: NewAccount<'_>) -> Result<Account,
     .bind(account.scopes)
     .bind(account.client_id)
     .bind(account.client_secret)
-    .fetch_one(pool)
+    .fetch_one(&mut *transaction)
     .await?;
+
+    transaction.commit().await?;
 
     Ok(account_from(row))
 }
@@ -235,7 +273,7 @@ pub async fn forget(pool: &SqlitePool, id: i64) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::test_support::migrated_pool;
+    use crate::db::test_support::{migrated_pool, pool_at_version, upgrade};
 
     fn github_account<'a>(account_key: &'a str, access_token: &'a str) -> NewAccount<'a> {
         NewAccount {
@@ -307,6 +345,131 @@ mod tests {
             accounts(&pool, GITHUB).await.expect("should read").len(),
             1,
             "reconnecting should not add a second row"
+        );
+    }
+
+    /// An upgraded database with one credential and one entry logged against
+    /// it, exactly as migration v3 leaves them: the account carries the service
+    /// name as a placeholder key, because the old table never stored a login.
+    async fn upgraded_from_v2() -> SqlitePool {
+        let pool = pool_at_version(2).await;
+
+        sqlx::query(
+            "INSERT INTO integrations (service_name, access_token, refresh_token)
+             VALUES ('github', 'gho_old', 'ghr_old')",
+        )
+        .execute(&pool)
+        .await
+        .expect("a credential should be storable before the upgrade");
+        sqlx::query(
+            "INSERT INTO work_logs (source, content, external_id)
+             VALUES ('github', 'Merged PR #4', 'owner/repo#4')",
+        )
+        .execute(&pool)
+        .await
+        .expect("an entry should be storable before the upgrade");
+
+        upgrade(&pool).await;
+
+        pool
+    }
+
+    #[tokio::test]
+    async fn adopts_the_placeholder_an_upgrade_left_behind() {
+        // The seam migration v3 documents and cannot close itself. Signing in
+        // supplies the login the old table never had, which never matches the
+        // placeholder — so without adoption the credential lands in a *second*
+        // row, and every entry the migration attributed to the first is
+        // stranded on an account nothing reads. The daemon then logs all of it
+        // again, under the new id.
+        let pool = upgraded_from_v2().await;
+
+        let account = save(&pool, github_account("octocat", "gho_new"))
+            .await
+            .expect("should save");
+
+        let accounts = accounts(&pool, GITHUB).await.expect("should read");
+        assert_eq!(
+            accounts.len(),
+            1,
+            "signing in should adopt the migrated row, not insert beside it"
+        );
+        assert_eq!(accounts[0].account_key, "octocat", "the key should be real");
+        assert_eq!(accounts[0].identity.as_deref(), Some("octocat@example.com"));
+
+        let attributed: i64 = sqlx::query_scalar("SELECT account_id FROM work_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("the migrated entry should still be there");
+        assert_eq!(
+            attributed, account.id,
+            "the entry the migration attributed should still name this account"
+        );
+
+        let stored = credentials(&pool, account.id)
+            .await
+            .expect("should read")
+            .expect("should be connected");
+        assert_eq!(stored.access_token, "gho_new", "the credential is replaced");
+    }
+
+    #[tokio::test]
+    async fn adopts_a_placeholder_that_a_pass_has_already_named() {
+        // The daemon fills in the identity of a migrated account on its first
+        // read, so the row an upgrade left is usually named by the time the
+        // user reconnects. It is still a placeholder: the *key* is what the
+        // constraint matches on, and it is still the service name.
+        let pool = upgraded_from_v2().await;
+        let migrated = accounts(&pool, GITHUB).await.expect("should read")[0].id;
+
+        set_identity(&pool, migrated, "octocat")
+            .await
+            .expect("a pass should be able to name it");
+
+        let account = save(&pool, github_account("octocat", "gho_new"))
+            .await
+            .expect("should save");
+
+        assert_eq!(account.id, migrated, "the same row should be adopted");
+        assert_eq!(
+            accounts(&pool, GITHUB).await.expect("should read").len(),
+            1,
+            "a named placeholder is still a placeholder"
+        );
+    }
+
+    #[tokio::test]
+    async fn leaves_a_real_account_alone_when_its_key_looks_like_a_placeholder() {
+        // Nothing stops a provider issuing an account key that happens to be
+        // the service's own name, and adopting *that* row would hand one
+        // person's log and credential to another account. A genuine connection
+        // says who it is, and says the same thing twice — key and identity —
+        // where the migration could say neither.
+        let pool = migrated_pool().await;
+        let real = save(
+            &pool,
+            NewAccount {
+                identity: Some("github"),
+                ..github_account("github", "gho_theirs")
+            },
+        )
+        .await
+        .expect("should save");
+
+        let other = save(&pool, github_account("octocat", "gho_mine"))
+            .await
+            .expect("should save");
+
+        assert_ne!(other.id, real.id, "a second account is a second row");
+        assert_eq!(accounts(&pool, GITHUB).await.expect("should read").len(), 2);
+        assert_eq!(
+            credentials(&pool, real.id)
+                .await
+                .expect("should read")
+                .expect("should be connected")
+                .access_token,
+            "gho_theirs",
+            "the account already there should keep its credential"
         );
     }
 

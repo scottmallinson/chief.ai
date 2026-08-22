@@ -73,9 +73,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_work_logs_external_id
 /// the login, which does not match, so the constraint alone would insert a
 /// second row and strand every backfilled `work_logs.account_id` on the
 /// orphaned first one — defeating the backfill for exactly the installs it was
-/// written for. Closing it is the connect path's job, not the schema's: saving
-/// a credential for a service whose only account still carries the placeholder
-/// must adopt that row rather than insert beside it.
+/// written for. Closing it is the connect path's job, not the schema's, and
+/// `integrations::save` does it: saving a credential for a service whose only
+/// account still carries the placeholder adopts that row rather than inserting
+/// beside it.
 ///
 /// `credential_kind` records how the credential was obtained rather than
 /// leaving it to be inferred from which columns happen to be NULL: `'oauth'`
