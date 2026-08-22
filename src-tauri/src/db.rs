@@ -60,13 +60,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_work_logs_external_id
 /// Three columns name an account and none of them substitutes for another.
 /// `account_key` is the provider's *stable* identifier, and the only one this
 /// schema keys on: it is half of `UNIQUE (service, account_key)`, so
-/// reconnecting the same account replaces its row instead of adding a second.
-/// The migration seeds it from the service name because a one-row-per-service
-/// database has nothing better to offer. `identity` is what the provider says
-/// the account is — a login, an email address, a workspace — filled in when a
-/// provider is asked, and shown to the user when there is no `label`. `label`
-/// is the name the *user* gave the account ("Work"), and nothing but the
-/// interface reads it.
+/// reconnecting an account whose key is already stored replaces that row rather
+/// than adding a second. `identity` is what the provider says the account is —
+/// a login, an email address, a workspace — filled in when a provider is asked,
+/// and shown to the user when there is no `label`. `label` is the name the
+/// *user* gave the account ("Work"), and nothing but the interface reads it.
+///
+/// That guarantee has a seam, and it is here rather than left to be discovered.
+/// An upgraded database has no provider identifier to seed `account_key` with,
+/// so the migration writes the service name as a **placeholder** — `'github'`,
+/// where a real connection stores a login. The first genuine reconnect supplies
+/// the login, which does not match, so the constraint alone would insert a
+/// second row and strand every backfilled `work_logs.account_id` on the
+/// orphaned first one — defeating the backfill for exactly the installs it was
+/// written for. Closing it is the connect path's job, not the schema's: saving
+/// a credential for a service whose only account still carries the placeholder
+/// must adopt that row rather than insert beside it.
 ///
 /// `credential_kind` records how the credential was obtained rather than
 /// leaving it to be inferred from which columns happen to be NULL: `'oauth'`
@@ -189,26 +198,69 @@ pub async fn pool<R: Runtime>(app: &AppHandle<R>) -> Result<SqlitePool, Error> {
 pub(crate) mod test_support {
     use sqlx::SqlitePool;
 
-    /// An empty in-memory database with the migrations already applied.
+    /// An empty in-memory database with every migration applied.
     pub async fn migrated_pool() -> SqlitePool {
+        pool_at_version(EVERY_MIGRATION).await
+    }
+
+    /// An empty in-memory database migrated only as far as `version`, the way
+    /// an install running an older release has it.
+    ///
+    /// How far it got is recorded in SQLite's own `user_version`, so [`upgrade`]
+    /// resumes from there and the version an upgrade test is about is written
+    /// once, in the call that says what the number means.
+    pub async fn pool_at_version(version: i64) -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("failed to open in-memory database");
 
-        for migration in super::migrations() {
-            sqlx::raw_sql(migration.sql)
-                .execute(&pool)
-                .await
-                .expect("failed to apply migration");
-        }
+        migrate(&pool, version).await;
 
         pool
+    }
+
+    /// Apply every migration a [`pool_at_version`] database has not seen, the
+    /// way installing a new release does.
+    pub async fn upgrade(pool: &SqlitePool) {
+        migrate(pool, EVERY_MIGRATION).await;
+    }
+
+    /// Beyond any version this schema will be given, so `migrate` runs to the
+    /// end of the list.
+    const EVERY_MIGRATION: i64 = i64::MAX;
+
+    /// Apply the migrations between where `pool` got to and `through`.
+    async fn migrate(pool: &SqlitePool, through: i64) {
+        let mut at: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(pool)
+            .await
+            .expect("failed to read the schema version");
+
+        for migration in super::migrations() {
+            if migration.version <= at || migration.version > through {
+                continue;
+            }
+
+            sqlx::raw_sql(migration.sql)
+                .execute(pool)
+                .await
+                .expect("failed to apply migration");
+
+            at = migration.version;
+        }
+
+        // `PRAGMA user_version` takes no bind parameter; `at` is one of our own
+        // version numbers rather than anything a test supplies.
+        sqlx::raw_sql(&format!("PRAGMA user_version = {at}"))
+            .execute(pool)
+            .await
+            .expect("failed to record the schema version");
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::migrated_pool;
+    use super::test_support::{migrated_pool, pool_at_version, upgrade};
     use sqlx::Row;
 
     #[tokio::test]
@@ -231,28 +283,14 @@ mod tests {
     #[tokio::test]
     async fn upgrading_an_existing_database_keeps_its_entries() {
         // A database as it stood before migration 2 shipped.
-        let pool = super::SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("failed to open in-memory database");
-
-        let mut applied = super::migrations().into_iter();
-        let first = applied.next().expect("there is a first migration");
-        sqlx::raw_sql(first.sql)
-            .execute(&pool)
-            .await
-            .expect("migration 1 should apply");
+        let pool = pool_at_version(1).await;
 
         sqlx::query("INSERT INTO work_logs (source, content) VALUES ('github', 'Merged PR #4')")
             .execute(&pool)
             .await
             .expect("an entry should be storable before the upgrade");
 
-        for migration in applied {
-            sqlx::raw_sql(migration.sql)
-                .execute(&pool)
-                .await
-                .expect("later migrations should apply to an existing database");
-        }
+        upgrade(&pool).await;
 
         // The entry survives, and the new column is there but empty for it.
         let (content, external_id): (String, Option<String>) =
@@ -303,20 +341,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upgrading_from_v2_keeps_the_credential_and_the_log() {
-        // A database as it stood before migration 3 shipped.
-        let pool = super::SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("failed to open in-memory database");
+    async fn accounts_timestamp_themselves() {
+        // `created_at` reaches the interface as `connected_at`, so the format
+        // string in the schema is user-visible and a typo in it would be too.
+        let pool = migrated_pool().await;
 
-        let mut applied = super::migrations().into_iter();
+        sqlx::query(
+            "INSERT INTO integration_accounts (service, account_key, access_token)
+             VALUES ('github', 'octocat', 'token')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert should succeed");
 
-        for migration in applied.by_ref().take(2) {
-            sqlx::raw_sql(migration.sql)
+        let created_at: String = sqlx::query_scalar(
+            "SELECT created_at FROM integration_accounts WHERE account_key = 'octocat'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("row should exist");
+
+        assert!(
+            created_at.ends_with('Z') && created_at.contains('T'),
+            "expected an ISO-8601 timestamp, got {created_at}"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_accounts_may_each_log_the_same_merge() {
+        // Why `account_id` is in the dedupe key at all: a pull request both of a
+        // person's GitHub accounts can see is two pieces of work to two logs,
+        // and one piece of work to each of them.
+        let pool = migrated_pool().await;
+
+        let account = "INSERT INTO integration_accounts (service, account_key, access_token)
+                       VALUES ('github', ?1, 'token')";
+
+        for key in ["octocat", "hubot"] {
+            sqlx::query(account)
+                .bind(key)
                 .execute(&pool)
                 .await
-                .expect("the first two migrations should apply");
+                .expect("both accounts should insert");
         }
+
+        let accounts: Vec<i64> =
+            sqlx::query_scalar("SELECT id FROM integration_accounts ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .expect("both accounts should have ids");
+
+        let entry = "INSERT INTO work_logs (source, content, external_id, account_id)
+                     VALUES ('github', 'Merged PR #4', 'owner/repo#4', ?1)";
+
+        for account_id in &accounts {
+            sqlx::query(entry)
+                .bind(account_id)
+                .execute(&pool)
+                .await
+                .expect("each account should log the merge it saw");
+        }
+
+        let duplicate = sqlx::query(entry).bind(accounts[0]).execute(&pool).await;
+
+        assert!(
+            duplicate.is_err(),
+            "one account should still log the same merge only once"
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrading_from_v2_keeps_the_credential_and_the_log() {
+        // A database as it stood before migration 3 shipped.
+        let pool = pool_at_version(2).await;
 
         sqlx::query(
             "INSERT INTO integrations (service_name, access_token, refresh_token)
@@ -333,12 +430,7 @@ mod tests {
         .await
         .expect("an entry should be storable before the upgrade");
 
-        for migration in applied {
-            sqlx::raw_sql(migration.sql)
-                .execute(&pool)
-                .await
-                .expect("migration 3 should apply to an existing database");
-        }
+        upgrade(&pool).await;
 
         // The credential survives, carried onto the new table.
         let (service, account_key, access_token, kind): (String, String, String, String) =
@@ -412,18 +504,7 @@ mod tests {
     async fn upgrading_from_v2_without_a_credential_keeps_the_log_deduped() {
         // The common case: an install that never connected GitHub, or connected
         // and then disconnected it, still has daemon-written entries.
-        let pool = super::SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("failed to open in-memory database");
-
-        let mut applied = super::migrations().into_iter();
-
-        for migration in applied.by_ref().take(2) {
-            sqlx::raw_sql(migration.sql)
-                .execute(&pool)
-                .await
-                .expect("the first two migrations should apply");
-        }
+        let pool = pool_at_version(2).await;
 
         sqlx::query(
             "INSERT INTO work_logs (source, content, external_id)
@@ -433,12 +514,7 @@ mod tests {
         .await
         .expect("an entry should be storable before the upgrade");
 
-        for migration in applied {
-            sqlx::raw_sql(migration.sql)
-                .execute(&pool)
-                .await
-                .expect("migration 3 should apply with no credential to carry");
-        }
+        upgrade(&pool).await;
 
         // Nothing to attribute it to, so it carries the sentinel rather than a
         // NULL that would fall outside the unique index.
