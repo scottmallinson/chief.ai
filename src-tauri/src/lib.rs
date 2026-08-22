@@ -13,6 +13,7 @@ mod db;
 mod engine;
 mod github;
 mod integrations;
+mod oauth;
 mod session;
 mod setup;
 mod tools;
