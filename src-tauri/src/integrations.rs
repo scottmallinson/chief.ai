@@ -325,6 +325,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_credential_that_says_nothing_does_not_erase_the_name() {
+        // Identity is the one column the upsert does not overwrite
+        // unconditionally, and nothing said so. A caller that stores a
+        // credential without knowing who it belongs to — a token the user
+        // pasted in, a provider that names an account only at sign-in — must
+        // not blank the name the settings screen is showing.
+        let pool = migrated_pool().await;
+
+        save(&pool, github_account("octocat", "gho_first"))
+            .await
+            .expect("should save");
+
+        let account = save(
+            &pool,
+            NewAccount {
+                identity: None,
+                ..github_account("octocat", "gho_second")
+            },
+        )
+        .await
+        .expect("should save again");
+
+        assert_eq!(
+            account.identity.as_deref(),
+            Some("octocat@example.com"),
+            "a credential with no identity should keep the stored one"
+        );
+    }
+
+    #[tokio::test]
     async fn reconnecting_the_same_account_replaces_its_credential() {
         let pool = migrated_pool().await;
 
