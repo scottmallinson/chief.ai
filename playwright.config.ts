@@ -46,7 +46,10 @@ export default defineConfig<ShellOptions>({
       // Windows draws scrollbars that take space out of the layout rather than
       // floating over it, which is where the original break was reported.
       // Playwright hides scrollbars in headless Chromium by default, which no
-      // real user ever sees, so this project puts them back.
+      // real user ever sees, so this project puts them back. That is enough on
+      // Linux, where CI runs; on macOS Chromium follows the OS and overlays them
+      // whatever the flags say, so `classicScrollbars` also has the fixture
+      // style the scrollbar, which forces a non-overlay one on any host.
       name: 'classic scrollbars',
       use: {
         ...devices['Desktop Chrome'],
