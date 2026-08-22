@@ -20,7 +20,11 @@ const AUTH_HOST: &str = "https://github.com";
 /// Where the REST API lives.
 const API_HOST: &str = "https://api.github.com";
 
-/// What Chief asks for.
+/// What Chief asks for, one scope per entry.
+///
+/// This is the list, and the space-separated string the device flow posts is
+/// joined from it, so the scopes Chief requests and the scopes it reports as a
+/// provider cannot drift apart.
 ///
 /// `repo` is broader than we would like: it is read *and* write across public
 /// and private repositories. Chief only ever reads, but GitHub offers no
@@ -28,7 +32,7 @@ const API_HOST: &str = "https://api.github.com";
 /// repositories, and `repo:status` covers commit statuses without granting any
 /// access to pull requests at all. Fine-grained read-only permissions would
 /// mean registering a GitHub App instead, which is the honest upgrade path.
-const SCOPES: &str = "repo read:user";
+const SCOPE_LIST: &[&str] = &["repo", "read:user"];
 
 /// GitHub asks clients to identify themselves.
 const USER_AGENT: &str = concat!("chief-ai/", env!("CARGO_PKG_VERSION"));
@@ -251,10 +255,14 @@ impl Client {
 
     /// Ask GitHub for a device code, which the user then enters in a browser.
     pub async fn start_login(&self, client_id: &str) -> Result<PendingLogin, Error> {
+        // Bound rather than inlined: the joined string has to outlive the
+        // borrow the form takes of it.
+        let scope = SCOPE_LIST.join(" ");
+
         let response: DeviceCodeResponse = self
             .post_form(
                 &format!("{}/login/device/code", self.auth_host),
-                &[("client_id", client_id), ("scope", SCOPES)],
+                &[("client_id", client_id), ("scope", &scope)],
             )
             .await?;
 
@@ -377,6 +385,26 @@ impl Client {
         Ok(items.iter().map(pull_request_from).collect())
     }
 
+    /// Who the stored token belongs to, so an account can name itself.
+    pub async fn viewer(&self, token: &str) -> Result<String, Error> {
+        let response = self
+            .http
+            .get(format!("{}/user", self.api_host))
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+
+        let body: Value = self.read(response).await?;
+
+        body["login"]
+            .as_str()
+            .map(ToString::to_string)
+            .ok_or_else(|| Error::Decode("the user response had no login".to_string()))
+    }
+
     async fn post_form<T: serde::de::DeserializeOwned>(
         &self,
         url: &str,
@@ -449,6 +477,55 @@ pub fn as_tool_result(pull_requests: &[PullRequest]) -> Value {
         "pull_requests": pull_requests,
         "count": pull_requests.len(),
     })
+}
+
+impl crate::oauth::Provider for Client {
+    const SERVICE: &'static str = crate::integrations::GITHUB;
+
+    type Error = Error;
+
+    fn endpoints(&self) -> crate::oauth::Endpoints {
+        crate::oauth::Endpoints {
+            authorize: "https://github.com/login/oauth/authorize",
+            token: "https://github.com/login/oauth/access_token",
+            device_code: Some("https://github.com/login/device/code"),
+        }
+    }
+
+    fn client_id(&self) -> Result<String, Error> {
+        client_id()
+    }
+
+    fn scopes(&self) -> &'static [&'static str] {
+        SCOPE_LIST
+    }
+
+    // The device flow has none, and one shipped inside a binary Chief
+    // distributes would not be a secret, so the default `None` stands.
+
+    async fn refresh(
+        &self,
+        client_id: &str,
+        refresh_token: &str,
+    ) -> Result<crate::oauth::Tokens, Error> {
+        // Spelled out because `refresh` now names two things: the inherent
+        // method, which does the exchange, and this one, which reshapes what it
+        // returns. An inherent method wins the lookup, but saying so leaves no
+        // doubt that this is not calling itself.
+        let (access_token, refresh_token) = Client::refresh(self, client_id, refresh_token).await?;
+
+        Ok(crate::oauth::Tokens {
+            access_token,
+            refresh_token,
+            // GitHub's device-flow refresh does not say, and the reactive
+            // renewal on a rejected token covers it.
+            expires_in: None,
+        })
+    }
+
+    fn is_token_rejected(error: &Error) -> bool {
+        matches!(error, Error::TokenRejected)
+    }
 }
 
 #[cfg(test)]
@@ -659,6 +736,41 @@ mod tests {
         assert_eq!(State::Closed.qualifier(), " is:closed");
         assert_eq!(State::Merged.qualifier(), " is:merged");
         assert_eq!(State::All.qualifier(), "");
+    }
+
+    #[test]
+    fn describes_itself_as_a_provider() {
+        use crate::oauth::Provider;
+
+        let client = Client::against("http://127.0.0.1:1").expect("should build a client");
+
+        assert_eq!(Client::SERVICE, crate::integrations::GITHUB);
+        assert_eq!(client.scopes(), &["repo", "read:user"]);
+        assert!(
+            client.client_secret().is_none(),
+            "the device flow has no secret and a shipped one would not be secret"
+        );
+        assert!(
+            client.endpoints().device_code.is_some(),
+            "GitHub signs in by device code"
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_who_the_token_belongs_to() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            r#"{"login":"octocat","name":"The Octocat"}"#,
+        )]);
+        let client = Client::against(&host).expect("should build a client");
+
+        let viewer = client.viewer("gho_token").await.expect("should read");
+
+        assert_eq!(viewer, "octocat");
+
+        let requests = server.await.expect("the stub should finish");
+        let (request_line, _) = split(&requests[0]);
+        assert!(request_line.contains("/user"), "got {request_line}");
     }
 
     #[test]
