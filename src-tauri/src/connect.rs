@@ -20,17 +20,37 @@ use crate::oauth::Provider;
 #[derive(Default)]
 pub struct Pending(Mutex<Option<PendingLogin>>);
 
+/// What can go wrong connecting or disconnecting an account.
+///
+/// This module's own error rather than one provider's, because this module is
+/// the one part of the integration layer that is not about a particular
+/// service. Borrowing GitHub's meant reporting an unknown service as an HTTP
+/// 400 from GitHub — an account of a request nobody made, to a host nobody
+/// called.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("there is no integration called '{0}'")]
+    NoSuchService(String),
+    #[error(transparent)]
+    Provider(#[from] github::Error),
+    #[error(transparent)]
+    Storage(#[from] db::Error),
+}
+
+impl serde::Serialize for Error {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
 /// Reject a service Chief does not know, rather than failing later and less
 /// clearly.
-fn known(service: &str) -> Result<(), github::Error> {
+fn known(service: &str) -> Result<(), Error> {
     if service == Client::SERVICE {
         return Ok(());
     }
 
-    Err(github::Error::Status {
-        status: 400,
-        body: format!("there is no integration called '{service}'"),
-    })
+    Err(Error::NoSuchService(service.to_string()))
 }
 
 /// Begin signing in and return what the user must enter.
@@ -39,7 +59,7 @@ pub async fn start_login(
     service: String,
     client: State<'_, Client>,
     pending: State<'_, Pending>,
-) -> Result<DeviceLogin, github::Error> {
+) -> Result<DeviceLogin, Error> {
     known(&service)?;
 
     let client_id = github::client_id()?;
@@ -58,7 +78,7 @@ pub async fn finish_login<R: Runtime>(
     app: AppHandle<R>,
     client: State<'_, Client>,
     pending: State<'_, Pending>,
-) -> Result<Vec<Account>, github::Error> {
+) -> Result<Vec<Account>, Error> {
     known(&service)?;
 
     let started = pending
@@ -98,7 +118,7 @@ pub async fn finish_login<R: Runtime>(
 
 /// Every connected account, whatever the service.
 #[tauri::command]
-pub async fn connections<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Account>, github::Error> {
+pub async fn connections<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Account>, Error> {
     let pool = db::pool(&app).await?;
 
     Ok(integrations::all_accounts(&pool).await?)
@@ -109,7 +129,7 @@ pub async fn connections<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Account>, 
 pub async fn disconnect<R: Runtime>(
     account_id: i64,
     app: AppHandle<R>,
-) -> Result<Vec<Account>, github::Error> {
+) -> Result<Vec<Account>, Error> {
     let pool = db::pool(&app).await?;
     integrations::forget(&pool, account_id).await?;
 
@@ -122,9 +142,28 @@ pub async fn label_account<R: Runtime>(
     account_id: i64,
     label: Option<String>,
     app: AppHandle<R>,
-) -> Result<Vec<Account>, github::Error> {
+) -> Result<Vec<Account>, Error> {
     let pool = db::pool(&app).await?;
     integrations::set_label(&pool, account_id, label.as_deref()).await?;
 
     Ok(integrations::all_accounts(&pool).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn says_when_there_is_no_such_integration() {
+        // No request was made and no host answered, so the message must not
+        // claim one did.
+        let error = known("slack").expect_err("slack is not an integration");
+
+        assert_eq!(error.to_string(), "there is no integration called 'slack'");
+    }
+
+    #[test]
+    fn accepts_the_service_it_has() {
+        assert!(known(crate::integrations::GITHUB).is_ok());
+    }
 }
