@@ -219,8 +219,8 @@ function installBackend(setup: Setup) {
         case 'list_work_logs':
           return Promise.resolve(setup.workLog);
 
-        case 'github_connection':
-          return Promise.resolve({ connected: false, account: null, connectedAt: null });
+        case 'connections':
+          return Promise.resolve([]);
 
         case 'plugin:event|listen': {
           const event = args?.event as string;

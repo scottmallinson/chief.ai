@@ -10,11 +10,24 @@ const openUrl = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl }));
 
-const disconnected = { service: 'github', connected: false, connectedAt: null };
-const connected = {
-  service: 'github',
-  connected: true,
-  connectedAt: '2026-08-19T14:00:00.000Z',
+// The backend answers every one of these commands with the accounts as they
+// now stand, so a fixture is a list rather than a status.
+const disconnected: unknown[] = [];
+const connected = [
+  {
+    id: 7,
+    service: 'github',
+    accountKey: 'octocat',
+    label: null,
+    identity: 'octocat',
+    connectedAt: '2026-08-19T14:00:00.000Z',
+  },
+];
+
+const deviceLogin = {
+  userCode: 'WDJB-MJHT',
+  verificationUri: 'https://github.com/login/device',
+  expiresIn: 900,
 };
 
 describe('SettingsView', () => {
@@ -52,14 +65,8 @@ describe('SettingsView', () => {
 
   it('shows the device code and opens the browser', async () => {
     invoke.mockImplementation((command: string) => {
-      if (command === 'github_connection') return Promise.resolve(disconnected);
-      if (command === 'start_github_login') {
-        return Promise.resolve({
-          userCode: 'WDJB-MJHT',
-          verificationUri: 'https://github.com/login/device',
-          expiresIn: 900,
-        });
-      }
+      if (command === 'connections') return Promise.resolve(disconnected);
+      if (command === 'start_login') return Promise.resolve(deviceLogin);
       // Never settles, so the waiting state stays on screen.
       return new Promise(() => {});
     });
@@ -73,14 +80,8 @@ describe('SettingsView', () => {
 
   it('reports the connection once the user finishes', async () => {
     invoke.mockImplementation((command: string) => {
-      if (command === 'github_connection') return Promise.resolve(disconnected);
-      if (command === 'start_github_login') {
-        return Promise.resolve({
-          userCode: 'WDJB-MJHT',
-          verificationUri: 'https://github.com/login/device',
-          expiresIn: 900,
-        });
-      }
+      if (command === 'connections') return Promise.resolve(disconnected);
+      if (command === 'start_login') return Promise.resolve(deviceLogin);
       return Promise.resolve(connected);
     });
 
@@ -93,7 +94,7 @@ describe('SettingsView', () => {
 
   it('surfaces a missing client id rather than failing silently', async () => {
     invoke.mockImplementation((command: string) => {
-      if (command === 'github_connection') return Promise.resolve(disconnected);
+      if (command === 'connections') return Promise.resolve(disconnected);
       return Promise.reject(
         new Error('no GitHub client id is configured. Register an OAuth app...'),
       );
@@ -107,12 +108,29 @@ describe('SettingsView', () => {
 
   it('lets a connected account be disconnected', async () => {
     invoke.mockImplementation((command: string) =>
-      Promise.resolve(command === 'disconnect_github' ? disconnected : connected),
+      Promise.resolve(command === 'disconnect' ? disconnected : connected),
     );
 
     render(<SettingsView />);
     await userEvent.click(await screen.findByRole('button', { name: 'Disconnect' }));
 
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
+    // Keyed on the account, not the service: forgetting one of two GitHub
+    // accounts has to leave the other connected.
+    expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 7 });
+  });
+
+  it('names the service it is signing in to', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve(disconnected);
+      if (command === 'start_login') return Promise.resolve(deviceLogin);
+      return new Promise(() => {});
+    });
+
+    render(<SettingsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect GitHub' }));
+
+    await screen.findByText('WDJB-MJHT');
+    expect(invoke).toHaveBeenCalledWith('start_login', { service: 'github' });
   });
 });

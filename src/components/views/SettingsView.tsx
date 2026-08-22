@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Chip, type ChipProps } from '@/components/ui/chip';
 import { Dots } from '@/components/ui/activity';
 import { useGithub } from '@/hooks/use-github';
+import { type Account } from '@/lib/integrations';
 
 interface SettingsSectionProps {
   title: string;
@@ -32,16 +33,16 @@ function SettingsSection({ title, description, state, children }: SettingsSectio
 const connectedFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
 
 /** The connection as a chip: verified when it is one, quiet when it is not. */
-function connectionState(connection: { connectedAt: string | null } | null): {
+function connectionState(account: Account | null): {
   tone: ChipProps['tone'];
   label: string;
   dot: boolean;
 } {
-  if (connection === null || connection.connectedAt === null) {
+  if (account === null) {
     return { tone: 'quiet', label: 'Not connected', dot: false };
   }
 
-  const parsed = new Date(connection.connectedAt);
+  const parsed = new Date(account.connectedAt);
 
   return {
     tone: 'verified',
@@ -53,10 +54,10 @@ function connectionState(connection: { connectedAt: string | null } | null): {
 }
 
 function GithubIntegration() {
-  const { connection, login, status, error, connect, disconnect } = useGithub();
+  const { account, login, status, error, connect, disconnect } = useGithub();
 
   const isBusy = status === 'working' || status === 'awaiting-user';
-  const state = connectionState(connection);
+  const state = connectionState(account);
 
   return (
     <SettingsSection
@@ -100,7 +101,7 @@ function GithubIntegration() {
       )}
 
       <div className="mt-4">
-        {connection?.connected === true ? (
+        {account !== null ? (
           <Button variant="outline" size="sm" onClick={disconnect} disabled={isBusy}>
             Disconnect
           </Button>

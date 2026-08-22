@@ -2,18 +2,20 @@ import { useCallback, useEffect, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 import {
-  disconnectGithub,
-  finishGithubLogin,
-  githubConnection,
-  startGithubLogin,
-  type Connection,
+  connections,
+  disconnectAccount,
+  finishLogin,
+  GITHUB,
+  startLogin,
+  type Account,
   type DeviceLogin,
 } from '@/lib/integrations';
 
 type Status = 'loading' | 'idle' | 'awaiting-user' | 'working';
 
 interface UseGithub {
-  connection: Connection | null;
+  /** The connected GitHub account, or null when there is none. */
+  account: Account | null;
   login: DeviceLogin | null;
   status: Status;
   error: string | null;
@@ -25,9 +27,18 @@ function describe(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+/**
+ * The backend answers with every account it holds. Settings shows one GitHub
+ * connection today, so this picks the first one out rather than making the
+ * screen understand a list it has nowhere to put yet.
+ */
+function github(accounts: Account[]): Account | null {
+  return accounts.find((account) => account.service === GITHUB) ?? null;
+}
+
 /** Drive the GitHub device-flow sign-in from the settings screen. */
 export function useGithub(): UseGithub {
-  const [connection, setConnection] = useState<Connection | null>(null);
+  const [account, setAccount] = useState<Account | null>(null);
   const [login, setLogin] = useState<DeviceLogin | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -35,10 +46,10 @@ export function useGithub(): UseGithub {
   useEffect(() => {
     let cancelled = false;
 
-    githubConnection()
-      .then((current) => {
+    connections()
+      .then((accounts) => {
         if (cancelled) return;
-        setConnection(current);
+        setAccount(github(accounts));
         setStatus('idle');
       })
       .catch((cause: unknown) => {
@@ -56,7 +67,7 @@ export function useGithub(): UseGithub {
     setError(null);
     setStatus('working');
 
-    startGithubLogin()
+    startLogin(GITHUB)
       .then(async (started) => {
         setLogin(started);
         setStatus('awaiting-user');
@@ -64,8 +75,7 @@ export function useGithub(): UseGithub {
         // Best effort: the code is on screen either way.
         await openUrl(started.verificationUri).catch(() => undefined);
 
-        const current = await finishGithubLogin();
-        setConnection(current);
+        setAccount(github(await finishLogin(GITHUB)));
         setLogin(null);
         setStatus('idle');
       })
@@ -77,19 +87,23 @@ export function useGithub(): UseGithub {
   }, []);
 
   const disconnect = useCallback(() => {
+    // Nothing to forget, and the command is keyed on an account id we would
+    // not have.
+    if (account === null) return;
+
     setError(null);
     setStatus('working');
 
-    disconnectGithub()
-      .then((current) => {
-        setConnection(current);
+    disconnectAccount(account.id)
+      .then((accounts) => {
+        setAccount(github(accounts));
         setStatus('idle');
       })
       .catch((cause: unknown) => {
         setError(describe(cause));
         setStatus('idle');
       });
-  }, []);
+  }, [account]);
 
-  return { connection, login, status, error, connect, disconnect };
+  return { account, login, status, error, connect, disconnect };
 }
