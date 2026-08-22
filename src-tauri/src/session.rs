@@ -1,7 +1,7 @@
 //! Reading from a connected account with the credentials Chief holds for it.
 //!
 //! Access tokens expire. Rather than making every caller think about that,
-//! [`Session`] renews a rejected credential and the caller retries once — so a
+//! [`Session`] renews a rejected credential and retries the read once — so a
 //! connection made weeks ago keeps working without the user reconnecting.
 //!
 //! [`Session`] is generic over the provider because storing, renewing and
@@ -103,6 +103,36 @@ impl<'a, P: Provider> Session<'a, P> {
         Ok(Some(tokens.access_token))
     }
 
+    /// Run a read with this account's credential, renewing once if the provider
+    /// says the credential is no longer usable.
+    ///
+    /// One refusal, one renewal, one retry is the same policy whoever issued
+    /// the token, and it is what [`Provider::is_token_rejected`] exists for:
+    /// the shared layer decides *when* to renew, and the provider says only
+    /// what a refusal looks like in its own errors. A provider's module is left
+    /// with the reading.
+    ///
+    /// The token comes from the caller, already fetched, so a read that has its
+    /// own account of a missing credential — "GitHub is not connected", rather
+    /// than whatever the database said — keeps it.
+    pub async fn renewing<T, F, Fut>(&self, token: String, read: F) -> Result<T, P::Error>
+    where
+        F: Fn(String) -> Fut,
+        Fut: std::future::Future<Output = Result<T, P::Error>>,
+    {
+        match read(token).await {
+            Err(refusal) if P::is_token_rejected(&refusal) => {
+                // Nothing to renew with — no refresh token, or a build with no
+                // client id — leaves the refusal standing, and that is the
+                // error that tells the user to reconnect.
+                let renewed = self.renew().await?.ok_or(refusal)?;
+
+                read(renewed).await
+            }
+            other => other,
+        }
+    }
+
     /// Record who this account belongs to, the first time we find out.
     pub async fn name_once(&self, identity: &str) -> Result<(), P::Error> {
         integrations::set_identity(self.pool, self.account_id, identity)
@@ -153,18 +183,13 @@ impl<'a> GithubSession<'a> {
             .await
             .map_err(|_| github::Error::NotConnected)?;
 
-        match self.client.pull_requests(&token, state, limit).await {
-            Err(github::Error::TokenRejected) => {
-                let renewed = self
-                    .session
-                    .renew()
-                    .await?
-                    .ok_or(github::Error::TokenRejected)?;
-
-                self.client.pull_requests(&renewed, state, limit).await
-            }
-            other => other,
-        }
+        // Renewing is the session's policy, not GitHub's; what is left here is
+        // the read.
+        self.session
+            .renewing(token, |token| async move {
+                self.client.pull_requests(&token, state, limit).await
+            })
+            .await
     }
 
     /// Who this account belongs to, recorded so the settings screen can say.
@@ -388,9 +413,39 @@ mod tests {
             })
         }
 
-        fn is_token_rejected(_: &ReuserError) -> bool {
-            false
+        /// The whole point of the trait method: what a refusal looks like is
+        /// the provider's to say, and this one does not speak HTTP.
+        fn is_token_rejected(error: &ReuserError) -> bool {
+            error.0 == "rejected"
         }
+    }
+
+    #[tokio::test]
+    async fn renews_for_any_provider_that_says_its_credential_was_refused() {
+        // The policy lives in the shared layer and reads the provider's own
+        // account of a refusal, so a provider that never sees an HTTP status
+        // gets the renewal and the retry without writing either.
+        let (pool, account_id) = connected(Some("ghr_old")).await;
+        let session = Session::with_client_id(&pool, &Reuser, account_id, "reuser-client");
+        let reads = std::cell::Cell::new(0);
+
+        let answer = session
+            .renewing("stale".to_string(), |token| {
+                reads.set(reads.get() + 1);
+
+                async move {
+                    if token == "stale" {
+                        Err(ReuserError("rejected".to_string()))
+                    } else {
+                        Ok(token)
+                    }
+                }
+            })
+            .await
+            .expect("the retry should have succeeded");
+
+        assert_eq!(answer, "fresh", "the retry should use the renewed token");
+        assert_eq!(reads.get(), 2, "once refused, once renewed, and no more");
     }
 
     #[tokio::test]
