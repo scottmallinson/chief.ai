@@ -48,7 +48,9 @@ impl From<PullRequestState> for PrState {
     }
 }
 
-/// How many pull requests to read in one go.
+/// How many pull requests to read in one go, from each connected account. A
+/// person with two accounts has two lists to answer from, and halving both to
+/// keep one total would answer worse than reading each of them properly.
 const PR_LIMIT: u8 = 25;
 
 /// Arguments to [`FETCH_GITHUB_PRS`], as the model produced them.
