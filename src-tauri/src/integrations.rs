@@ -100,6 +100,39 @@ fn account_from(row: AccountRow) -> Account {
 /// row that names itself is a real connection whose key happens to equal the
 /// service name: only a genuine sign-in stores an identity matching the key,
 /// where the migration could store neither.
+///
+/// # This is a heuristic, and it can reattribute someone else's work
+///
+/// Nothing in the schema says "this row came from a migration". So the three
+/// things above — `account_key` equal to the service name, no identity that
+/// matches that key, and a single account for the service — are the whole test,
+/// and none of them is *whose* credential the leftover held. The migration
+/// could not record that: it is pure SQL, and the login is only knowable by
+/// asking the provider.
+///
+/// The consequence is silent. Upgrade from v2, then sign in as a **different**
+/// GitHub login from the one the old credential held, and this statement
+/// relabels the migrated row to the new login rather than splitting the two
+/// apart. Every work log entry migration v3 attributed to that row is now
+/// attributed to a person who did not do that work, and nothing on screen says
+/// so.
+///
+/// That was chosen, not overlooked, and it stands. The alternative is to refuse
+/// adoption, which is worse for far more users: the upsert then inserts a
+/// second row, the backfilled `work_logs.account_id` values are stranded on an
+/// account no provider will ever match again, and the daemon re-logs the user's
+/// entire merge history under the new id. A duplicated work log on every single
+/// upgrade is a heavier cost than a misattributed one for the rarer user who
+/// came back as somebody else.
+///
+/// The honest close is not a cleverer heuristic — it is a column. Had migration
+/// v3 written a flag marking the row as its own, adoption would be decided
+/// rather than inferred, and the two conditions above could go. Even that does
+/// not recover the old login, so telling "the same person reconnecting" from "a
+/// different account" would additionally need the identity captured *before*
+/// the upgrade, while the old credential could still be asked about itself.
+/// Neither can be added to a database that has already migrated, which is why
+/// this heuristic exists at all.
 const ADOPT_PLACEHOLDER: &str = "\
 UPDATE integration_accounts SET account_key = ?2
  WHERE service = ?1

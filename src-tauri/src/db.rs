@@ -78,6 +78,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_work_logs_external_id
 /// account still carries the placeholder adopts that row rather than inserting
 /// beside it.
 ///
+/// That adoption is a heuristic, and the cost of it lands on the backfill
+/// below, so it belongs here too. Because nothing written by this migration
+/// marks a row as the migration's, adoption keys on the shape of the row and
+/// never on whose credential it held — the login is not something SQL can ask
+/// the provider for. Sign in after an upgrade as a *different* login from the
+/// one the v2 row carried and the placeholder is relabelled to the new login
+/// rather than split from it, so every `work_logs.account_id` this migration
+/// backfills silently ends up attributing that history to the wrong person.
+/// Re-logging the user's whole work log on every upgrade was judged the worse
+/// outcome, and that judgement stands. What would close it properly is a column
+/// recorded right here, at migration time — a flag marking the row as a
+/// placeholder, and an identity captured while the old credential could still
+/// be asked about itself. See `ADOPT_PLACEHOLDER` in `integrations` for the
+/// statement and the full reasoning.
+///
 /// `credential_kind` records how the credential was obtained rather than
 /// leaving it to be inferred from which columns happen to be NULL: `'oauth'`
 /// for a browser or device flow, `'token'` for one the user pasted in, `'dcr'`
