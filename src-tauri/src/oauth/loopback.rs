@@ -14,6 +14,8 @@
 
 use std::time::Duration;
 
+use futures_util::stream::FuturesUnordered;
+use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -78,34 +80,64 @@ impl Listener {
         }
     }
 
+    /// Answer every connection at once, and take the first real callback.
+    ///
+    /// Concurrently rather than one at a time, because a browser opens more
+    /// sockets than it sends requests on: a speculative connection it never
+    /// writes to is ordinary, and answering in turn would let one of those
+    /// hold the redirect behind it until the timeout.
     async fn accept_callback(&self) -> Result<Redirect, Error> {
+        let mut answering = FuturesUnordered::new();
+
         loop {
-            let (mut socket, _) = self
-                .listener
-                .accept()
-                .await
-                .map_err(|error| Error::Bind(error.to_string()))?;
-
-            let Some(query) = read_request_line(&mut socket)
-                .await
-                .as_deref()
-                .and_then(request_target)
-                .and_then(|target| target.strip_prefix(CALLBACK_PATH).map(str::to_string))
-            else {
-                respond(&mut socket, "404 Not Found", "Not found.").await;
-                continue;
-            };
-
-            let outcome = interpret(query.strip_prefix('?').unwrap_or(""));
-            let body = match &outcome {
-                Ok(_) => "Signed in. You can close this tab and go back to Chief.",
-                Err(_) => "Sign-in did not complete. Go back to Chief and try again.",
-            };
-            respond(&mut socket, "200 OK", body).await;
-
-            return outcome;
+            tokio::select! {
+                accepted = self.listener.accept() => {
+                    let (socket, _) = accepted.map_err(|error| Error::Bind(error.to_string()))?;
+                    answering.push(answer(socket));
+                }
+                // `None` is a connection that was not the callback, already
+                // turned away; the wait goes on.
+                Some(answered) = answering.next() => {
+                    if let Some(outcome) = answered {
+                        return outcome;
+                    }
+                }
+            }
         }
     }
+}
+
+/// Answer one connection, and report a callback if that is what it was.
+async fn answer(mut socket: TcpStream) -> Option<Result<Redirect, Error>> {
+    let Some(query) = read_request_line(&mut socket)
+        .await
+        .as_deref()
+        .and_then(request_target)
+        .and_then(callback_query)
+    else {
+        respond(&mut socket, "404 Not Found", "Not found.").await;
+        return None;
+    };
+
+    let outcome = interpret(&query);
+    let body = match &outcome {
+        Ok(_) => "Signed in. You can close this tab and go back to Chief.",
+        Err(_) => "Sign-in did not complete. Go back to Chief and try again.",
+    };
+    respond(&mut socket, "200 OK", body).await;
+
+    Some(outcome)
+}
+
+/// The query of a request to the callback path, or nothing for any other path.
+///
+/// The path has to match in full. On a prefix match `/oauth/callbackery` would
+/// be read as a sign-in that carried nothing, ending the wait on the redirect
+/// still to come.
+fn callback_query(target: &str) -> Option<String> {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+
+    (path == CALLBACK_PATH).then(|| query.to_string())
 }
 
 /// The target of a `GET`, or nothing for any other method.
@@ -227,14 +259,18 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    /// Act like the browser: GET the redirect and read the page back.
-    async fn visit(uri: &str, query: &str) -> String {
-        let authority = uri
-            .trim_start_matches("http://")
+    /// The host and port of a redirect uri, which is what a socket connects to.
+    fn authority(uri: &str) -> String {
+        uri.trim_start_matches("http://")
             .split('/')
             .next()
             .expect("the redirect uri should have an authority")
-            .to_string();
+            .to_string()
+    }
+
+    /// Act like the browser: GET the redirect and read the page back.
+    async fn visit(uri: &str, query: &str) -> String {
+        let authority = authority(uri);
 
         let mut socket = tokio::net::TcpStream::connect(&authority)
             .await
@@ -312,14 +348,8 @@ mod tests {
     #[tokio::test]
     async fn ignores_anything_that_is_not_the_callback() {
         let listener = Listener::bind().await.expect("should bind loopback");
-        let authority = listener
-            .redirect_uri()
-            .trim_start_matches("http://")
-            .split('/')
-            .next()
-            .expect("should have an authority")
-            .to_string();
         let uri = listener.redirect_uri();
+        let authority = authority(&uri);
 
         let stray = tokio::spawn(async move {
             let mut socket = tokio::net::TcpStream::connect(&authority)
@@ -344,5 +374,59 @@ mod tests {
 
         let turned_away = stray.await.expect("the stray request should finish");
         assert!(turned_away.starts_with("HTTP/1.1 404"), "got {turned_away}");
+    }
+
+    #[tokio::test]
+    async fn turns_away_a_path_that_only_begins_with_the_callback() {
+        let listener = Listener::bind().await.expect("should bind loopback");
+        let uri = listener.redirect_uri();
+        let authority = authority(&uri);
+
+        let stray = tokio::spawn(async move {
+            let mut socket = tokio::net::TcpStream::connect(&authority)
+                .await
+                .expect("should connect");
+            socket
+                .write_all(
+                    format!(
+                        "GET {CALLBACK_PATH}ery?code=stray&state=s HTTP/1.1\r\n\
+                         Host: local\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("should send");
+
+            let mut response = String::new();
+            socket.read_to_string(&mut response).await.ok();
+
+            visit(&uri, "code=real&state=s").await;
+            response
+        });
+
+        let redirect = listener.wait().await.expect("should receive the redirect");
+        assert_eq!(redirect.code, "real");
+
+        let turned_away = stray.await.expect("the stray request should finish");
+        assert!(turned_away.starts_with("HTTP/1.1 404"), "got {turned_away}");
+    }
+
+    #[tokio::test]
+    async fn answers_the_redirect_while_another_connection_sits_idle() {
+        let listener = Listener::bind().await.expect("should bind loopback");
+        let uri = listener.redirect_uri();
+
+        // A browser opens more sockets than it sends requests on. One it never
+        // writes to must not hold the redirect behind it until the timeout.
+        let idle = tokio::net::TcpStream::connect(authority(&uri))
+            .await
+            .expect("should connect");
+
+        let browser = tokio::spawn(async move { visit(&uri, "code=real&state=s").await });
+        let redirect = listener.wait().await.expect("should receive the redirect");
+
+        assert_eq!(redirect.code, "real");
+        browser.await.expect("the browser should finish");
+        drop(idle);
     }
 }
