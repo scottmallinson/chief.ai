@@ -51,6 +51,56 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_work_logs_external_id
     WHERE external_id IS NOT NULL;
 ";
 
+/// One row per connected *account*, rather than one per service.
+///
+/// `integrations` made `service_name` unique, so a person with a work and a
+/// personal mailbox could connect only one. SQLite cannot drop a constraint, so
+/// the table is rebuilt and its single row carried across.
+///
+/// Three columns exist for providers Chief has not added yet, because adding
+/// them later would mean a migration for a value the provider hands over on the
+/// first day: `expires_at` (Graph tokens last an hour), and `client_id` /
+/// `client_secret`, which hold either a registration the user brought or one
+/// minted at run time. Neither is a *shipped* secret — both belong to one
+/// installation and never leave this machine.
+const ADD_INTEGRATION_ACCOUNTS: &str = r"
+CREATE TABLE integration_accounts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    service         TEXT NOT NULL,
+    account_key     TEXT NOT NULL,
+    label           TEXT,
+    identity        TEXT,
+    credential_kind TEXT NOT NULL DEFAULT 'oauth',
+    access_token    TEXT NOT NULL,
+    refresh_token   TEXT,
+    expires_at      TEXT,
+    scopes          TEXT,
+    client_id       TEXT,
+    client_secret   TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (service, account_key)
+);
+
+INSERT INTO integration_accounts
+    (service, account_key, credential_kind, access_token, refresh_token, created_at)
+SELECT service_name, service_name, 'oauth', access_token, refresh_token, created_at
+  FROM integrations;
+
+DROP TABLE integrations;
+
+ALTER TABLE work_logs ADD COLUMN account_id INTEGER;
+
+UPDATE work_logs
+   SET account_id = (SELECT id FROM integration_accounts WHERE service = work_logs.source)
+ WHERE external_id IS NOT NULL;
+
+DROP INDEX IF EXISTS idx_work_logs_external_id;
+
+CREATE UNIQUE INDEX idx_work_logs_external_id
+    ON work_logs (source, account_id, external_id)
+    WHERE external_id IS NOT NULL;
+";
+
 /// Migrations applied to [`DB_URL`], in order.
 ///
 /// Migrations are append-only: once a version has shipped, add a new one rather
@@ -67,6 +117,12 @@ pub fn migrations() -> Vec<Migration> {
             version: 2,
             description: "trace work log entries back to their source",
             sql: ADD_WORK_LOG_EXTERNAL_ID,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "hold many labelled accounts per service",
+            sql: ADD_INTEGRATION_ACCOUNTS,
             kind: MigrationKind::Up,
         },
     ]
@@ -141,7 +197,7 @@ mod tests {
                 .collect();
 
         assert!(tables.contains(&"work_logs".to_string()));
-        assert!(tables.contains(&"integrations".to_string()));
+        assert!(tables.contains(&"integration_accounts".to_string()));
     }
 
     #[tokio::test]
@@ -182,44 +238,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn integrations_hold_one_row_per_service() {
+    async fn accounts_are_unique_per_service_and_key() {
         let pool = migrated_pool().await;
 
-        let insert = "INSERT INTO integrations (service_name, access_token) VALUES (?1, ?2)";
+        let insert = "INSERT INTO integration_accounts (service, account_key, access_token)
+                      VALUES (?1, ?2, ?3)";
+
         sqlx::query(insert)
             .bind("github")
+            .bind("octocat")
             .bind("token-1")
             .execute(&pool)
             .await
-            .expect("first insert should succeed");
+            .expect("first account should insert");
+
+        // A second account on the same service is the whole point.
+        sqlx::query(insert)
+            .bind("github")
+            .bind("hubot")
+            .bind("token-2")
+            .execute(&pool)
+            .await
+            .expect("a second account should insert");
 
         let duplicate = sqlx::query(insert)
             .bind("github")
-            .bind("token-2")
+            .bind("octocat")
+            .bind("token-3")
             .execute(&pool)
             .await;
 
-        assert!(duplicate.is_err(), "service_name should be unique");
+        assert!(
+            duplicate.is_err(),
+            "(service, account_key) should be unique"
+        );
     }
 
     #[tokio::test]
-    async fn integrations_timestamp_themselves() {
-        let pool = migrated_pool().await;
-
-        sqlx::query("INSERT INTO integrations (service_name, access_token) VALUES ('github', 't')")
-            .execute(&pool)
+    async fn upgrading_from_v2_keeps_the_credential_and_the_log() {
+        // A database as it stood before migration 3 shipped.
+        let pool = super::SqlitePool::connect("sqlite::memory:")
             .await
-            .expect("insert should succeed");
+            .expect("failed to open in-memory database");
 
-        let created_at: String =
-            sqlx::query_scalar("SELECT created_at FROM integrations WHERE service_name = 'github'")
+        let mut applied = super::migrations().into_iter();
+
+        for migration in applied.by_ref().take(2) {
+            sqlx::raw_sql(migration.sql)
+                .execute(&pool)
+                .await
+                .expect("the first two migrations should apply");
+        }
+
+        sqlx::query(
+            "INSERT INTO integrations (service_name, access_token, refresh_token)
+                     VALUES ('github', 'gho_old', 'ghr_old')",
+        )
+        .execute(&pool)
+        .await
+        .expect("a credential should be storable before the upgrade");
+        sqlx::query(
+            "INSERT INTO work_logs (source, content, external_id)
+                     VALUES ('github', 'Merged PR #4', 'owner/repo#4')",
+        )
+        .execute(&pool)
+        .await
+        .expect("an entry should be storable before the upgrade");
+
+        for migration in applied {
+            sqlx::raw_sql(migration.sql)
+                .execute(&pool)
+                .await
+                .expect("migration 3 should apply to an existing database");
+        }
+
+        // The credential survives, carried onto the new table.
+        let (service, account_key, access_token, kind): (String, String, String, String) =
+            sqlx::query_as(
+                "SELECT service, account_key, access_token, credential_kind
+                 FROM integration_accounts",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("the credential should have been carried across");
+
+        assert_eq!(service, "github");
+        assert_eq!(account_key, "github");
+        assert_eq!(access_token, "gho_old");
+        assert_eq!(kind, "oauth");
+
+        // The log entry survives and is attributed to that account, so the
+        // daemon does not log the same merge a second time.
+        let (content, account_id): (String, Option<i64>) =
+            sqlx::query_as("SELECT content, account_id FROM work_logs")
                 .fetch_one(&pool)
                 .await
-                .expect("row should exist");
+                .expect("the existing entry should still be there");
 
-        assert!(
-            created_at.ends_with('Z') && created_at.contains('T'),
-            "expected an ISO-8601 timestamp, got {created_at}"
-        );
+        assert_eq!(content, "Merged PR #4");
+        assert!(account_id.is_some(), "the entry should be attributed");
+
+        // The old table is gone.
+        let leftover: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'integrations'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .expect("should read the schema");
+
+        assert_eq!(leftover, None, "the v1 table should have been dropped");
     }
 }
