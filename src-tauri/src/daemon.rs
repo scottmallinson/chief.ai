@@ -104,7 +104,8 @@ async fn context<R: Runtime>(app: &AppHandle<R>) -> Result<Context, db::Error> {
 ///
 /// Does nothing at all when nothing is connected — there is no work to read and
 /// nothing to report. A person with a work and a personal account is two
-/// separate readings of GitHub, because the credentials are separate.
+/// separate readings of GitHub, because the credentials are separate — and
+/// separate is what they stay when one of them fails.
 pub async fn run_once(context: &Context) -> Result<usize, Error> {
     let accounts = integrations::accounts(&context.pool, integrations::GITHUB).await?;
     let mut written = 0;
@@ -118,7 +119,16 @@ pub async fn run_once(context: &Context) -> Result<usize, Error> {
             break;
         }
 
-        written += run_one_account(context, &account).await?;
+        // A failure belongs to the account it happened to, not to the pass. A
+        // token the user revoked on a personal account says nothing about
+        // whether their work account can be read, and ending the pass on the
+        // first refusal would freeze every later account's log until they
+        // noticed which one was at fault. Reported against the id, the way a
+        // name that could not be read is, and tried again next pass.
+        match run_one_account(context, &account).await {
+            Ok(entries) => written += entries,
+            Err(error) => eprintln!("could not read account {}: {error}", account.id),
+        }
     }
 
     Ok(written)
@@ -478,6 +488,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reads_every_account_even_when_one_is_refused() {
+        // A credential is refused per account: a personal token the user
+        // revoked months ago says nothing about whether their work account can
+        // be read. Letting the first one end the pass would mean the log never
+        // moves again, on the account they care about, until they notice the
+        // other one and disconnect it.
+        let (github_host, github_server) = serve(vec![
+            (
+                "HTTP/1.1 401 Unauthorized",
+                r#"{"message":"Bad credentials"}"#,
+            ),
+            ("HTTP/1.1 200 OK", MERGED_PRS),
+        ]);
+        let (engine_host, engine_server) = serve(vec![
+            ("HTTP/1.1 200 OK", answer("Shipped the orchestrator.")),
+            ("HTTP/1.1 200 OK", answer("Shipped the database.")),
+        ]);
+
+        // The refused account is the one read first, by id.
+        let context = context_for(&github_host, &engine_host, true).await;
+        let healthy = connect(&context.pool, "hubot", Some("hubot")).await;
+
+        let written = run_once(&context)
+            .await
+            .expect("one account's refusal is not a failed pass");
+
+        assert_eq!(written, 2, "the healthy account should have been read");
+        assert!(
+            work_log::has_logged(
+                &context.pool,
+                "github",
+                healthy,
+                "scottmallinson/chief.ai#12"
+            )
+            .await
+            .expect("read"),
+            "the healthy account's work should be in the log"
+        );
+
+        github_server.await.expect("github stub should finish");
+        engine_server.await.expect("engine stub should finish");
+    }
+
+    #[tokio::test]
     async fn names_an_account_that_arrived_without_an_identity() {
         // The row a v1 database was migrated from has no identity, because the
         // old table never stored one. A pass fills it in rather than asking the
@@ -528,14 +582,33 @@ mod tests {
 
     #[tokio::test]
     async fn writes_nothing_when_the_model_is_unreachable() {
-        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", MERGED_PRS)]);
+        let (github_host, github_server) = serve(vec![
+            ("HTTP/1.1 200 OK", MERGED_PRS),
+            ("HTTP/1.1 200 OK", MERGED_PRS),
+        ]);
         let context = context_for(&github_host, "http://127.0.0.1:1", true).await;
+        let account = integrations::accounts(&context.pool, integrations::GITHUB)
+            .await
+            .expect("should read")
+            .into_iter()
+            .next()
+            .expect("the account should be connected");
 
-        let error = run_once(&context)
+        // Reading the account fails, and says so in the terms the caller needs.
+        let error = run_one_account(&context, &account)
             .await
             .expect_err("an unreachable model should surface");
 
         assert!(matches!(error, Error::Summary(_)), "got {error:?}");
+
+        // The pass over the accounts reports that and carries on, so an engine
+        // still loading does not take the whole thing down.
+        assert_eq!(
+            run_once(&context)
+                .await
+                .expect("a pass reports a failure rather than becoming one"),
+            0
+        );
         assert!(
             work_log::fetch(&context.pool, None)
                 .await
