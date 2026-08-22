@@ -3,9 +3,9 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 
 import {
   connections,
-  disconnectAccount,
+  disconnect as forget,
   finishLogin,
-  GITHUB,
+  labelAccount,
   startLogin,
   type Account,
   type DeviceLogin,
@@ -13,33 +13,28 @@ import {
 
 type Status = 'loading' | 'idle' | 'awaiting-user' | 'working';
 
-interface UseGithub {
-  /** The connected GitHub account, or null when there is none. */
-  account: Account | null;
+interface UseIntegrations {
+  accounts: Account[];
+  accountsFor: (service: string) => Account[];
   login: DeviceLogin | null;
+  /** Which service is being connected, so only that card shows the code. */
+  connecting: string | null;
   status: Status;
   error: string | null;
-  connect: () => void;
-  disconnect: () => void;
+  connect: (service: string) => void;
+  disconnect: (accountId: number) => void;
+  rename: (accountId: number, label: string | null) => void;
 }
 
 function describe(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-/**
- * The backend answers with every account it holds. Settings shows one GitHub
- * connection today, so this picks the first one out rather than making the
- * screen understand a list it has nowhere to put yet.
- */
-function github(accounts: Account[]): Account | null {
-  return accounts.find((account) => account.service === GITHUB) ?? null;
-}
-
-/** Drive the GitHub device-flow sign-in from the settings screen. */
-export function useGithub(): UseGithub {
-  const [account, setAccount] = useState<Account | null>(null);
+/** Drive sign-in and account management from the settings screen. */
+export function useIntegrations(): UseIntegrations {
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [login, setLogin] = useState<DeviceLogin | null>(null);
+  const [connecting, setConnecting] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [error, setError] = useState<string | null>(null);
 
@@ -47,9 +42,9 @@ export function useGithub(): UseGithub {
     let cancelled = false;
 
     connections()
-      .then((accounts) => {
+      .then((current) => {
         if (cancelled) return;
-        setAccount(github(accounts));
+        setAccounts(current);
         setStatus('idle');
       })
       .catch((cause: unknown) => {
@@ -63,11 +58,12 @@ export function useGithub(): UseGithub {
     };
   }, []);
 
-  const connect = useCallback(() => {
+  const connect = useCallback((service: string) => {
     setError(null);
+    setConnecting(service);
     setStatus('working');
 
-    startLogin(GITHUB)
+    startLogin(service)
       .then(async (started) => {
         setLogin(started);
         setStatus('awaiting-user');
@@ -75,35 +71,56 @@ export function useGithub(): UseGithub {
         // Best effort: the code is on screen either way.
         await openUrl(started.verificationUri).catch(() => undefined);
 
-        setAccount(github(await finishLogin(GITHUB)));
+        const current = await finishLogin(service);
+        setAccounts(current);
         setLogin(null);
+        setConnecting(null);
         setStatus('idle');
       })
       .catch((cause: unknown) => {
         setError(describe(cause));
         setLogin(null);
+        setConnecting(null);
         setStatus('idle');
       });
   }, []);
 
-  const disconnect = useCallback(() => {
-    // Nothing to forget, and the command is keyed on an account id we would
-    // not have.
-    if (account === null) return;
-
+  const settle = useCallback((work: Promise<Account[]>) => {
     setError(null);
     setStatus('working');
 
-    disconnectAccount(account.id)
-      .then((accounts) => {
-        setAccount(github(accounts));
+    work
+      .then((current) => {
+        setAccounts(current);
         setStatus('idle');
       })
       .catch((cause: unknown) => {
         setError(describe(cause));
         setStatus('idle');
       });
-  }, [account]);
+  }, []);
 
-  return { account, login, status, error, connect, disconnect };
+  const disconnect = useCallback((accountId: number) => settle(forget(accountId)), [settle]);
+
+  const rename = useCallback(
+    (accountId: number, label: string | null) => settle(labelAccount(accountId, label)),
+    [settle],
+  );
+
+  const accountsFor = useCallback(
+    (service: string) => accounts.filter((account) => account.service === service),
+    [accounts],
+  );
+
+  return {
+    accounts,
+    accountsFor,
+    login,
+    connecting,
+    status,
+    error,
+    connect,
+    disconnect,
+    rename,
+  };
 }
