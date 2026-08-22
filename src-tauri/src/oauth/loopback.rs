@@ -22,6 +22,25 @@ use tokio::net::{TcpListener, TcpStream};
 /// Give up if the user never finishes in the browser.
 const TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Give up on one connection that never asks for anything. A browser writes
+/// its request line as soon as it has connected, so this only ever ends a
+/// socket that was not going to say anything — one of which would otherwise
+/// sit in the read for the whole of `TIMEOUT`, holding a file descriptor.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many connections may be answered at once. A browser opens a handful;
+/// the rest wait in the kernel's backlog, which costs this process nothing,
+/// and it is a process that is also holding the database pool and the engine.
+const MAX_CONNECTIONS: usize = 32;
+
+/// How many failed accepts in a row mean the listener itself is broken rather
+/// than one client having gone away.
+const MAX_ACCEPT_FAILURES: u32 = 8;
+
+/// A pause after a failed accept, so a listener that is out of file
+/// descriptors waits for one to come back instead of spinning the CPU.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
 /// The only path this answers.
 const CALLBACK_PATH: &str = "/oauth/callback";
 
@@ -32,19 +51,41 @@ const MAX_REQUEST_LINE: usize = 8192;
 pub enum Error {
     #[error("could not listen for the sign-in redirect: {0}")]
     Bind(String),
+    #[error("could not answer the sign-in redirect: {0}")]
+    Accept(String),
     #[error("sign-in was not completed in time")]
     TimedOut,
     #[error("the browser did not come back with a sign-in code")]
     NoCode,
     #[error("sign-in was declined")]
     Declined,
+    /// What the authorization server said, in its own words. A misconfigured
+    /// client id, a scope the app may not ask for or a fault at the provider
+    /// all arrive this way, and this is the only place that account of it
+    /// exists.
+    #[error("sign-in failed: {0}")]
+    Refused(String),
 }
 
 /// What the browser handed back.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Redirect {
     pub code: String,
     pub state: String,
+}
+
+/// The code is one half of the token exchange, so it never renders itself, for
+/// the same reason [`super::pkce::Verifier`] does not: derived `Debug` would
+/// carry it into any error or trace that formats a struct holding one. The
+/// state is a public nonce and prints as itself.
+impl std::fmt::Debug for Redirect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Redirect")
+            .field("code", &"<redacted>")
+            .field("state", &self.state)
+            .finish()
+    }
 }
 
 /// A bound port, waiting for the browser.
@@ -74,7 +115,14 @@ impl Listener {
 
     /// Wait for the browser, answer it, and return what it carried.
     pub async fn wait(self) -> Result<Redirect, Error> {
-        match tokio::time::timeout(TIMEOUT, self.accept_callback()).await {
+        self.wait_for(TIMEOUT).await
+    }
+
+    /// The same, giving up after a chosen wait. Only the tests choose: it is
+    /// how the timeout is exercised at all, and it is what lets a test that
+    /// must not hang fail in seconds rather than in two minutes.
+    async fn wait_for(self, timeout: Duration) -> Result<Redirect, Error> {
+        match tokio::time::timeout(timeout, self.accept_callback()).await {
             Ok(result) => result,
             Err(_) => Err(Error::TimedOut),
         }
@@ -88,12 +136,33 @@ impl Listener {
     /// hold the redirect behind it until the timeout.
     async fn accept_callback(&self) -> Result<Redirect, Error> {
         let mut answering = FuturesUnordered::new();
+        let mut failures = 0_u32;
 
         loop {
+            let in_flight = answering.len();
+
             tokio::select! {
-                accepted = self.listener.accept() => {
-                    let (socket, _) = accepted.map_err(|error| Error::Bind(error.to_string()))?;
-                    answering.push(answer(socket));
+                // Stop taking new connections once enough are in flight. The
+                // rest queue in the kernel until one finishes.
+                accepted = self.listener.accept(), if in_flight < MAX_CONNECTIONS => {
+                    match accepted {
+                        Ok((socket, _)) => {
+                            failures = 0;
+                            answering.push(answer(socket));
+                        }
+                        // Usually one client's problem — it reset before the
+                        // handshake finished, or the process is momentarily
+                        // out of file descriptors — and the redirect may still
+                        // be to come, so one failure does not end the sign-in.
+                        // A listener failing over and over is a broken one.
+                        Err(error) => {
+                            failures += 1;
+                            if failures >= MAX_ACCEPT_FAILURES {
+                                return Err(Error::Accept(error.to_string()));
+                            }
+                            tokio::time::sleep(ACCEPT_BACKOFF).await;
+                        }
+                    }
                 }
                 // `None` is a connection that was not the callback, already
                 // turned away; the wait goes on.
@@ -108,7 +177,18 @@ impl Listener {
 }
 
 /// Answer one connection, and report a callback if that is what it was.
-async fn answer(mut socket: TcpStream) -> Option<Result<Redirect, Error>> {
+///
+/// Bounded by `REQUEST_TIMEOUT`, so a connection that opens and then says
+/// nothing is let go of rather than held until the sign-in as a whole gives
+/// up.
+async fn answer(socket: TcpStream) -> Option<Result<Redirect, Error>> {
+    tokio::time::timeout(REQUEST_TIMEOUT, read_and_answer(socket))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn read_and_answer(mut socket: TcpStream) -> Option<Result<Redirect, Error>> {
     let Some(query) = read_request_line(&mut socket)
         .await
         .as_deref()
@@ -154,6 +234,7 @@ fn interpret(query: &str) -> Result<Redirect, Error> {
     let mut code = None;
     let mut state = None;
     let mut failure = None;
+    let mut description = None;
 
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
@@ -162,14 +243,21 @@ fn interpret(query: &str) -> Result<Redirect, Error> {
             "code" => code = Some(decode(value)),
             "state" => state = Some(decode(value)),
             "error" => failure = Some(decode(value)),
+            "error_description" => description = Some(decode(value)),
             _ => {}
         }
     }
 
-    if let Some(failure) = failure {
+    // RFC 6749 §4.1.2.1. Say what the server said: an unusable client id, a
+    // scope it will not grant or a fault of its own is not the browser failing
+    // to come back, and reporting it as that leaves nobody able to act on it.
+    if let Some(failure) = failure.filter(|failure| !failure.is_empty()) {
         return Err(match failure.as_str() {
             "access_denied" => Error::Declined,
-            _ => Error::NoCode,
+            _ => Error::Refused(match description.filter(|text| !text.is_empty()) {
+                Some(description) => format!("{failure} ({description})"),
+                None => failure,
+            }),
         });
     }
 
@@ -259,6 +347,11 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    /// What the tests that open more than one connection wait for. Long enough
+    /// that a loaded machine still finishes, short enough that undoing the
+    /// concurrency fails a test in seconds instead of hanging for two minutes.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
     /// The host and port of a redirect uri, which is what a socket connects to.
     fn authority(uri: &str) -> String {
         uri.trim_start_matches("http://")
@@ -346,6 +439,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn names_the_reason_the_authorization_server_refused() {
+        let listener = Listener::bind().await.expect("should bind loopback");
+        let uri = listener.redirect_uri();
+
+        let browser = tokio::spawn(async move {
+            visit(
+                &uri,
+                "error=unauthorized_client&error_description=The+client+is+not+authorized",
+            )
+            .await
+        });
+        let error = listener.wait().await.expect_err("a refusal should surface");
+
+        let reported = error.to_string();
+        assert!(reported.contains("unauthorized_client"), "got {reported}");
+        assert!(
+            reported.contains("The client is not authorized"),
+            "got {reported}"
+        );
+        browser.await.expect("the browser should finish");
+    }
+
+    #[test]
+    fn never_renders_the_authorization_code() {
+        let redirect = Redirect {
+            code: "the-authorization-code".to_string(),
+            state: "xyz".to_string(),
+        };
+
+        let rendered = format!("{redirect:?}");
+        assert!(
+            !rendered.contains("the-authorization-code"),
+            "got {rendered}"
+        );
+    }
+
+    #[tokio::test]
     async fn ignores_anything_that_is_not_the_callback() {
         let listener = Listener::bind().await.expect("should bind loopback");
         let uri = listener.redirect_uri();
@@ -369,7 +499,10 @@ mod tests {
             response
         });
 
-        let redirect = listener.wait().await.expect("should receive the redirect");
+        let redirect = listener
+            .wait_for(TEST_TIMEOUT)
+            .await
+            .expect("should receive the redirect");
         assert_eq!(redirect.code, "real");
 
         let turned_away = stray.await.expect("the stray request should finish");
@@ -404,7 +537,10 @@ mod tests {
             response
         });
 
-        let redirect = listener.wait().await.expect("should receive the redirect");
+        let redirect = listener
+            .wait_for(TEST_TIMEOUT)
+            .await
+            .expect("should receive the redirect");
         assert_eq!(redirect.code, "real");
 
         let turned_away = stray.await.expect("the stray request should finish");
@@ -423,10 +559,103 @@ mod tests {
             .expect("should connect");
 
         let browser = tokio::spawn(async move { visit(&uri, "code=real&state=s").await });
-        let redirect = listener.wait().await.expect("should receive the redirect");
+        let redirect = listener
+            .wait_for(TEST_TIMEOUT)
+            .await
+            .expect("should receive the redirect");
 
         assert_eq!(redirect.code, "real");
         browser.await.expect("the browser should finish");
         drop(idle);
+    }
+
+    #[tokio::test]
+    async fn turns_away_a_request_line_longer_than_a_redirect() {
+        let listener = Listener::bind().await.expect("should bind loopback");
+        let uri = listener.redirect_uri();
+        let authority = authority(&uri);
+
+        let stray = tokio::spawn(async move {
+            let mut socket = tokio::net::TcpStream::connect(&authority)
+                .await
+                .expect("should connect");
+            // Past what a request line may be, and with no end to it, so only
+            // the ceiling stops the read.
+            socket
+                .write_all(format!("GET /{}", "x".repeat(MAX_REQUEST_LINE + 1)).as_bytes())
+                .await
+                .expect("should send");
+
+            let mut response = String::new();
+            socket.read_to_string(&mut response).await.ok();
+
+            visit(&uri, "code=real&state=s").await;
+            response
+        });
+
+        let redirect = listener
+            .wait_for(TEST_TIMEOUT)
+            .await
+            .expect("should receive the redirect");
+        assert_eq!(redirect.code, "real");
+
+        let turned_away = stray.await.expect("the stray request should finish");
+        assert!(turned_away.starts_with("HTTP/1.1 404"), "got {turned_away}");
+    }
+
+    #[tokio::test]
+    async fn gives_up_when_the_browser_never_comes_back() {
+        let listener = Listener::bind().await.expect("should bind loopback");
+
+        let error = listener
+            .wait_for(Duration::from_millis(50))
+            .await
+            .expect_err("the wait should end on its own");
+
+        assert!(matches!(error, Error::TimedOut), "got {error:?}");
+    }
+
+    #[test]
+    fn refuses_a_callback_that_carries_a_code_but_no_state() {
+        let outcome = interpret("code=abc123");
+
+        assert!(matches!(outcome, Err(Error::NoCode)), "got {outcome:?}");
+    }
+
+    #[test]
+    fn answers_only_a_get() {
+        assert_eq!(
+            request_target("GET /oauth/callback?code=abc HTTP/1.1"),
+            Some("/oauth/callback?code=abc")
+        );
+        assert_eq!(
+            request_target("POST /oauth/callback?code=abc HTTP/1.1"),
+            None
+        );
+        assert_eq!(request_target("HEAD /oauth/callback HTTP/1.1"), None);
+    }
+
+    #[test]
+    fn keeps_the_error_the_server_named() {
+        let outcome = interpret("error=invalid_scope&state=xyz");
+
+        assert!(
+            matches!(&outcome, Err(Error::Refused(reason)) if reason == "invalid_scope"),
+            "got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn reads_a_refusal_by_the_user_as_declined_however_it_is_described() {
+        let outcome = interpret("error=access_denied&error_description=The+user+said+no");
+
+        assert!(matches!(outcome, Err(Error::Declined)), "got {outcome:?}");
+    }
+
+    #[test]
+    fn an_empty_error_is_not_a_reason() {
+        let outcome = interpret("error=");
+
+        assert!(matches!(outcome, Err(Error::NoCode)), "got {outcome:?}");
     }
 }
