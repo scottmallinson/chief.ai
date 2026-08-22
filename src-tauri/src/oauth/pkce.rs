@@ -9,8 +9,17 @@ use base64::Engine;
 use sha2::{Digest, Sha256};
 
 /// The secret half of a PKCE exchange: sent with the code, never before it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Verifier(String);
+
+/// The one genuinely secret value here, so it never renders itself: derived
+/// `Debug` would carry it into any error or trace that formats a struct
+/// holding one.
+impl std::fmt::Debug for Verifier {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Verifier(<redacted>)")
+    }
+}
 
 impl Verifier {
     /// A fresh verifier from the operating system's CSPRNG.
@@ -39,7 +48,11 @@ impl Verifier {
 
 /// A single-use value echoed back by the authorization server, checked before
 /// the code is exchanged so another site cannot feed us one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Deliberately not `PartialEq`: `matches` is the one way to compare a state,
+/// and `==` would be a second route that short-circuits on the first differing
+/// byte.
+#[derive(Debug, Clone)]
 pub struct State(String);
 
 impl State {
