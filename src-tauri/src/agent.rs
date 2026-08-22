@@ -400,13 +400,27 @@ mod orchestration_tests {
         }]
     }"#;
 
-    /// A tool context whose GitHub client talks to `host`, with a token stored
-    /// so the tool gets as far as making a request.
+    /// A tool context whose GitHub client talks to `host`, with an account
+    /// connected so the tool gets as far as making a request.
     async fn context_connected_to(host: &str) -> tools::Context {
         let pool = migrated_pool().await;
-        integrations::save(&pool, integrations::GITHUB, "gho_token", None)
-            .await
-            .expect("should store a token");
+        integrations::save(
+            &pool,
+            integrations::NewAccount {
+                service: integrations::GITHUB,
+                account_key: "octocat",
+                identity: Some("octocat"),
+                credential_kind: integrations::OAUTH,
+                access_token: "gho_token",
+                refresh_token: None,
+                expires_at: None,
+                scopes: None,
+                client_id: None,
+                client_secret: None,
+            },
+        )
+        .await
+        .expect("should store a credential");
 
         tools::Context {
             pool,

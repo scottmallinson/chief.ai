@@ -9,8 +9,9 @@ use serde_json::{json, Value};
 use sqlx::SqlitePool;
 
 use crate::github::{self, State as PrState};
+use crate::integrations;
 use crate::llama::{Tool, ToolCall, ToolCallFunction, ToolFunction};
-use crate::session::Session;
+use crate::session::GithubSession;
 
 /// What the tools need to do their work: the user's local database, and a
 /// client for the services they have connected.
@@ -112,11 +113,21 @@ fn parse(function: &ToolCallFunction) -> Result<FetchGithubPrsArgs, String> {
 }
 
 /// Read the user's pull requests from GitHub with their own token.
+///
+/// Reads the first connected account. Asking across several accounts is a
+/// question the tool schema cannot yet express, and inventing an argument the
+/// model would have to guess at would make answers worse, not better.
 async fn fetch_github_prs(
     context: &Context,
     state: PullRequestState,
 ) -> Result<Value, github::Error> {
-    let pull_requests = Session::new(&context.pool, &context.github)
+    let account = integrations::accounts(&context.pool, integrations::GITHUB)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(github::Error::NotConnected)?;
+
+    let pull_requests = GithubSession::new(&context.pool, &context.github, account.id)
         .pull_requests(state.into(), PR_LIMIT)
         .await?;
 
@@ -127,7 +138,6 @@ async fn fetch_github_prs(
 mod tests {
     use super::*;
     use crate::db::test_support::migrated_pool;
-    use crate::integrations;
     use crate::llama::test_support::serve;
 
     /// One page of GitHub search results, trimmed to the fields we read.
@@ -167,11 +177,26 @@ mod tests {
         }
     }
 
+    /// The same, with one GitHub account connected.
     async fn connected(host: &str) -> Context {
         let context = context(host).await;
-        integrations::save(&context.pool, integrations::GITHUB, "gho_token", None)
-            .await
-            .expect("should store a token");
+        integrations::save(
+            &context.pool,
+            integrations::NewAccount {
+                service: integrations::GITHUB,
+                account_key: "octocat",
+                identity: Some("octocat"),
+                credential_kind: integrations::OAUTH,
+                access_token: "gho_token",
+                refresh_token: None,
+                expires_at: None,
+                scopes: None,
+                client_id: None,
+                client_secret: None,
+            },
+        )
+        .await
+        .expect("should store a credential");
 
         context
     }
