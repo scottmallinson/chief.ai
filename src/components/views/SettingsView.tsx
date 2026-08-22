@@ -2,10 +2,10 @@ import type { ReactNode } from 'react';
 import { Github } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { Chip, type ChipProps } from '@/components/ui/chip';
+import { Chip } from '@/components/ui/chip';
 import { Dots } from '@/components/ui/activity';
-import { useGithub } from '@/hooks/use-github';
-import { type Account } from '@/lib/integrations';
+import { useIntegrations } from '@/hooks/use-integrations';
+import { accountName, GITHUB, type Account } from '@/lib/integrations';
 
 interface SettingsSectionProps {
   title: string;
@@ -32,32 +32,68 @@ function SettingsSection({ title, description, state, children }: SettingsSectio
 
 const connectedFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
 
-/** The connection as a chip: verified when it is one, quiet when it is not. */
-function connectionState(account: Account | null): {
-  tone: ChipProps['tone'];
-  label: string;
-  dot: boolean;
-} {
-  if (account === null) {
-    return { tone: 'quiet', label: 'Not connected', dot: false };
-  }
+/** One connected account: what it is called, since when, and how to remove it. */
+function ConnectedAccount({
+  account,
+  onRename,
+  onDisconnect,
+  disabled,
+}: {
+  account: Account;
+  onRename: (accountId: number, label: string | null) => void;
+  onDisconnect: (accountId: number) => void;
+  disabled: boolean;
+}) {
+  const since = new Date(account.connectedAt);
+  const identity = account.identity ?? account.accountKey;
 
-  const parsed = new Date(account.connectedAt);
+  // Committed on blur rather than per keystroke: naming an account is not
+  // worth a database write per character.
+  const commit = (value: string) => {
+    const label = value.trim() === '' ? null : value.trim();
 
-  return {
-    tone: 'verified',
-    label: Number.isNaN(parsed.getTime())
-      ? 'Connected'
-      : `Connected ${connectedFormat.format(parsed)}`,
-    dot: true,
+    if (label !== account.label) {
+      onRename(account.id, label);
+    }
   };
+
+  return (
+    <div className="flex items-center justify-between gap-4 border-t border-border py-3">
+      <div className="min-w-0 flex-1">
+        <input
+          type="text"
+          aria-label={`Name for ${identity}`}
+          defaultValue={account.label ?? ''}
+          placeholder={identity}
+          disabled={disabled}
+          onBlur={(event) => commit(event.target.value)}
+          className="w-full rounded-sm bg-transparent text-sm font-medium outline-none placeholder:font-normal placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
+        />
+        <p className="mt-0.5 micro text-muted-foreground">
+          {Number.isNaN(since.getTime())
+            ? 'Connected'
+            : `Connected ${connectedFormat.format(since)}`}
+        </p>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={disabled}
+        onClick={() => onDisconnect(account.id)}
+      >
+        Disconnect {accountName(account)}
+      </Button>
+    </div>
+  );
 }
 
 function GithubIntegration() {
-  const { account, login, status, error, connect, disconnect } = useGithub();
+  const { accountsFor, login, connecting, status, error, connect, disconnect, rename } =
+    useIntegrations();
 
+  const accounts = accountsFor(GITHUB);
   const isBusy = status === 'working' || status === 'awaiting-user';
-  const state = connectionState(account);
+  const showCode = login !== null && connecting === GITHUB;
 
   return (
     <SettingsSection
@@ -66,14 +102,30 @@ function GithubIntegration() {
       state={
         status === 'loading' ? (
           <Chip tone="quiet">Checking</Chip>
+        ) : accounts.length === 0 ? (
+          <Chip tone="quiet">Not connected</Chip>
         ) : (
-          <Chip tone={state.tone} dot={state.dot}>
-            {state.label}
+          <Chip tone="verified" dot>
+            {accounts.length === 1 ? 'Connected' : `${accounts.length} accounts`}
           </Chip>
         )
       }
     >
-      {login !== null && (
+      {accounts.length > 0 && (
+        <div className="mt-3">
+          {accounts.map((account) => (
+            <ConnectedAccount
+              key={account.id}
+              account={account}
+              onRename={rename}
+              onDisconnect={disconnect}
+              disabled={isBusy}
+            />
+          ))}
+        </div>
+      )}
+
+      {showCode && (
         <div className="mt-4 rounded-md border border-border p-4" role="status">
           <p className="text-sm">
             Enter this code at{' '}
@@ -101,16 +153,15 @@ function GithubIntegration() {
       )}
 
       <div className="mt-4">
-        {account !== null ? (
-          <Button variant="outline" size="sm" onClick={disconnect} disabled={isBusy}>
-            Disconnect
-          </Button>
-        ) : (
-          <Button size="sm" onClick={connect} disabled={isBusy || status === 'loading'}>
-            <Github aria-hidden />
-            Connect GitHub
-          </Button>
-        )}
+        <Button
+          size="sm"
+          variant={accounts.length > 0 ? 'outline' : 'default'}
+          onClick={() => connect(GITHUB)}
+          disabled={isBusy || status === 'loading'}
+        >
+          <Github aria-hidden />
+          {accounts.length > 0 ? 'Add another GitHub account' : 'Connect GitHub'}
+        </Button>
       </div>
     </SettingsSection>
   );

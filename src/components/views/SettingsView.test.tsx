@@ -12,17 +12,23 @@ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl }));
 
 // The backend answers every one of these commands with the accounts as they
 // now stand, so a fixture is a list rather than a status.
-const disconnected: unknown[] = [];
-const connected = [
-  {
-    id: 7,
-    service: 'github',
-    accountKey: 'octocat',
-    label: null,
-    identity: 'octocat',
-    connectedAt: '2026-08-19T14:00:00.000Z',
-  },
-];
+const octocat = {
+  id: 1,
+  service: 'github',
+  accountKey: 'octocat',
+  label: null,
+  identity: 'octocat',
+  connectedAt: '2026-08-19T14:00:00.000Z',
+};
+
+const hubot = {
+  id: 2,
+  service: 'github',
+  accountKey: 'hubot',
+  label: 'Work',
+  identity: 'hubot',
+  connectedAt: '2026-08-20T09:00:00.000Z',
+};
 
 const deviceLogin = {
   userCode: 'WDJB-MJHT',
@@ -38,7 +44,7 @@ describe('SettingsView', () => {
   });
 
   it('offers to connect GitHub when it is not connected', async () => {
-    invoke.mockResolvedValue(disconnected);
+    invoke.mockResolvedValue([]);
 
     render(<SettingsView />);
 
@@ -46,7 +52,7 @@ describe('SettingsView', () => {
   });
 
   it('carries the connection as state, not as an action', async () => {
-    invoke.mockResolvedValue(disconnected);
+    invoke.mockResolvedValue([]);
 
     render(<SettingsView />);
 
@@ -56,7 +62,7 @@ describe('SettingsView', () => {
   });
 
   it('says when a connected account was connected', async () => {
-    invoke.mockResolvedValue(connected);
+    invoke.mockResolvedValue([octocat]);
 
     render(<SettingsView />);
 
@@ -65,7 +71,7 @@ describe('SettingsView', () => {
 
   it('shows the device code and opens the browser', async () => {
     invoke.mockImplementation((command: string) => {
-      if (command === 'connections') return Promise.resolve(disconnected);
+      if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
       // Never settles, so the waiting state stays on screen.
       return new Promise(() => {});
@@ -80,21 +86,21 @@ describe('SettingsView', () => {
 
   it('reports the connection once the user finishes', async () => {
     invoke.mockImplementation((command: string) => {
-      if (command === 'connections') return Promise.resolve(disconnected);
+      if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
-      return Promise.resolve(connected);
+      return Promise.resolve([octocat]);
     });
 
     render(<SettingsView />);
     await userEvent.click(await screen.findByRole('button', { name: 'Connect GitHub' }));
 
-    expect(await screen.findByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Disconnect octocat' })).toBeInTheDocument();
     expect(screen.queryByText('WDJB-MJHT')).not.toBeInTheDocument();
   });
 
   it('surfaces a missing client id rather than failing silently', async () => {
     invoke.mockImplementation((command: string) => {
-      if (command === 'connections') return Promise.resolve(disconnected);
+      if (command === 'connections') return Promise.resolve([]);
       return Promise.reject(
         new Error('no GitHub client id is configured. Register an OAuth app...'),
       );
@@ -108,21 +114,21 @@ describe('SettingsView', () => {
 
   it('lets a connected account be disconnected', async () => {
     invoke.mockImplementation((command: string) =>
-      Promise.resolve(command === 'disconnect' ? disconnected : connected),
+      Promise.resolve(command === 'disconnect' ? [] : [octocat]),
     );
 
     render(<SettingsView />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Disconnect' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Disconnect octocat' }));
 
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
     // Keyed on the account, not the service: forgetting one of two GitHub
     // accounts has to leave the other connected.
-    expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 7 });
+    expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 1 });
   });
 
   it('names the service it is signing in to', async () => {
     invoke.mockImplementation((command: string) => {
-      if (command === 'connections') return Promise.resolve(disconnected);
+      if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
       return new Promise(() => {});
     });
@@ -132,5 +138,73 @@ describe('SettingsView', () => {
 
     await screen.findByText('WDJB-MJHT');
     expect(invoke).toHaveBeenCalledWith('start_login', { service: 'github' });
+  });
+
+  it('lists every connected account for a service', async () => {
+    invoke.mockResolvedValue([octocat, hubot]);
+
+    render(<SettingsView />);
+
+    expect(await screen.findByLabelText('Name for octocat')).toBeInTheDocument();
+    expect(screen.getByLabelText('Name for hubot')).toBeInTheDocument();
+  });
+
+  it('prefers the name the user gave an account', async () => {
+    invoke.mockResolvedValue([hubot]);
+
+    render(<SettingsView />);
+
+    // The chosen name is the field's value; the raw identity is only its
+    // placeholder, so the disconnect button is where the name has to surface.
+    expect(await screen.findByRole('button', { name: 'Disconnect Work' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Name for hubot')).toHaveValue('Work');
+  });
+
+  it('lets an account be named', async () => {
+    invoke.mockResolvedValue([octocat, hubot]);
+
+    render(<SettingsView />);
+
+    expect(await screen.findByLabelText('Name for hubot')).toHaveValue('Work');
+
+    await userEvent.type(screen.getByLabelText('Name for octocat'), 'Personal');
+    await userEvent.tab();
+
+    expect(invoke).toHaveBeenCalledWith('label_account', { accountId: 1, label: 'Personal' });
+  });
+
+  it('clears a name when the field is emptied', async () => {
+    invoke.mockResolvedValue([hubot]);
+
+    render(<SettingsView />);
+
+    await userEvent.clear(await screen.findByLabelText('Name for hubot'));
+    await userEvent.tab();
+
+    expect(invoke).toHaveBeenCalledWith('label_account', { accountId: 2, label: null });
+  });
+
+  it('offers to add another account when one is already connected', async () => {
+    invoke.mockResolvedValue([octocat]);
+
+    render(<SettingsView />);
+
+    expect(
+      await screen.findByRole('button', { name: 'Add another GitHub account' }),
+    ).toBeInTheDocument();
+  });
+
+  it('disconnects the account whose button was pressed', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([octocat, hubot]);
+      return Promise.resolve([octocat]);
+    });
+
+    render(<SettingsView />);
+
+    const buttons = await screen.findAllByRole('button', { name: /^Disconnect/ });
+    await userEvent.click(buttons[1]);
+
+    expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 2 });
   });
 });
