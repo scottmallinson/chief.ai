@@ -30,7 +30,14 @@ pub struct WorkLogEntry {
     /// Identifies the thing this entry describes, for entries written by the
     /// background daemon. `None` for entries the user wrote themselves.
     pub external_id: Option<String>,
+    /// Which connected account this came from, and `0` — the sentinel the
+    /// schema uses, which `AUTOINCREMENT` never issues — for an entry the user
+    /// wrote by hand or one an upgrade could attribute to nothing.
+    pub account_id: i64,
 }
+
+/// The columns that make up a [`WorkLogEntry`], so every query agrees.
+const ENTRY_COLUMNS: &str = "id, timestamp, source, content, summary, external_id, account_id";
 
 /// A new entry. `timestamp` defaults to now, `summary` to nothing.
 #[derive(Debug, Clone, Deserialize)]
@@ -55,12 +62,12 @@ pub struct NewWorkLogEntry {
 pub async fn fetch(pool: &SqlitePool, limit: Option<i64>) -> Result<Vec<WorkLogEntry>, Error> {
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
-    let entries = sqlx::query_as::<_, WorkLogEntry>(
-        "SELECT id, timestamp, source, content, summary, external_id
+    let entries = sqlx::query_as::<_, WorkLogEntry>(&format!(
+        "SELECT {ENTRY_COLUMNS}
          FROM work_logs
          ORDER BY timestamp DESC, id DESC
-         LIMIT ?1",
-    )
+         LIMIT ?1"
+    ))
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -70,12 +77,12 @@ pub async fn fetch(pool: &SqlitePool, limit: Option<i64>) -> Result<Vec<WorkLogE
 
 /// Append an entry and return it as stored, including the values SQLite filled in.
 pub async fn insert(pool: &SqlitePool, entry: NewWorkLogEntry) -> Result<WorkLogEntry, Error> {
-    let stored = sqlx::query_as::<_, WorkLogEntry>(
+    let stored = sqlx::query_as::<_, WorkLogEntry>(&format!(
         "INSERT INTO work_logs (timestamp, source, content, summary, external_id, account_id)
          VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4, ?5,
                  IFNULL(?6, 0))
-         RETURNING id, timestamp, source, content, summary, external_id",
-    )
+         RETURNING {ENTRY_COLUMNS}"
+    ))
     .bind(entry.timestamp)
     .bind(entry.source)
     .bind(entry.content)
@@ -96,13 +103,13 @@ pub async fn insert_new(
     pool: &SqlitePool,
     entry: NewWorkLogEntry,
 ) -> Result<Option<WorkLogEntry>, Error> {
-    let stored = sqlx::query_as::<_, WorkLogEntry>(
+    let stored = sqlx::query_as::<_, WorkLogEntry>(&format!(
         "INSERT INTO work_logs (timestamp, source, content, summary, external_id, account_id)
          VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4, ?5,
                  IFNULL(?6, 0))
          ON CONFLICT (source, account_id, external_id) WHERE external_id IS NOT NULL DO NOTHING
-         RETURNING id, timestamp, source, content, summary, external_id",
-    )
+         RETURNING {ENTRY_COLUMNS}"
+    ))
     .bind(entry.timestamp)
     .bind(entry.source)
     .bind(entry.content)
@@ -220,6 +227,41 @@ mod tests {
 
         assert_eq!(stored.timestamp, "2026-08-19T09:00:00.000Z");
         assert_eq!(stored.summary.as_deref(), Some("Shipped the shell"));
+    }
+
+    #[tokio::test]
+    async fn says_which_account_an_entry_came_from() {
+        // Attribution is written on every insert; without it on the way out,
+        // whose work an entry records is only visible to raw SQL.
+        let pool = migrated_pool().await;
+
+        let attributed = insert(
+            &pool,
+            NewWorkLogEntry {
+                account_id: Some(7),
+                ..entry("github", "Merged PR #4")
+            },
+        )
+        .await
+        .expect("insert should succeed");
+        let by_hand = insert(&pool, entry("manual", "Wrote something down"))
+            .await
+            .expect("insert should succeed");
+
+        assert_eq!(attributed.account_id, 7);
+        assert_eq!(
+            by_hand.account_id, 0,
+            "an entry the user wrote carries the sentinel, not an account"
+        );
+
+        let read = fetch(&pool, None).await.expect("read should succeed");
+        assert_eq!(
+            read.iter()
+                .map(|entry| entry.account_id)
+                .collect::<Vec<_>>(),
+            [0, 7],
+            "reading the log back should say the same"
+        );
     }
 
     #[tokio::test]
