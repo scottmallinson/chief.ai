@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 import {
@@ -30,6 +30,8 @@ interface UseIntegrations {
   disconnecting: readonly number[];
   error: string | null;
   connect: (service: string) => void;
+  /** Stop waiting on a sign-in the user has walked away from. */
+  cancel: () => void;
   disconnect: (accountId: number) => void;
   rename: (accountId: number, label: string | null) => void;
 }
@@ -46,6 +48,11 @@ export function useIntegrations(): UseIntegrations {
   const [status, setStatus] = useState<Status>('loading');
   const [disconnecting, setDisconnecting] = useState<readonly number[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // Which sign-in attempt is the live one. Giving up moves it on, so the poll
+  // still running in Rust answers a number nobody is waiting for and is
+  // dropped rather than connecting an account behind the user.
+  const attempt = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,12 +75,15 @@ export function useIntegrations(): UseIntegrations {
   }, []);
 
   const connect = useCallback((service: string) => {
+    const mine = ++attempt.current;
+
     setError(null);
     setConnecting(service);
     setStatus('working');
 
     startLogin(service)
       .then(async (started) => {
+        if (attempt.current !== mine) return;
         setLogin(started);
         setStatus('awaiting-user');
 
@@ -81,17 +91,30 @@ export function useIntegrations(): UseIntegrations {
         await openUrl(started.verificationUri).catch(() => undefined);
 
         const current = await finishLogin(service);
+        if (attempt.current !== mine) return;
         setAccounts(current);
         setLogin(null);
         setConnecting(null);
         setStatus('idle');
       })
       .catch((cause: unknown) => {
+        if (attempt.current !== mine) return;
         setError(describe(cause));
         setLogin(null);
         setConnecting(null);
         setStatus('idle');
       });
+  }, []);
+
+  const cancel = useCallback(() => {
+    // GitHub's device code lives for fifteen minutes and the poll in Rust runs
+    // until it expires. There is nothing to call off — the answer is simply no
+    // longer wanted — so the waiting ends here, and at once.
+    attempt.current += 1;
+    setLogin(null);
+    setConnecting(null);
+    setError(null);
+    setStatus('idle');
   }, []);
 
   const disconnect = useCallback((accountId: number) => {
@@ -129,6 +152,7 @@ export function useIntegrations(): UseIntegrations {
     disconnecting,
     error,
     connect,
+    cancel,
     disconnect,
     rename,
   };

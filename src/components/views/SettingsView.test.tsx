@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -259,5 +259,66 @@ describe('SettingsView', () => {
     // time: the second field cannot freeze because the first is saving.
     await userEvent.type(screen.getByLabelText('Name for hubot'), '!');
     expect(screen.getByLabelText('Name for hubot')).toHaveValue('Work!');
+  });
+  it('lets an abandoned sign-in be given up on', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([octocat]);
+      if (command === 'start_login') return Promise.resolve(deviceLogin);
+      // Rust polls until GitHub expires the code, which is fifteen minutes.
+      return new Promise(() => {});
+    });
+
+    render(<SettingsView />);
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Add another GitHub account' }),
+    );
+    await screen.findByText('WDJB-MJHT');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.queryByText('WDJB-MJHT')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add another GitHub account' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Disconnect octocat' })).toBeEnabled();
+  });
+
+  it('ignores a sign-in that finishes after it was given up on', async () => {
+    let finish: (accounts: unknown[]) => void = () => {};
+
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([]);
+      if (command === 'start_login') return Promise.resolve(deviceLogin);
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+
+    render(<SettingsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect GitHub' }));
+    await screen.findByText('WDJB-MJHT');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // The poll in Rust cannot be called off, so it may still answer. An answer
+    // nobody is waiting for must not connect an account behind the user.
+    await act(async () => {
+      finish([octocat]);
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole('button', { name: 'Disconnect octocat' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeEnabled();
+  });
+
+  it('says how long the code has left', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([]);
+      if (command === 'start_login') return Promise.resolve(deviceLogin);
+      return new Promise(() => {});
+    });
+
+    render(<SettingsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect GitHub' }));
+
+    // The wait is bounded and the user is the one waiting, so say by how much.
+    expect(await screen.findByText(/15:00 left/)).toBeInTheDocument();
   });
 });
