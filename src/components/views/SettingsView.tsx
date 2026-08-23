@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Github } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -46,22 +46,28 @@ function ConnectedAccount({
   leaving,
 }: {
   account: Account;
-  onRename: (accountId: number, label: string | null) => void;
+  onRename: (accountId: number, label: string | null) => Promise<boolean>;
   onDisconnect: (accountId: number) => void;
   /** This account is being forgotten. Nothing else on the screen cares. */
   leaving: boolean;
 }) {
   const since = new Date(account.connectedAt);
   const identity = account.identity ?? account.accountKey;
+  const [name, setName] = useState(account.label ?? '');
 
   // Committed on blur rather than per keystroke: naming an account is not
   // worth a database write per character.
   const commit = (value: string) => {
     const label = value.trim() === '' ? null : value.trim();
 
-    if (label !== account.label) {
-      onRename(account.id, label);
-    }
+    if (label === account.label) return;
+
+    void onRename(account.id, label).then((saved) => {
+      // A name the database refused is not the name. Putting the stored one
+      // back keeps the field honest about what Chief holds, and stops every
+      // later blur re-firing a write that has already been refused once.
+      if (!saved) setName(account.label ?? '');
+    });
   };
 
   return (
@@ -70,8 +76,9 @@ function ConnectedAccount({
         <input
           type="text"
           aria-label={`Name for ${identity}`}
-          defaultValue={account.label ?? ''}
+          value={name}
           placeholder={identity}
+          onChange={(event) => setName(event.target.value)}
           onBlur={(event) => commit(event.target.value)}
           className="w-full rounded-md bg-transparent text-sm font-medium placeholder:font-normal placeholder:text-muted-foreground"
         />

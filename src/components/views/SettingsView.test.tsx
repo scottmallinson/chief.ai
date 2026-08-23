@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -320,5 +320,30 @@ describe('SettingsView', () => {
 
     // The wait is bounded and the user is the one waiting, so say by how much.
     expect(await screen.findByText(/15:00 left/)).toBeInTheDocument();
+  });
+  it('puts the stored name back when a rename is refused', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([hubot]);
+      if (command === 'label_account') return Promise.reject(new Error('the database is locked'));
+      return Promise.resolve([hubot]);
+    });
+
+    render(<SettingsView />);
+
+    const field = await screen.findByLabelText('Name for hubot');
+    await userEvent.clear(field);
+    await userEvent.type(field, 'Personal');
+    await userEvent.tab();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('the database is locked');
+    await waitFor(() => expect(field).toHaveValue('Work'));
+
+    // And the field now agrees with the database again, so passing through it
+    // does not fire the same refused write a second time.
+    invoke.mockClear();
+    await userEvent.click(field);
+    await userEvent.tab();
+
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

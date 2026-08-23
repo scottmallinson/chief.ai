@@ -33,7 +33,8 @@ interface UseIntegrations {
   /** Stop waiting on a sign-in the user has walked away from. */
   cancel: () => void;
   disconnect: (accountId: number) => void;
-  rename: (accountId: number, label: string | null) => void;
+  /** Resolves false when the write was refused, so the field can go back. */
+  rename: (accountId: number, label: string | null) => Promise<boolean>;
 }
 
 function describe(cause: unknown): string {
@@ -127,15 +128,24 @@ export function useIntegrations(): UseIntegrations {
       .finally(() => setDisconnecting((current) => current.filter((id) => id !== accountId)));
   }, []);
 
-  const rename = useCallback((accountId: number, label: string | null) => {
+  const rename = useCallback((accountId: number, label: string | null): Promise<boolean> => {
     setError(null);
 
     // Deliberately ungated: a name is one column, the command answers with the
     // authoritative list, and a rename landing beside a disconnect is settled
     // by whichever answers last. Nothing has to wait on it, so nothing does.
-    labelAccount(accountId, label)
-      .then((current) => setAccounts(current))
-      .catch((cause: unknown) => setError(describe(cause)));
+    // Whether it landed is still answered, because the field it came from has
+    // to put the stored name back if it did not.
+    return labelAccount(accountId, label).then(
+      (current) => {
+        setAccounts(current);
+        return true;
+      },
+      (cause: unknown) => {
+        setError(describe(cause));
+        return false;
+      },
+    );
   }, []);
 
   const accountsFor = useCallback(
