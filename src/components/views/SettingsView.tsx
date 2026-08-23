@@ -37,12 +37,13 @@ function ConnectedAccount({
   account,
   onRename,
   onDisconnect,
-  disabled,
+  leaving,
 }: {
   account: Account;
   onRename: (accountId: number, label: string | null) => void;
   onDisconnect: (accountId: number) => void;
-  disabled: boolean;
+  /** This account is being forgotten. Nothing else on the screen cares. */
+  leaving: boolean;
 }) {
   const since = new Date(account.connectedAt);
   const identity = account.identity ?? account.accountKey;
@@ -65,7 +66,6 @@ function ConnectedAccount({
           aria-label={`Name for ${identity}`}
           defaultValue={account.label ?? ''}
           placeholder={identity}
-          disabled={disabled}
           onBlur={(event) => commit(event.target.value)}
           className="w-full rounded-sm bg-transparent text-sm font-medium outline-none placeholder:font-normal placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
         />
@@ -78,7 +78,7 @@ function ConnectedAccount({
       <Button
         variant="outline"
         size="sm"
-        disabled={disabled}
+        disabled={leaving}
         onClick={() => onDisconnect(account.id)}
       >
         Disconnect {accountName(account)}
@@ -88,11 +88,23 @@ function ConnectedAccount({
 }
 
 function GithubIntegration() {
-  const { accountsFor, login, connecting, status, error, connect, disconnect, rename } =
-    useIntegrations();
+  const {
+    accountsFor,
+    login,
+    connecting,
+    status,
+    disconnecting,
+    error,
+    connect,
+    disconnect,
+    rename,
+  } = useIntegrations();
 
   const accounts = accountsFor(GITHUB);
-  const isBusy = status === 'working' || status === 'awaiting-user';
+  // Only the sign-in flow blocks, and only the sign-in button: a browser tab
+  // the user has not come back from is no reason another account cannot be
+  // renamed or removed.
+  const signingIn = status === 'working' || status === 'awaiting-user';
   const showCode = login !== null && connecting === GITHUB;
 
   return (
@@ -119,7 +131,7 @@ function GithubIntegration() {
               account={account}
               onRename={rename}
               onDisconnect={disconnect}
-              disabled={isBusy}
+              leaving={disconnecting.includes(account.id)}
             />
           ))}
         </div>
@@ -157,7 +169,7 @@ function GithubIntegration() {
           size="sm"
           variant={accounts.length > 0 ? 'outline' : 'default'}
           onClick={() => connect(GITHUB)}
-          disabled={isBusy || status === 'loading'}
+          disabled={signingIn || status === 'loading'}
         >
           <Github aria-hidden />
           {accounts.length > 0 ? 'Add another GitHub account' : 'Connect GitHub'}

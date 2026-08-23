@@ -207,4 +207,57 @@ describe('SettingsView', () => {
 
     expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 2 });
   });
+
+  it('disconnects an account named in the same gesture', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([octocat, hubot]);
+      if (command === 'label_account') {
+        return Promise.resolve([{ ...octocat, label: 'Personal' }, hubot]);
+      }
+      return Promise.resolve([hubot]);
+    });
+
+    render(<SettingsView />);
+
+    // Naming a field commits on blur, and the blur here is the mousedown of
+    // the click that follows. That write must not swallow the click.
+    await userEvent.type(await screen.findByLabelText('Name for octocat'), 'Personal');
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect octocat' }));
+
+    expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 1 });
+  });
+  it('disconnects one account while another is being renamed', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([octocat, hubot]);
+      // Never settles: the write is still in flight when the click lands,
+      // which is the whole of the race on a machine doing real work.
+      if (command === 'label_account') return new Promise(() => {});
+      return Promise.resolve([{ ...octocat, label: 'Personal' }]);
+    });
+
+    render(<SettingsView />);
+
+    await userEvent.type(await screen.findByLabelText('Name for octocat'), 'Personal');
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect Work' }));
+
+    expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 2 });
+  });
+
+  it('keeps the other account nameable while one rename is in flight', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([octocat, hubot]);
+      if (command === 'label_account') return new Promise(() => {});
+      return Promise.resolve([octocat, hubot]);
+    });
+
+    render(<SettingsView />);
+
+    await userEvent.type(await screen.findByLabelText('Name for octocat'), 'Personal');
+    await userEvent.tab();
+
+    // Renaming two accounts in a row is one gesture per field, not one at a
+    // time: the second field cannot freeze because the first is saving.
+    await userEvent.type(screen.getByLabelText('Name for hubot'), '!');
+    expect(screen.getByLabelText('Name for hubot')).toHaveValue('Work!');
+  });
 });

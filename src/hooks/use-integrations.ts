@@ -11,6 +11,12 @@ import {
   type DeviceLogin,
 } from '@/lib/integrations';
 
+/**
+ * Where sign-in stands, and nothing else. Work on an account that is already
+ * connected is tracked per account rather than here: naming one is not a
+ * reason to freeze the screen, and a gate that covered both disabled the
+ * button the user was in the middle of clicking.
+ */
 type Status = 'loading' | 'idle' | 'awaiting-user' | 'working';
 
 interface UseIntegrations {
@@ -20,6 +26,8 @@ interface UseIntegrations {
   /** Which service is being connected, so only that card shows the code. */
   connecting: string | null;
   status: Status;
+  /** Accounts being forgotten, so a row cannot be asked to go twice. */
+  disconnecting: readonly number[];
   error: string | null;
   connect: (service: string) => void;
   disconnect: (accountId: number) => void;
@@ -36,6 +44,7 @@ export function useIntegrations(): UseIntegrations {
   const [login, setLogin] = useState<DeviceLogin | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>('loading');
+  const [disconnecting, setDisconnecting] = useState<readonly number[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -85,27 +94,26 @@ export function useIntegrations(): UseIntegrations {
       });
   }, []);
 
-  const settle = useCallback((work: Promise<Account[]>) => {
+  const disconnect = useCallback((accountId: number) => {
     setError(null);
-    setStatus('working');
+    setDisconnecting((current) => [...current, accountId]);
 
-    work
-      .then((current) => {
-        setAccounts(current);
-        setStatus('idle');
-      })
-      .catch((cause: unknown) => {
-        setError(describe(cause));
-        setStatus('idle');
-      });
+    forget(accountId)
+      .then((current) => setAccounts(current))
+      .catch((cause: unknown) => setError(describe(cause)))
+      .finally(() => setDisconnecting((current) => current.filter((id) => id !== accountId)));
   }, []);
 
-  const disconnect = useCallback((accountId: number) => settle(forget(accountId)), [settle]);
+  const rename = useCallback((accountId: number, label: string | null) => {
+    setError(null);
 
-  const rename = useCallback(
-    (accountId: number, label: string | null) => settle(labelAccount(accountId, label)),
-    [settle],
-  );
+    // Deliberately ungated: a name is one column, the command answers with the
+    // authoritative list, and a rename landing beside a disconnect is settled
+    // by whichever answers last. Nothing has to wait on it, so nothing does.
+    labelAccount(accountId, label)
+      .then((current) => setAccounts(current))
+      .catch((cause: unknown) => setError(describe(cause)));
+  }, []);
 
   const accountsFor = useCallback(
     (service: string) => accounts.filter((account) => account.service === service),
@@ -118,6 +126,7 @@ export function useIntegrations(): UseIntegrations {
     login,
     connecting,
     status,
+    disconnecting,
     error,
     connect,
     disconnect,
