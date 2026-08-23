@@ -28,6 +28,16 @@ export interface WorkLogEntry {
   externalId: string | null;
 }
 
+/** One connected account, as `connections` returns it. */
+export interface Account {
+  id: number;
+  service: string;
+  accountKey: string;
+  label: string | null;
+  identity: string | null;
+  connectedAt: string;
+}
+
 /** A step in an answer, as `agent::Update` serialises it. */
 export type AgentUpdate =
   { kind: 'delta'; text: string } | { kind: 'restart' } | { kind: 'tool'; name: string };
@@ -38,6 +48,8 @@ export interface Backend {
   answer?: string;
   /** What the work log is filled with. */
   workLog?: WorkLogEntry[];
+  /** Which accounts the settings screen finds connected. */
+  accounts?: Account[];
   /**
    * Leave questions unanswered until {@link Chief.finish} is called, so the
    * streaming states can be held still and measured.
@@ -115,6 +127,7 @@ export interface Chief {
 interface Setup {
   answer: string;
   workLog: WorkLogEntry[];
+  accounts: Account[];
   holdAnswers: boolean;
 }
 
@@ -225,7 +238,7 @@ function installBackend(setup: Setup) {
           return Promise.resolve(setup.workLog);
 
         case 'connections':
-          return Promise.resolve([]);
+          return Promise.resolve(setup.accounts);
 
         case 'plugin:event|listen': {
           const event = args?.event as string;
@@ -327,6 +340,7 @@ function handleFor(page: Page, classicScrollbars: boolean): Chief {
       await page.addInitScript(installBackend, {
         answer: backend.answer ?? 'Two pull requests are waiting on review.',
         workLog: backend.workLog ?? [],
+        accounts: backend.accounts ?? [],
         holdAnswers: backend.holdAnswers ?? false,
       });
 

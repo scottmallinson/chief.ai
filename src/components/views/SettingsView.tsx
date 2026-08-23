@@ -73,7 +73,7 @@ function ConnectedAccount({
           defaultValue={account.label ?? ''}
           placeholder={identity}
           onBlur={(event) => commit(event.target.value)}
-          className="w-full rounded-sm bg-transparent text-sm font-medium outline-none placeholder:font-normal placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
+          className="w-full rounded-md bg-transparent text-sm font-medium placeholder:font-normal placeholder:text-muted-foreground"
         />
         <p className="mt-0.5 micro text-muted-foreground">
           {Number.isNaN(since.getTime())
