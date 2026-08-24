@@ -34,6 +34,7 @@ pub enum PullRequestState {
     #[default]
     Open,
     Closed,
+    Merged,
     All,
 }
 
@@ -42,6 +43,7 @@ impl From<PullRequestState> for PrState {
         match state {
             PullRequestState::Open => PrState::Open,
             PullRequestState::Closed => PrState::Closed,
+            PullRequestState::Merged => PrState::Merged,
             PullRequestState::All => PrState::All,
         }
     }
@@ -62,15 +64,15 @@ pub fn catalog() -> Vec<Tool> {
     vec![Tool::function(ToolFunction {
         name: FETCH_GITHUB_PRS.to_string(),
         description: "Fetch the user's GitHub pull requests, including which are still \
-             unmerged and who they are waiting on. Call this whenever the user asks about \
-             pull requests, code review, or what they have shipped."
+             unmerged and who they are waiting on. Use state 'merged' for what they shipped. \
+             Call this whenever the user asks about pull requests, code review, or what they have shipped."
             .to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
                 "state": {
                     "type": "string",
-                    "enum": ["open", "closed", "all"],
+                    "enum": ["open", "closed", "merged", "all"],
                     "description": "Which pull requests to return. Defaults to open.",
                 },
             },
@@ -96,6 +98,14 @@ pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
         unknown => json!({
             "error": format!("there is no tool called '{unknown}'"),
         }),
+    }
+}
+
+/// Fetch pull requests for models whose chat template cannot call tools.
+pub async fn prefetch_github_prs(context: &Context, state: PullRequestState) -> Value {
+    match fetch_github_prs(context, state).await {
+        Ok(result) => result,
+        Err(error) => json!({ "error": error.to_string() }),
     }
 }
 
@@ -186,7 +196,7 @@ mod tests {
         assert_eq!(schema[0]["function"]["parameters"]["type"], json!("object"));
         assert_eq!(
             schema[0]["function"]["parameters"]["properties"]["state"]["enum"],
-            json!(["open", "closed", "all"])
+            json!(["open", "closed", "merged", "all"])
         );
     }
 
@@ -241,6 +251,26 @@ mod tests {
 
         assert!(
             request_line.contains("is%3Aclosed"),
+            "unexpected request: {request_line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn asks_github_for_merged_pull_requests() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = connected(&host).await;
+
+        dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "state": "merged" })),
+        )
+        .await;
+
+        let requests = server.await.expect("the stub should finish");
+        let (request_line, _) = crate::llama::test_support::split(&requests[0]);
+
+        assert!(
+            request_line.contains("is%3Amerged"),
             "unexpected request: {request_line}"
         );
     }

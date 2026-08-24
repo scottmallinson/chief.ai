@@ -17,6 +17,7 @@ use crate::engine;
 use crate::github;
 use crate::llama::{self, ChatRequest, Client, Message, Role};
 use crate::tools;
+use crate::weights;
 
 /// The model the engine is serving. It runs one, under the name it was given
 /// when it started, so this identifies the model rather than choosing it.
@@ -25,6 +26,30 @@ pub const DEFAULT_MODEL: &str = engine::MODEL_ALIAS;
 /// How many times we will run tools before insisting on an answer. A model that
 /// keeps calling tools would otherwise loop forever.
 const MAX_TOOL_ROUNDS: usize = 4;
+
+/// Gemma 3's bundled chat template is text-only and rejects the OpenAI tools
+/// field, so its one available data source is fetched before the request.
+fn github_state_for(question: &str) -> Option<tools::PullRequestState> {
+    let question = question.to_ascii_lowercase();
+
+    if question.contains("ship")
+        || question.contains("shipped")
+        || question.contains("merged")
+        || question.contains("release")
+    {
+        Some(tools::PullRequestState::Merged)
+    } else if question.contains("pull request")
+        || question.contains("pull requests")
+        || question.contains("pr ")
+        || question.ends_with("pr")
+        || question.contains("review")
+        || question.contains("waiting")
+    {
+        Some(tools::PullRequestState::Open)
+    } else {
+        None
+    }
+}
 
 /// The event carrying an answer to the chat window as it is written.
 pub const STREAM_EVENT: &str = "agent-stream";
@@ -156,8 +181,40 @@ where
 {
     let catalog = tools::catalog();
 
+    let native_tools = model != engine::MODEL_ALIAS || !weights::MODEL_NAME.starts_with("Gemma 3");
+    if !native_tools {
+        if let Some(question) = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+        {
+            if let Some(state) = github_state_for(&question.content) {
+                let result = tools::prefetch_github_prs(context, state).await;
+                on_update(Update::Tool {
+                    name: "fetch_github_prs".to_string(),
+                });
+
+                if let Some(question) = messages
+                    .iter_mut()
+                    .rev()
+                    .find(|message| message.role == Role::User)
+                {
+                    question.content.push_str(
+                        "\n\nUse this GitHub data to answer the question. Do not invent anything:\n",
+                    );
+                    question.content.push_str(&result.to_string());
+                }
+            }
+        }
+    }
+
     for _ in 0..MAX_TOOL_ROUNDS {
-        let request = ChatRequest::new(model, messages.clone()).with_tools(catalog.clone());
+        let request = ChatRequest::new(model, messages.clone());
+        let request = if native_tools {
+            request.with_tools(catalog.clone())
+        } else {
+            request
+        };
 
         let mut shown = false;
         let reply = client
@@ -295,6 +352,22 @@ mod tests {
             .map(|m| m.content.as_str())
             .collect();
         assert_eq!(contents, ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn routes_shipping_questions_to_merged_pull_requests() {
+        assert_eq!(
+            github_state_for("What did I ship this week?"),
+            Some(tools::PullRequestState::Merged)
+        );
+    }
+
+    #[test]
+    fn routes_review_questions_to_open_pull_requests() {
+        assert_eq!(
+            github_state_for("What is waiting on me?"),
+            Some(tools::PullRequestState::Open)
+        );
     }
 
     #[test]
@@ -449,8 +522,8 @@ mod orchestration_tests {
 
     const ANSWER: &str = "One pull request is waiting on review.";
 
-    /// The model this suite pretends the engine is serving.
-    const MODEL: &str = DEFAULT_MODEL;
+    /// A tool-capable model name used by the native tool-calling fixtures.
+    const MODEL: &str = "test-tool-model";
 
     fn body_of(request: &str) -> Value {
         let (_, body) = split(request);
