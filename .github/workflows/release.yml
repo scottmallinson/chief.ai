@@ -46,7 +46,7 @@ jobs:
           - platform: windows-latest
             args: ''
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # A missing variable would silently produce a binary whose "Connect
       # GitHub" button never works, and nobody would find out until after they
