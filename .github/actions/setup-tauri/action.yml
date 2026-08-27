@@ -14,10 +14,21 @@ inputs:
     description: Extra rustup targets, comma separated.
     required: false
     default: ''
-  cache-key:
-    description: Suffix for the cargo cache key, so a matrix does not share one cache across platforms.
+  shared-key:
+    description: >-
+      A cargo cache key used instead of the automatic per-job one, so two jobs
+      that compile the same thing share a cache. Both must agree on their
+      `CARGO_*` and `RUST*` environment, which is hashed into the key.
     required: false
     default: ''
+  save-cache:
+    description: >-
+      Whether to write the cargo cache as well as read it. A repository has 10 GB
+      for caches and evicts the least recently used, so the release-profile
+      target directories are saved from main only, where they stay warm for
+      everything that restores them.
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -53,7 +64,8 @@ runs:
     - uses: Swatinem/rust-cache@v2
       with:
         workspaces: src-tauri
-        key: ${{ inputs.cache-key }}
+        shared-key: ${{ inputs.shared-key }}
+        save-if: ${{ inputs.save-cache }}
 
     # Tauri's build script checks the bundled resource is on disk even for
     # `cargo check`/`clippy`/`test`, so every Rust job needs it. The script is

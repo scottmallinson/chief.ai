@@ -109,20 +109,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS runners bill at ten times the Linux rate and Windows at twice,
-        # so a pull request compiles on Linux only. The full matrix runs on
-        # every push to main — before anything is ever released from it — and
-        # on demand from the Actions tab for a branch that touches the parts
-        # WebView2 or WKWebView would be the first to break.
+        # macOS and Windows are the platforms nothing else compiles: the Rust
+        # job already builds the whole crate on Linux, but `#[cfg(windows)]`
+        # code — `engine.rs:325`, which is where the last two fixes on main
+        # went — is compiled on Windows and nowhere else. So a pull request
+        # builds those two, and main adds Linux, where the app build is the
+        # only job that links a release profile against WebKitGTK.
         platform:
-          ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-22.04"]' || '["ubuntu-22.04",
-          "macos-latest", "windows-latest"]') }}
+          ${{ fromJSON(github.event_name == 'pull_request' && '["macos-latest", "windows-latest"]' ||
+          '["ubuntu-22.04", "macos-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@v4
 
+      # Release restores this cache rather than compiling Chief's dependencies
+      # again, which is why the key is shared rather than per-job. Saving is
+      # left to main: a release-profile target directory per platform per open
+      # branch would evict the caches everything else restores from.
       - uses: ./.github/actions/setup-tauri
         with:
-          cache-key: ${{ matrix.platform }}
+          shared-key: tauri-${{ matrix.platform }}
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build the desktop app
         run: pnpm tauri build --no-bundle

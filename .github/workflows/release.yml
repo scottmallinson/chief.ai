@@ -22,6 +22,12 @@ concurrency:
 permissions:
   contents: write
 
+# Matches CI. Not cosmetic: rust-cache hashes every `CARGO_*` and `RUST*`
+# variable into its key, so a workflow that sets this and one that does not
+# would look like different environments and never share a cache.
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   release:
     name: Bundle (${{ matrix.platform }})
@@ -57,10 +63,14 @@ jobs:
           fi
           echo "Client id is configured (${#CHIEF_GITHUB_CLIENT_ID} characters)."
 
+      # The same cache CI's app build writes from main, so a release starts
+      # with Chief's dependencies already compiled instead of building the
+      # whole tree from nothing. Only dependencies: rust-cache leaves the
+      # workspace's own crates out, so Chief itself is always compiled here.
       - uses: ./.github/actions/setup-tauri
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-          cache-key: ${{ matrix.platform }}
+          shared-key: tauri-${{ matrix.platform }}
 
       - uses: tauri-apps/tauri-action@v0
         env:

@@ -68,13 +68,10 @@ that part:
 | `pnpm verify:rust`     | Rust                 | ~4 min                     |
 | `pnpm verify:app`      | App build            | ~7 min cold, far less warm |
 
-Two things it cannot cover. `verify:app` builds for **this** machine only — the Rust is portable
-but the WebKitGTK/WebView2/WKWebView differences are not — and neither can CI on a pull request,
-where the app build is Linux-only because a macOS runner bills at ten times the Linux rate. The
-full three-platform matrix runs on every push to `main`, which is upstream of every release, and
-can be run against a branch from the Actions tab when a change is likely to land differently on
-Windows or macOS. And the PR _title_ is linted by CI rather than by commitlint here;
-`verify:commits` checks the commit messages the title is usually taken from.
+Two things it cannot cover. `verify:app` builds for **this** machine only, so the platforms you are
+not sitting at are unverified until CI builds there — the Rust is portable but the
+WebKitGTK/WebView2/WKWebView differences are not. And the PR _title_ is linted by CI rather than by
+commitlint here; `verify:commits` checks the commit messages the title is usually taken from.
 
 Anything that builds or runs the desktop app needs `llama-server` on disk first, which is why
 `tauri:dev`, `tauri:build` and `verify:app` all run `pnpm engine:fetch`. It is idempotent — a rerun
@@ -92,8 +89,19 @@ Runner time is the one cost this project has, so the workflows are written to sp
   replaced; a run on `main` is the record that a merged commit is good, so it is left to finish.
 - **Cache anything downloaded twice** — the pnpm store, the cargo registry and target directory,
   and Chromium for the layout tests.
-- **Pay for macOS and Windows where they tell you something.** They are 10× and 2× a Linux runner,
-  so the app build is Linux-only on a pull request and the full matrix on `main` and on demand.
+- **Build where nothing else is looking.** A pull request builds the app on macOS and Windows, and
+  not on Linux: the Rust job already compiles the whole crate there, but `#[cfg(windows)]` code is
+  compiled on Windows and nowhere else — `engine.rs:325` is where the last two fixes on `main`
+  went. `main` adds Linux, where the app build is the only job that links a release profile
+  against WebKitGTK. macOS bills at 10× a Linux runner and Windows at 2×, so this is most of what
+  CI costs; it buys the only proof that the platform-conditional code compiles at all.
+- **Compile a dependency once per platform.** CI's app build and Release share one cargo cache per
+  platform — `shared-key: tauri-<platform>` — so cutting a release restores what `main` already
+  built instead of starting from nothing. Two things keep that working: only `main` writes the
+  cache, because a release-profile target directory per platform per open branch would evict what
+  everything else restores from; and both workflows set the same `CARGO_TERM_COLOR`, because
+  rust-cache hashes every `CARGO_*` and `RUST*` variable into the key. Chief's own crates are
+  never cached, only its dependencies.
 
 Building the desktop app on Linux needs the WebKitGTK toolchain:
 
