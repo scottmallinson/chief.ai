@@ -154,12 +154,19 @@ fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
     let mut messages = Vec::with_capacity(turns.len() + 1);
     messages.push(Message::system(format!("{SYSTEM_PROMPT}\n\n{present}")));
 
-    messages.extend(
-        turns
-            .into_iter()
-            .filter(|turn| turn.role != Role::System)
-            .map(|turn| Message::new(turn.role, turn.content)),
-    );
+    for turn in turns.into_iter().filter(|turn| turn.role != Role::System) {
+        if let Some(previous) = messages
+            .last_mut()
+            .filter(|message| message.role == turn.role)
+        {
+            if !previous.content.is_empty() && !turn.content.is_empty() {
+                previous.content.push_str("\n\n");
+            }
+            previous.content.push_str(&turn.content);
+        } else {
+            messages.push(Message::new(turn.role, turn.content));
+        }
+    }
 
     messages
 }
@@ -352,6 +359,29 @@ mod tests {
             .map(|m| m.content.as_str())
             .collect();
         assert_eq!(contents, ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn merges_adjacent_turns_for_templates_that_require_alternation() {
+        let messages = conversation(
+            vec![
+                turn(Role::User, "first question"),
+                turn(Role::User, "follow-up question"),
+                turn(Role::Assistant, "answer"),
+                turn(Role::Assistant, "additional detail"),
+            ],
+            PRESENT,
+        );
+
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.role)
+                .collect::<Vec<_>>(),
+            [Role::System, Role::User, Role::Assistant]
+        );
+        assert_eq!(messages[1].content, "first question\n\nfollow-up question");
+        assert_eq!(messages[2].content, "answer\n\nadditional detail");
     }
 
     #[test]
