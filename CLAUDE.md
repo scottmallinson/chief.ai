@@ -180,6 +180,12 @@ the user to install a runtime, which is the whole reason the engine is a module 
   kill.
 - The process is killed on `RunEvent::Exit`. Nothing else would stop it, and a resident model holds
   a couple of gigabytes after the window has gone.
+- The server's **stderr is read rather than inherited**, and the last twenty lines are kept. A
+  server that dies on the way up is quoted, not guessed at: Chief used to report every early exit as
+  the model not fitting in this machine's memory, and on macOS 12 — where the bundled build wants a
+  LAPACK symbol that arrived in 13.3 — the real answer was on that stream the whole time, going to a
+  terminal nobody installing the app ever sees. Every line read is written straight back out, so
+  `tauri dev` still shows the model loading.
 - Two things llama.cpp makes unnecessary that Ollama needed. The **context window** is a launch flag
   (`--ctx-size`), not a per-request option, so no request can evict the weights and there is no
   keep-alive to negotiate — the server owns one model for its lifetime. And it **warms itself** as

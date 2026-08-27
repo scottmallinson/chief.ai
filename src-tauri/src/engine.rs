@@ -11,13 +11,16 @@
 //! it resident for its lifetime, so there is no keep-alive to negotiate and no
 //! warm-up to schedule — `llama-server` warms itself as it starts.
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager, Runtime};
-use tokio::process::{Child, Command};
+use tokio::io::AsyncBufReadExt;
+use tokio::process::{Child, ChildStderr, Command};
+use tokio::task::JoinHandle;
 
 use crate::llama::{self, Health};
 use crate::weights;
@@ -51,6 +54,27 @@ const START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// How often to ask a starting server whether it is up yet.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How many lines of the engine's own output to keep.
+///
+/// llama.cpp is chatty on the way up — backends, tensor counts, chat template
+/// — and the server then runs for hours, so what is kept has to be a window
+/// rather than a log. Twenty lines carries a dynamic-link failure, a flag the
+/// build does not know, or a model file the loader rejected, with enough of
+/// what came before it to read in context.
+const TAIL_LINES: usize = 20;
+
+/// How much of any one line to keep.
+///
+/// Nothing the loader writes is this long. A line that runs past it has no
+/// newline in it for a reason — a progress meter redrawing itself with carriage
+/// returns — and keeping the whole of one would make the count above pointless.
+const TAIL_LINE_CHARS: usize = 500;
+
+/// How long to wait for the last of a dead server's output before giving up on
+/// it. Long enough for a pipe to drain, short enough that a pipe something
+/// else is holding open cannot delay an error the user is waiting on.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// What can go wrong running the engine.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -64,19 +88,153 @@ pub enum Error {
     Spawn(String),
     #[error("the inference engine started but never began answering.")]
     NeverReady,
-    #[error(
-        "the inference engine stopped while loading the model. It may not fit in this machine's memory."
-    )]
-    Stopped,
+    #[error("the inference engine stopped before it could answer. {0}")]
+    Stopped(String),
     #[error(transparent)]
     Client(#[from] llama::Error),
     #[error("could not work out where Chief keeps its files: {0}")]
     Paths(String),
 }
 
+impl Error {
+    /// What to say about a server that died on the way up.
+    ///
+    /// All that has been observed at this point is that the process is gone,
+    /// so that is all the message asserts; the engine's own last words carry
+    /// the diagnosis. This used to name a cause instead — that the model might
+    /// not fit in this machine's memory — and the report that prompted the
+    /// change was somebody on macOS 12 dutifully downloading a smaller model
+    /// to fix a symbol missing from a system library. A guess written as a
+    /// finding is worse than no answer: it sends the reader somewhere else.
+    fn stopped(last_words: Option<String>) -> Self {
+        Self::Stopped(match last_words {
+            Some(words) => format!("It said:\n{words}"),
+            // Silence is consistent with the machine killing it for its size,
+            // and with a dozen other things. Offer that, do not claim it.
+            None => "It wrote nothing on the way out, so there is nothing here \
+                     that says why. Too little memory for the model would do \
+                     that; so would an engine this machine cannot run at all."
+                .to_string(),
+        })
+    }
+}
+
 impl serde::Serialize for Error {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_string())
+    }
+}
+
+/// The last few lines the engine wrote, and nothing older.
+///
+/// A supervised server writes for as long as it runs, so this is deliberately
+/// a fixed-size window: it is here to explain a death, not to keep a log.
+#[derive(Debug, Default)]
+struct Tail(VecDeque<String>);
+
+impl Tail {
+    /// Keep a line, dropping the oldest once the window is full.
+    fn push(&mut self, line: &str) {
+        let line = line.trim_end();
+
+        // Blank lines are punctuation in llama.cpp's output, and a run of them
+        // would push out everything actually worth quoting.
+        if line.is_empty() {
+            return;
+        }
+
+        let kept = match line.char_indices().nth(TAIL_LINE_CHARS) {
+            Some((cut, _)) => format!("{}…", &line[..cut]),
+            None => line.to_string(),
+        };
+
+        while self.0.len() >= TAIL_LINES {
+            self.0.pop_front();
+        }
+
+        self.0.push_back(kept);
+    }
+
+    /// Everything kept, oldest first — or nothing, if it never said anything.
+    fn text(&self) -> Option<String> {
+        (!self.0.is_empty()).then(|| {
+            self.0
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// What the running server has told us about itself.
+///
+/// The stream has to be read continuously whether or not anyone wants it: a
+/// pipe nobody drains fills up and stops the process writing to it. So the
+/// reading is a task, and this is the pair of things that task leaves behind —
+/// the window of lines it has kept, and a handle for knowing when it is done.
+#[derive(Debug, Default)]
+struct Output {
+    tail: Arc<Mutex<Tail>>,
+    reader: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Output {
+    /// Start reading a freshly started server's stderr.
+    ///
+    /// Every line is written straight back out to Chief's own stderr. Piping
+    /// the stream is what takes it away from the terminal a developer running
+    /// `tauri dev` watches the model load in, and there is no reason both
+    /// cannot have it — left inherited, that output reaches nobody at all in a
+    /// packaged install, which is precisely where it was needed.
+    fn watch(&self, stderr: ChildStderr) {
+        let tail = Arc::clone(&self.tail);
+
+        // This server's account of itself, not the last one's.
+        if let Ok(mut tail) = tail.lock() {
+            tail.clear();
+        }
+
+        let reader = tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+
+            // Ends of its own accord when the pipe closes, which is when the
+            // process it belongs to has gone.
+            while let Ok(Some(line)) = lines.next_line().await {
+                eprintln!("llama-server: {line}");
+
+                if let Ok(mut tail) = tail.lock() {
+                    tail.push(&line);
+                }
+            }
+        });
+
+        if let Ok(mut slot) = self.reader.lock() {
+            *slot = Some(reader);
+        }
+    }
+
+    /// The last thing the server said, once there is nothing more coming.
+    ///
+    /// A process being gone does not mean its output has been read — the pipe
+    /// is drained by a task of its own, a scheduling hop behind — so the task
+    /// is waited for first. That wait is the difference between quoting the
+    /// engine and reporting that it said nothing, and only one of those is
+    /// true.
+    async fn last_words(&self) -> Option<String> {
+        // Taken out from under the lock before anything is awaited: the guard
+        // must not be held across a suspension point.
+        let reader = self.reader.lock().ok().and_then(|mut slot| slot.take());
+
+        if let Some(reader) = reader {
+            let _ = tokio::time::timeout(DRAIN_TIMEOUT, reader).await;
+        }
+
+        self.tail.lock().ok().and_then(|tail| tail.text())
     }
 }
 
@@ -228,6 +386,10 @@ pub struct Engine {
     /// when the user pointed Chief at their own, which is not ours to kill.
     owned: bool,
     child: Mutex<Option<Child>>,
+    /// What the child has said for itself. Kept beside the handle rather than
+    /// inside it because the handle is cleared the moment the process is found
+    /// to have exited — which is exactly when its last words are wanted.
+    output: Output,
 }
 
 impl Engine {
@@ -254,6 +416,7 @@ impl Engine {
             weights: weights::path(&data_dir),
             owned,
             child: Mutex::new(None),
+            output: Output::default(),
         })
     }
 
@@ -310,6 +473,11 @@ impl Engine {
         command
             .args(arguments(&self.weights, port))
             .stdin(Stdio::null())
+            // Read rather than inherited. A server that dies on the way up says
+            // why on this stream, and inherited it goes to whatever terminal
+            // launched the app — which for anyone running an installed copy is
+            // nowhere, leaving Chief to report an exit it cannot explain.
+            .stderr(Stdio::piped())
             // Outlives a panic in this process only for as long as it takes the
             // runtime to reap it; the app also stops it explicitly on exit.
             .kill_on_drop(true);
@@ -329,9 +497,13 @@ impl Engine {
             command.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|error| Error::Spawn(error.to_string()))?;
+
+        if let Some(stderr) = child.stderr.take() {
+            self.output.watch(stderr);
+        }
 
         if let Ok(mut slot) = self.child.lock() {
             *slot = Some(child);
@@ -355,10 +527,10 @@ impl Engine {
             }
 
             // A server we started that is no longer there is never going to
-            // answer, and a model too big for the machine dies in seconds.
-            // Waiting out the timeout would only delay saying so.
+            // answer, and whatever killed it did so in seconds. Waiting out the
+            // timeout would only delay saying so — and it did say why.
             if self.child_state() == ChildState::Exited {
-                return Err(Error::Stopped);
+                return Err(Error::stopped(self.output.last_words().await));
             }
 
             if std::time::Instant::now() >= deadline {
@@ -554,6 +726,7 @@ mod tests {
             weights: PathBuf::from("/models/model.gguf"),
             owned: true,
             child: Mutex::new(None),
+            output: Output::default(),
         };
 
         assert_eq!(engine.child_state(), ChildState::None);
@@ -568,6 +741,7 @@ mod tests {
             weights: PathBuf::from("/models/model.gguf"),
             owned: false,
             child: Mutex::new(None),
+            output: Output::default(),
         };
 
         assert_eq!(engine.port(), 8080);
@@ -582,6 +756,7 @@ mod tests {
             weights: PathBuf::from("/models/model.gguf"),
             owned: false,
             child: Mutex::new(None),
+            output: Output::default(),
         };
 
         assert_eq!(engine.port(), llama::DEFAULT_PORT);
@@ -596,5 +771,215 @@ mod tests {
         } else {
             assert_eq!(name, "llama-server");
         }
+    }
+
+    #[test]
+    fn says_nothing_about_an_engine_that_said_nothing() {
+        let tail = Tail::default();
+
+        assert_eq!(tail.text(), None, "there is nothing to quote");
+
+        // And the error made from that admits it rather than picking a cause.
+        let reported = Error::stopped(tail.text()).to_string();
+        assert!(
+            reported.contains("wrote nothing"),
+            "silence is the finding, and should be reported as one: {reported}"
+        );
+    }
+
+    #[test]
+    fn keeps_the_last_words_and_drops_the_older_ones() {
+        let mut tail = Tail::default();
+
+        // Twice the window, so the first half has to go.
+        for line in 0..TAIL_LINES * 2 {
+            tail.push(&format!("line {line}"));
+        }
+
+        let text = tail.text().expect("should have kept something");
+        let lines: Vec<&str> = text.lines().collect();
+
+        assert_eq!(lines.len(), TAIL_LINES, "the window is a fixed size");
+        assert_eq!(lines.first(), Some(&"line 20"));
+        assert_eq!(
+            lines.last(),
+            Some(&"line 39"),
+            "what the engine said last is the part that explains it"
+        );
+    }
+
+    #[test]
+    fn does_not_let_one_line_stand_in_for_the_whole_window() {
+        let mut tail = Tail::default();
+
+        // A progress meter redrawing itself with carriage returns arrives as a
+        // single line with no end to it.
+        tail.push(&"=".repeat(TAIL_LINE_CHARS * 10));
+        tail.push("dyld: Symbol not found");
+
+        let text = tail.text().expect("should have kept something");
+
+        assert!(
+            text.chars().count() < TAIL_LINE_CHARS * 2,
+            "a line without a newline in it must not defeat the bound: {} characters kept",
+            text.chars().count()
+        );
+        assert!(
+            text.contains("dyld: Symbol not found"),
+            "and the truncation must not cost the line that matters: {text}"
+        );
+    }
+
+    #[test]
+    fn does_not_spend_the_window_on_blank_lines() {
+        let mut tail = Tail::default();
+
+        tail.push("ggml_backend_load_best: failed to load");
+        for _ in 0..TAIL_LINES * 2 {
+            tail.push("");
+            tail.push("   ");
+        }
+
+        assert_eq!(
+            tail.text().as_deref(),
+            Some("ggml_backend_load_best: failed to load"),
+            "llama.cpp punctuates with blank lines; they are not what it said"
+        );
+    }
+
+    #[test]
+    fn starts_again_for_each_server_it_watches() {
+        let mut tail = Tail::default();
+
+        tail.push("the last attempt's complaint");
+        tail.clear();
+
+        assert_eq!(
+            tail.text(),
+            None,
+            "a new server's silence must not be reported as the old one's words"
+        );
+    }
+
+    /// A directory of this test's own, so two tests cleaning up after
+    /// themselves cannot take each other's files.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("chief-engine-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("should create a scratch directory");
+        dir
+    }
+
+    /// A loopback address with nothing behind it, so a health check can only
+    /// fail. Asked of the operating system rather than picked, so a real
+    /// `llama-server` on the usual port cannot make this test pass.
+    fn address_nothing_is_serving() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind a port");
+        let port = listener
+            .local_addr()
+            .expect("a bound listener has an address")
+            .port();
+        drop(listener);
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// A stand-in for `llama-server` that dies the way a real one does when the
+    /// machine cannot run it: whatever it has to say on stderr, no port opened,
+    /// and gone in milliseconds.
+    #[cfg(unix)]
+    fn stand_in_server(dir: &Path, complaint: Option<&str>) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = match complaint {
+            Some(complaint) => format!("#!/bin/sh\necho '{complaint}' >&2\nexit 1\n"),
+            None => "#!/bin/sh\nexit 1\n".to_string(),
+        };
+
+        let path = dir.join("llama-server");
+        std::fs::write(&path, script).expect("should write the stand-in");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("should make the stand-in executable");
+        path
+    }
+
+    /// An engine whose server exits before it can answer, and whose client will
+    /// find nothing listening where it looks.
+    #[cfg(unix)]
+    fn engine_that_dies_at_once(dir: &Path, complaint: Option<&str>) -> Engine {
+        // Only that the file is there matters; the stand-in never opens it.
+        let weights = dir.join("model.gguf");
+        std::fs::write(&weights, b"GGUF").expect("should write the stand-in weights");
+
+        Engine {
+            base_url: address_nothing_is_serving(),
+            server: Some(stand_in_server(dir, complaint)),
+            library_dirs: Vec::new(),
+            weights,
+            owned: true,
+            child: Mutex::new(None),
+            output: Output::default(),
+        }
+    }
+
+    /// The report this test exists for: on macOS 12 the bundled build is dead
+    /// at dynamic-link time, and Chief told the user their model might not fit
+    /// in this machine's memory — so they downloaded a smaller one, which of
+    /// course changed nothing. The engine had said exactly what was wrong on a
+    /// stream nobody was reading.
+    ///
+    /// Unix only: the stand-in is a shell script, and there is no portable way
+    /// to conjure an executable that writes to stderr without building one.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reports_what_the_engine_said_rather_than_guessing_why_it_stopped() {
+        const COMPLAINT: &str = "dyld: Symbol not found: (_cblas_sgemm$NEWLAPACK$ILP64)";
+
+        let dir = scratch("last-words");
+        let engine = engine_that_dies_at_once(&dir, Some(COMPLAINT));
+        let client = llama::Client::with_base_url(engine.base_url()).expect("loopback is allowed");
+
+        let error = engine
+            .start_and_wait(&client)
+            .await
+            .expect_err("a server that exits at once cannot answer");
+        let reported = error.to_string();
+
+        assert!(
+            reported.contains(COMPLAINT),
+            "the engine's own words are the diagnosis and should be passed on: {reported}"
+        );
+        assert!(
+            !reported.contains("memory"),
+            "nothing observed here says anything about memory, so nothing should claim it: {reported}"
+        );
+
+        std::fs::remove_dir_all(&dir).expect("should clean up");
+    }
+
+    /// And the other half. An exit on its own establishes nothing, so when
+    /// there is nothing to quote the message has to say so rather than fill
+    /// the gap with the likeliest-sounding cause.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn admits_it_does_not_know_when_the_engine_dies_without_a_word() {
+        let dir = scratch("silence");
+        let engine = engine_that_dies_at_once(&dir, None);
+        let client = llama::Client::with_base_url(engine.base_url()).expect("loopback is allowed");
+
+        let error = engine
+            .start_and_wait(&client)
+            .await
+            .expect_err("a server that exits at once cannot answer");
+        let reported = error.to_string();
+
+        assert!(
+            reported.contains("stopped before it could answer"),
+            "the exit is the one thing known, and should be said: {reported}"
+        );
+        assert!(
+            reported.contains("wrote nothing"),
+            "having nothing to go on is itself the finding: {reported}"
+        );
+
+        std::fs::remove_dir_all(&dir).expect("should clean up");
     }
 }
