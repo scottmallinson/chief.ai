@@ -3,6 +3,27 @@
 version = 3
 
 [[package]]
+name = "Chief"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "getrandom 0.3.4",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-opener",
+ "tauri-plugin-sql",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -589,27 +610,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
-]
-
-[[package]]
-name = "chief-ai"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "futures-util",
- "getrandom 0.3.4",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "tauri",
- "tauri-build",
- "tauri-plugin-opener",
- "tauri-plugin-sql",
- "thiserror 2.0.20",
- "tokio",
 ]
 
 [[package]]

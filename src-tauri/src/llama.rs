@@ -93,9 +93,29 @@ fn function_kind() -> &'static str {
     "function"
 }
 
-/// Read a field that is a string, or `null` where there was nothing to say.
+/// Read text content in the forms used by OpenAI-compatible servers.
+///
+/// Most replies use a string, while multimodal-capable templates may return
+/// an array of `{ "type": "text", "text": "..." }` parts instead.
 fn text_or_nothing<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+    text_from_value(Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+}
+
+fn text_from_value(value: Value) -> Result<String, String> {
+    match value {
+        Value::Null => Ok(String::new()),
+        Value::String(text) => Ok(text),
+        Value::Array(parts) => parts
+            .into_iter()
+            .map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| "content parts must contain text".to_string())
+            })
+            .collect(),
+        other => Err(format!("expected text content, got {other}")),
+    }
 }
 
 /// Read tool arguments however they arrive.
@@ -329,8 +349,8 @@ struct ChunkChoice {
 /// The few more characters of an answer that one event carries.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct Delta {
-    #[serde(default)]
-    content: Option<String>,
+    #[serde(default, deserialize_with = "text_or_nothing")]
+    content: String,
     #[serde(default)]
     tool_calls: Vec<ToolCallDelta>,
 }
@@ -498,11 +518,13 @@ impl Client {
     /// summariser. When a person is waiting, prefer [`Client::chat_stream`].
     pub async fn chat(&self, request: &ChatRequest) -> Result<Message, Error> {
         let response = self.ask(request, false).await?;
-
-        response
-            .json::<ChatResponse>()
+        let body = response
+            .text()
             .await
-            .map_err(|error| Error::Decode(error.to_string()))?
+            .map_err(|error| Error::Decode(error.to_string()))?;
+
+        serde_json::from_str::<ChatResponse>(&body)
+            .map_err(|error| Error::Decode(format!("{error}; response body: {body}")))?
             .message()
     }
 
@@ -528,8 +550,8 @@ impl Client {
         let mut calls = PartialToolCalls::default();
 
         read_events(response, |data| {
-            let chunk: ChatChunk =
-                serde_json::from_str(data).map_err(|error| Error::Decode(error.to_string()))?;
+            let chunk: ChatChunk = serde_json::from_str(data)
+                .map_err(|error| Error::Decode(format!("{error}; event data: {data}")))?;
 
             if let Some(problem) = chunk.error {
                 return Err(Error::Status {
@@ -539,7 +561,8 @@ impl Client {
             }
 
             for choice in chunk.choices {
-                if let Some(part) = choice.delta.content.filter(|part| !part.is_empty()) {
+                if !choice.delta.content.is_empty() {
+                    let part = choice.delta.content;
                     on_token(&part);
                     answer.content.push_str(&part);
                 }
@@ -956,6 +979,27 @@ mod tests {
         assert_eq!(message.role, Role::Assistant);
         assert_eq!(message.content, "You merged two pull requests.");
         assert!(message.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn reads_text_parts_in_a_reply() {
+        let raw = json!({
+            "model": "chief",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "text", "text": "Hello" },
+                        { "type": "text", "text": " there" },
+                    ],
+                },
+            }],
+        });
+
+        let response: ChatResponse = serde_json::from_value(raw).expect("should deserialize");
+        let message = response.message().expect("should have a choice");
+
+        assert_eq!(message.content, "Hello there");
     }
 
     #[test]

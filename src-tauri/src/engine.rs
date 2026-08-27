@@ -33,7 +33,7 @@ pub const MODEL_ALIAS: &str = "chief";
 ///
 /// Room for a conversation plus a page of tool results. Larger costs memory for
 /// the key/value cache and buys nothing Chief asks for.
-const CONTEXT_SIZE: u32 = 4096;
+const CONTEXT_SIZE: u32 = 8192;
 
 /// Point Chief at a `llama-server` you are running yourself, instead of the one
 /// it ships. Must still be loopback; the client refuses anything else.
@@ -64,9 +64,7 @@ pub enum Error {
     Spawn(String),
     #[error("the inference engine started but never began answering.")]
     NeverReady,
-    #[error(
-        "the inference engine stopped while loading the model. It may not fit in this machine's memory."
-    )]
+    #[error("the inference engine stopped while loading the model")]
     Stopped,
     #[error(transparent)]
     Client(#[from] llama::Error),
@@ -326,7 +324,7 @@ impl Engine {
         {
             // Without this, a console window flashes up behind the app.
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            std::os::windows::process::CommandExt::creation_flags(&mut command, CREATE_NO_WINDOW);
+            command.creation_flags(CREATE_NO_WINDOW);
         }
 
         let child = command

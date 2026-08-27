@@ -1,1 +1,9 @@
+for node_bin in "$HOME"/.nvm/versions/node/*/bin; do
+	if [ -x "$node_bin/pnpm" ]; then
+		PATH="$node_bin:$PATH"
+		export PATH
+		break
+	fi
+done
+
 pnpm commitlint --edit "$1"
