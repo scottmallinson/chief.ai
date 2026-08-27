@@ -68,14 +68,52 @@ that part:
 | `pnpm verify:rust`     | Rust                 | ~4 min                     |
 | `pnpm verify:app`      | App build            | ~7 min cold, far less warm |
 
-Two things it cannot cover. `verify:app` builds for **this** machine only, so the other two
-platforms in CI's matrix are unverified until someone builds there — the Rust is portable but the
+Two things it cannot cover. `verify:app` builds for **this** machine only, so the platforms you are
+not sitting at are unverified until CI builds there — the Rust is portable but the
 WebKitGTK/WebView2/WKWebView differences are not. And the PR _title_ is linted by CI rather than by
 commitlint here; `verify:commits` checks the commit messages the title is usually taken from.
 
 Anything that builds or runs the desktop app needs `llama-server` on disk first, which is why
 `tauri:dev`, `tauri:build` and `verify:app` all run `pnpm engine:fetch`. It is idempotent — a rerun
-with the pinned build does nothing — and CI runs it as its own step.
+with the pinned build does nothing — and CI runs it as part of setting a job up.
+
+### What CI does with its minutes
+
+Runner time is the one cost this project has, so the workflows are written to spend it once.
+
+- The setup every job repeats lives in `.github/actions/`, not in each job.
+  `setup-node` is corepack, Node with a pnpm store cache, and `pnpm install`; `setup-tauri` is that
+  plus the WebKitGTK toolchain on Linux, a Rust toolchain, a cargo cache and the llama.cpp engine.
+  A new step that more than one job needs belongs in one of those two.
+- **Cancel superseded runs, keep `main`.** Pushing again to a pull request cancels the run it
+  replaced; a run on `main` is the record that a merged commit is good, so it is left to finish.
+- **Cache anything downloaded twice** — the pnpm store, the cargo registry and target directory,
+  and Chromium for the layout tests.
+- **Build where nothing else is looking.** A pull request builds the app on macOS and Windows, and
+  not on Linux: the Rust job already compiles the whole crate there, but `#[cfg(windows)]` code is
+  compiled on Windows and nowhere else — `engine.rs:493` is where the last two fixes on `main`
+  went. `main` adds Linux, where the app build is the only job that links a release profile
+  against WebKitGTK. macOS bills at 10× a Linux runner and Windows at 2×, so this is most of what
+  CI costs; it buys the only proof that the platform-conditional code compiles at all.
+- **Don't build it at all when the change can't reach it.** The `changes` job spends a Linux
+  minute working out whether a pull request touches `src-tauri/`, `scripts/`, the manifests or CI
+  itself, and the app build is skipped when it does not. A change under `src/` is proved by the
+  Frontend job's `pnpm build`; it cannot break platform-conditional Rust. Everything that is not a
+  pull request builds unconditionally.
+- **A pull request builds `--debug`.** It has one question to answer — does this compile and link
+  on a platform nothing else compiles it on — and optimisation is not part of it. The release
+  profile is proved on `main` and again when a release is cut.
+- **Compile a dependency once per platform.** CI's app build and Release share one cargo cache per
+  platform — `shared-key: tauri-<platform>` — so cutting a release restores what `main` already
+  built instead of starting from nothing. Two things keep that working: both workflows set the
+  same `CARGO_TERM_COLOR`, because rust-cache hashes every `CARGO_*` and `RUST*` variable into the
+  key; and the debug builds pull-requests do are kept in a separate `tauri-dev-<platform>` cache,
+  so a branch cannot evict what a release restores from. Chief's own crates are never cached, only
+  its dependencies.
+- **One dependency pull request a month, not twenty.** Every bump touches a lockfile, which is
+  exactly what makes the app build run, so Dependabot groups minor and patch updates per ecosystem
+  and runs monthly. Majors stay on their own — a batch that has to be reverted for one breaking
+  change takes the rest with it — and security updates ignore the schedule entirely.
 
 Building the desktop app on Linux needs the WebKitGTK toolchain:
 
@@ -142,6 +180,12 @@ the user to install a runtime, which is the whole reason the engine is a module 
   kill.
 - The process is killed on `RunEvent::Exit`. Nothing else would stop it, and a resident model holds
   a couple of gigabytes after the window has gone.
+- The server's **stderr is read rather than inherited**, and the last twenty lines are kept. A
+  server that dies on the way up is quoted, not guessed at: Chief used to report every early exit as
+  the model not fitting in this machine's memory, and on macOS 12 — where the bundled build wants a
+  LAPACK symbol that arrived in 13.3 — the real answer was on that stream the whole time, going to a
+  terminal nobody installing the app ever sees. Every line read is written straight back out, so
+  `tauri dev` still shows the model loading.
 - Two things llama.cpp makes unnecessary that Ollama needed. The **context window** is a launch flag
   (`--ctx-size`), not a per-request option, so no request can evict the weights and there is no
   keep-alive to negotiate — the server owns one model for its lifetime. And it **warms itself** as
@@ -413,6 +457,43 @@ it.** This overrides any default an agent or tool brings with it, and applies to
 - No Claude, session, or tool attribution anywhere in a **pull request title or description** — no
   generated-by footer, no session link, no assistant byline.
 - The commit message and the PR body describe the change, never who or what wrote it.
+
+## Releases
+
+Nobody cuts a release, and nothing waits for a pull request.
+`.github/workflows/release.yml` runs on every push to `main`, and one Linux job decides whether
+what just landed is worth releasing. If it is, that job _is_ the release: the new version is
+written into the four files that carry it, `CHANGELOG.md` gains an entry, both are committed back
+to `main` and tagged, and the four bundles build and publish against that tag.
+
+`scripts/release.mjs` holds the decision, which is why it is a tested script rather than a heap of
+YAML — there is no human between it and a published release. `pnpm test` covers it.
+
+- **A `feat`, `fix`, `perf` or `revert` releases. Nothing else does.** A `docs`, `ci`, `chore`,
+  `style`, `test` or `refactor` commit changes nothing a person can download, and a release is four
+  bundles — two of them macOS at 10× a Linux runner, so on the order of 200 billed minutes. Those
+  commits neither cause a release nor appear in one.
+- **The version is derived, never chosen.** A `feat` is a minor and anything else releasable is a
+  patch. A breaking change — `feat!:` or a `BREAKING CHANGE:` footer — is a major, except before
+  1.0.0, where it is a minor: a project that is not finished should not be forced to call itself
+  1.0 by its first breaking change.
+- **Four files carry the version** — `package.json`, `src-tauri/tauri.conf.json`,
+  `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock` — and the script rewrites exactly one version
+  string in each, failing if it finds none or several. A test asserts each pattern still matches
+  its real file, so reformatting one of them breaks a test rather than a release.
+- **The release commit starts nothing.** It is pushed with `GITHUB_TOKEN`, and GitHub deliberately
+  raises no workflow runs for those — so it cannot loop back into this workflow, and it does not
+  spend another full CI matrix on `main`.
+- **Drafted, filled, then published.** The release is created as a draft so nobody is told about a
+  release they cannot download; the `publish` job takes it out of draft once every bundle is
+  attached. If that job never runs, the release sits there as a draft with its assets and one click
+  finishes it. That is the failure this is shaped around.
+- **The first release needs a starting point.** With no `v*` tag to measure from, the script reads
+  from the `BASELINE` commit rather than summarising the entire history.
+- A branch protection rule that forbids pushing to `main` would stop this: the release commit goes
+  straight to `main`, by design.
+- `CHANGELOG.md` is in `.prettierignore`. It is generated, and a formatting check failing on a
+  release commit would block releasing entirely.
 
 ## Roadmap
 

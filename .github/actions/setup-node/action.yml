@@ -1,0 +1,29 @@
+name: Set up Node and pnpm
+description: >-
+  Enables corepack, installs Node with a pnpm store cache, and installs the
+  workspace dependencies. Every job in every workflow starts this way, so it
+  lives here rather than being repeated eight times.
+
+inputs:
+  node-version:
+    description: The Node version to install.
+    required: false
+    default: '22'
+
+runs:
+  using: composite
+  steps:
+    # corepack has to come first: `setup-node`'s pnpm cache needs the pnpm
+    # shim on PATH to work out where the store is.
+    - name: Enable corepack
+      shell: bash
+      run: corepack enable
+
+    - uses: actions/setup-node@v5
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile

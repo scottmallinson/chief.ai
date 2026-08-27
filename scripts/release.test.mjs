@@ -1,0 +1,185 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  VERSIONED,
+  bumpVersion,
+  decideBump,
+  parseCommits,
+  renderEntry,
+  replaceOnce,
+  writeChangelog,
+} from './release.mjs';
+
+/** Build the `git log` output shape this parses, so tests read like commits. */
+const log = (...commits) =>
+  commits
+    .map(([subject, body = '', sha = 'a'.repeat(40)]) => `${sha}\x00${subject}\x00${body}`)
+    .join('\x1e');
+
+describe('parseCommits', () => {
+  it('reads the type, scope and subject', () => {
+    const [commit] = parseCommits(log(['feat(agent): stream answers']));
+
+    expect(commit).toMatchObject({ type: 'feat', scope: 'agent', subject: 'stream answers' });
+  });
+
+  it('marks a commit breaking from the ! shorthand', () => {
+    expect(parseCommits(log(['feat(db)!: drop the old table']))[0].breaking).toBe(true);
+  });
+
+  it('marks a commit breaking from the footer', () => {
+    const raw = log(['feat(db): drop the old table', 'BREAKING CHANGE: the schema moved']);
+
+    expect(parseCommits(raw)[0].breaking).toBe(true);
+  });
+
+  it('keeps a commit that is not conventional, without a type', () => {
+    expect(parseCommits(log(['tidied things up']))[0]).toMatchObject({
+      type: null,
+      breaking: false,
+    });
+  });
+});
+
+describe('decideBump', () => {
+  it('does not release for docs, ci or chore alone', () => {
+    const commits = parseCommits(
+      log(['docs(repo): explain the daemon'], ['ci(ci): cache chromium']),
+    );
+
+    expect(decideBump(commits, '0.1.0')).toBeNull();
+  });
+
+  it('does not release when nothing is conventional', () => {
+    expect(decideBump(parseCommits(log(['wip'])), '0.1.0')).toBeNull();
+  });
+
+  it('bumps the patch for a fix', () => {
+    expect(decideBump(parseCommits(log(['fix(ui): keep the window still'])), '0.1.0')).toBe(
+      'patch',
+    );
+  });
+
+  it('bumps the minor for a feature, whatever else is alongside it', () => {
+    const commits = parseCommits(log(['fix(ui): a fix'], ['feat(agent): a feature']));
+
+    expect(decideBump(commits, '0.1.0')).toBe('minor');
+  });
+
+  it('bumps the minor, not the major, for a breaking change before 1.0.0', () => {
+    expect(decideBump(parseCommits(log(['feat(db)!: new schema'])), '0.4.2')).toBe('minor');
+  });
+
+  it('bumps the major for a breaking change once 1.0.0 has shipped', () => {
+    expect(decideBump(parseCommits(log(['feat(db)!: new schema'])), '1.4.2')).toBe('major');
+  });
+});
+
+describe('bumpVersion', () => {
+  it.each([
+    ['0.1.0', 'patch', '0.1.1'],
+    ['0.1.9', 'minor', '0.2.0'],
+    ['1.2.3', 'major', '2.0.0'],
+  ])('bumps %s by %s to %s', (from, bump, expected) => {
+    expect(bumpVersion(from, bump)).toBe(expected);
+  });
+
+  it('refuses a version it cannot read', () => {
+    expect(() => bumpVersion('not-a-version', 'patch')).toThrow(/cannot|not a version/i);
+  });
+});
+
+describe('renderEntry', () => {
+  const commits = parseCommits(
+    log(
+      ['feat(agent): stream answers', '', 'b'.repeat(40)],
+      ['fix(ui): stop the jump'],
+      ['ci(ci): cheaper'],
+    ),
+  );
+  const entry = renderEntry('0.2.0', commits, {
+    date: '2026-08-27',
+    repository: 'https://example.test/o/r',
+  });
+
+  it('titles the release', () => {
+    expect(entry).toContain('## 0.2.0 (2026-08-27)');
+  });
+
+  it('groups the releasable types under headings', () => {
+    expect(entry).toContain('### Features');
+    expect(entry).toContain('### Fixes');
+  });
+
+  it('leaves out types that have no section', () => {
+    expect(entry).not.toContain('cheaper');
+  });
+
+  it('links each commit to itself', () => {
+    expect(entry).toContain('([bbbbbbb](https://example.test/o/r/commit/' + 'b'.repeat(40) + '))');
+  });
+});
+
+describe('replaceOnce', () => {
+  const pattern = /^ {2}"version": "[^"]+",$/m;
+
+  it('replaces the one version it finds', () => {
+    expect(replaceOnce('{\n  "version": "0.1.0",\n}', pattern, '9.9.9', 'x')).toContain('"9.9.9"');
+  });
+
+  it('refuses a file with no version', () => {
+    expect(() => replaceOnce('{}', pattern, '9.9.9', 'x')).toThrow(/found 0/);
+  });
+
+  it('refuses a file with more than one', () => {
+    const twice = '{\n  "version": "0.1.0",\n  "version": "0.1.0",\n}';
+
+    expect(() => replaceOnce(twice, pattern, '9.9.9', 'x')).toThrow(/found 2/);
+  });
+});
+
+// The patterns are only useful if they still match the real files. This is the
+// test that fails when one of them is reformatted or renamed.
+describe('the files that carry the version', () => {
+  it.each(VERSIONED.map(({ file, pattern }) => [file, pattern]))(
+    'has exactly one version in %s',
+    (file, pattern) => {
+      const contents = fs.readFileSync(path.join(process.cwd(), file), 'utf8');
+      const found = contents.match(new RegExp(pattern.source, `${pattern.flags}g`)) ?? [];
+
+      expect(found).toHaveLength(1);
+    },
+  );
+});
+
+describe('writeChangelog', () => {
+  const read = (dir) => fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8');
+  const entry = (version) => `## ${version} (2026-08-27)\n\n### Fixes\n\n- **ui:** a fix\n`;
+
+  it('starts a changelog, with one blank line and a trailing newline', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chief-changelog-'));
+
+    writeChangelog(entry('0.1.1'), dir);
+
+    expect(read(dir)).toBe(
+      `# Changelog\n\n## 0.1.1 (2026-08-27)\n\n### Fixes\n\n- **ui:** a fix\n`,
+    );
+  });
+
+  it('puts a later release above an earlier one, and never doubles a blank line', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chief-changelog-'));
+
+    writeChangelog(entry('0.1.1'), dir);
+    writeChangelog(entry('0.2.0'), dir);
+
+    const contents = read(dir);
+
+    expect(contents.indexOf('0.2.0')).toBeLessThan(contents.indexOf('0.1.1'));
+    expect(contents).not.toMatch(/\n{3}/);
+    expect(contents.endsWith('\n')).toBe(true);
+  });
+});

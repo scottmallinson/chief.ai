@@ -2,23 +2,121 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
-  # Lets a release be cut from the Actions tab without pushing a tag first.
-  # The draft release carries the tag, which GitHub creates when it is
-  # published — so nothing is tagged until you decide to publish.
+    branches: [main]
+  # Re-runs the same flow by hand. With nothing releasable since the last tag
+  # it is one Linux job that decides so and stops.
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release, e.g. v0.1.0'
-        required: true
-        type: string
+
+concurrency:
+  # Never cancelled, and never two at once: a release commits to main and moves
+  # a tag, so a second merge waits for the first rather than racing it.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
+# Matches CI. Not cosmetic: rust-cache hashes every `CARGO_*` and `RUST*`
+# variable into its key, so a workflow that sets this and one that does not
+# would look like different environments and never share a cache.
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  release:
+  # One Linux job on every push to main. It decides whether what just landed is
+  # worth releasing, and if it is, it is the release: the version is written
+  # into the four files that carry it, the changelog gains an entry, both are
+  # committed back to main and tagged, and a draft release is opened for the
+  # bundles to attach to.
+  version:
+    name: Work out the release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      releasing: ${{ steps.decide.outputs.releasing }}
+      version: ${{ steps.decide.outputs.version }}
+      tag: ${{ steps.decide.outputs.tag }}
+      sha: ${{ steps.commit.outputs.sha }}
+      id: ${{ steps.draft.outputs.id }}
+    steps:
+      # Full history and tags: the script releases what has landed since the
+      # last `v*` tag, and cannot see that in a shallow clone.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # No `pnpm install`: the script has no dependencies, so the runner's own
+      # Node runs it and a release does not wait on a package manager.
+      - name: Decide, and write the version in
+        id: decide
+        run: node scripts/release.mjs --write
+
+      # Everything this repository publishes is the owner's work, whoever or
+      # whatever typed it — a release commit included.
+      - name: Commit and tag it
+        id: commit
+        if: steps.decide.outputs.releasing == 'true'
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          git config user.name 'Scott Mallinson'
+          git config user.email 'scott@scottmallinson.com'
+
+          git add package.json CHANGELOG.md src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          git commit -m "chore(repo): release $VERSION"
+          git tag "$TAG"
+
+          # Pushed with GITHUB_TOKEN, which by design starts no further
+          # workflow runs — so this commit does not set CI or this workflow off
+          # again, and cannot loop.
+          git push origin HEAD:main
+          git push origin "$TAG"
+
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # A draft, so the tag's release exists for the bundles to attach to
+      # without anyone being told about a release they cannot download yet.
+      - name: Open the release
+        id: draft
+        if: steps.decide.outputs.releasing == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.decide.outputs.tag }}
+          NOTES: ${{ steps.decide.outputs.notes }}
+          TARGET: ${{ steps.commit.outputs.sha }}
+        run: |
+          id=$(
+            jq -n \
+              --arg tag "$TAG" \
+              --arg name "Chief $TAG" \
+              --arg body "$NOTES" \
+              --arg target "$TARGET" \
+              '{tag_name: $tag, name: $name, body: $body, target_commitish: $target, draft: true}' |
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              --data @- \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases" |
+            jq -r '.id'
+          )
+
+          case "$id" in
+            '' | null | *[!0-9]*)
+              echo "::error::The release was not created, so there is nothing to attach bundles to."
+              exit 1
+              ;;
+          esac
+
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "::notice::Drafted $TAG as release $id."
+
+  bundle:
     name: Bundle (${{ matrix.platform }})
+    needs: version
+    if: needs.version.outputs.releasing == 'true'
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
     strategy:
@@ -34,56 +132,16 @@ jobs:
           - platform: windows-latest
             args: ''
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        env:
-          APT_OPTS: >-
-            -o Acquire::Retries=3
-            -o Acquire::http::Timeout=30
-            -o Acquire::https::Timeout=30
-        run: |
-          sudo apt-get update $APT_OPTS
-          sudo apt-get install -y --no-install-recommends $APT_OPTS \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev \
-            patchelf \
-            build-essential \
-            file
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - uses: actions/setup-node@v4
+      # The release commit, not whatever main has reached since: another pull
+      # request merging mid-release must not change what ships.
+      - uses: actions/checkout@v5
         with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: ${{ matrix.platform }}
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # The engine is bundled, so it has to be on disk before Tauri builds. The
-      # script is idempotent and pins the llama.cpp build.
-      - name: Fetch the llama.cpp engine
-        run: pnpm engine:fetch
+          ref: ${{ needs.version.outputs.sha }}
 
       # A missing variable would silently produce a binary whose "Connect
       # GitHub" button never works, and nobody would find out until after they
-      # had installed it.
+      # had installed it. Checked before anything is compiled, so the matrix
+      # fails in seconds rather than after four bundles.
       - name: Check the GitHub client id is configured
         shell: bash
         env:
@@ -95,6 +153,15 @@ jobs:
           fi
           echo "Client id is configured (${#CHIEF_GITHUB_CLIENT_ID} characters)."
 
+      # The same cache CI's app build writes from main, so a release starts
+      # with Chief's dependencies already compiled instead of building the
+      # whole tree from nothing. Only dependencies: rust-cache leaves the
+      # workspace's own crates out, so Chief itself is always compiled here.
+      - uses: ./.github/actions/setup-tauri
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          shared-key: tauri-${{ matrix.platform }}
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -103,9 +170,32 @@ jobs:
           # repository variable rather than a secret.
           CHIEF_GITHUB_CLIENT_ID: ${{ vars.CHIEF_GITHUB_CLIENT_ID }}
         with:
-          tagName: ${{ inputs.version || github.ref_name }}
-          releaseName: 'Chief ${{ inputs.version || github.ref_name }}'
-          releaseBody: 'See the assets below to download and install this version.'
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.version.outputs.id }}
           args: ${{ matrix.args }}
+
+  # Publishing is what tells people the release exists, so it happens last —
+  # once every bundle is attached. If this never runs, the release sits there
+  # as a draft with its assets and one click finishes it. That is the failure
+  # this is shaped around.
+  publish:
+    name: Publish the release
+    needs: [version, bundle]
+    if: needs.version.outputs.releasing == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Take the release out of draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.version.outputs.id }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --request PATCH \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --data '{"draft":false}' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > /dev/null
+
+          echo "::notice::Published $TAG."

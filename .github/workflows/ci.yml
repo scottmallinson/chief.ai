@@ -8,7 +8,9 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseding a pull request run is free feedback; superseding a run on main
+  # would lose the only record that a merged commit is good.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -17,23 +19,63 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The app build is most of what CI costs, so it is worth a Linux minute to
+  # find out whether this change could possibly affect it. A change to the
+  # frontend cannot: `pnpm build` in the Frontend job already proves the bundle
+  # compiles, and nothing under `src/` reaches the platform-conditional Rust
+  # that is the whole reason the app build runs on two paid platforms.
+  changes:
+    name: What changed
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      app: ${{ steps.decide.outputs.app }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the app has to be built
+        id: decide
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Anything that is not a pull request — main, or a branch someone ran
+          # by hand from the Actions tab — builds unconditionally. Those are the
+          # runs whose job is to be thorough.
+          if [ "$EVENT" != 'pull_request' ]; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$EVENT: building the app."
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          echo "Changed files:"
+          echo "$changed" | sed 's/^/  /'
+
+          # src-tauri carries the Rust, Cargo.lock and the Tauri config;
+          # scripts fetches the engine the build needs on disk; package.json
+          # pins the Tauri CLI that runs the build, and the lockfile moves with
+          # it; and a change to CI itself has to be proved by running it.
+          if echo "$changed" | grep -qE '^(src-tauri/|scripts/|package\.json$|pnpm-lock\.yaml$|\.github/(workflows|actions)/)'; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Building the app: the change reaches it."
+          else
+            echo "app=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping the app build: nothing outside the frontend changed."
+          fi
+
   frontend:
     name: Frontend
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Enable corepack
-        run: corepack enable
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-node
 
       - name: Check formatting
         run: pnpm format:check
@@ -55,27 +97,35 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Enable corepack
-        run: corepack enable
+      - uses: ./.github/actions/setup-node
 
-      - uses: actions/setup-node@v4
+      # Chromium is ~150 MB and the pinned version only changes when the
+      # Playwright dependency does, so the lockfile is the cache key.
+      - name: Restore the browser
+        uses: actions/cache@v5
         with:
-          node-version: 22
-          cache: pnpm
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      # The system libraries are apt packages rather than part of the cache,
+      # so they are installed either way.
+      - name: Install Chromium's system libraries
+        run: pnpm exec playwright install-deps chromium
 
       # Only Chromium: these tests measure Chief's own layout, not how it
-      # renders across engines, and the shipped webviews are not available here.
+      # renders across engines, and the shipped webviews are not available
+      # here. A restored cache makes this a no-op rather than a download.
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm exec playwright install chromium
 
       - name: Test
         run: pnpm test:e2e
 
+      # The one action still on Node 20, and deliberately: its v5 is a Node 20
+      # action too, so bumping it would buy nothing. It also only runs when the
+      # job has already failed. Revisit when upload-artifact ships Node 24.
       - name: Upload the report
         if: failure()
         uses: actions/upload-artifact@v4
@@ -89,34 +139,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install Linux dependencies
-        env:
-          APT_OPTS: >-
-            -o Acquire::Retries=3
-            -o Acquire::http::Timeout=30
-            -o Acquire::https::Timeout=30
-        run: |
-          sudo apt-get update $APT_OPTS
-          sudo apt-get install -y --no-install-recommends $APT_OPTS \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev \
-            patchelf \
-            build-essential \
-            file
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-tauri
         with:
           components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - name: Check formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
@@ -129,57 +156,41 @@ jobs:
 
   app:
     name: App build (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        platform: [ubuntu-22.04, macos-latest, windows-latest]
+        # macOS and Windows are the platforms nothing else compiles: the Rust
+        # job already builds the whole crate on Linux, but `#[cfg(windows)]`
+        # code — `engine.rs:325`, which is where the last two fixes on main
+        # went — is compiled on Windows and nowhere else. So a pull request
+        # builds those two, and main adds Linux, where the app build is the
+        # only job that links a release profile against WebKitGTK.
+        platform:
+          ${{ fromJSON(github.event_name == 'pull_request' && '["macos-latest", "windows-latest"]' ||
+          '["ubuntu-22.04", "macos-latest", "windows-latest"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        env:
-          APT_OPTS: >-
-            -o Acquire::Retries=3
-            -o Acquire::http::Timeout=30
-            -o Acquire::https::Timeout=30
-        run: |
-          sudo apt-get update $APT_OPTS
-          sudo apt-get install -y --no-install-recommends $APT_OPTS \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev \
-            patchelf \
-            build-essential \
-            file
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - uses: actions/setup-node@v4
+      # Two caches, because a debug build shares nothing with a release one:
+      # `tauri-<platform>` is the release-profile cache main writes and Release
+      # restores, and `tauri-dev-<platform>` is the debug one a branch warms for
+      # its own later pushes. Keeping them apart is what stops a branch from
+      # evicting the cache a release depends on — and the gate above is what
+      # keeps the number of branches writing one small.
+      - uses: ./.github/actions/setup-tauri
         with:
-          node-version: 22
-          cache: pnpm
+          shared-key:
+            ${{ github.event_name == 'pull_request' && format('tauri-dev-{0}', matrix.platform) ||
+            format('tauri-{0}', matrix.platform) }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: ${{ matrix.platform }}
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # The engine is bundled, so it has to be on disk before Tauri builds. The
-      # script is idempotent and pins the llama.cpp build.
-      - name: Fetch the llama.cpp engine
-        run: pnpm engine:fetch
-
+      # A pull request has one question to answer: does the platform-conditional
+      # code compile and link on a platform nothing else compiles it on. The
+      # debug profile answers it without paying for optimisation on a runner
+      # that bills at ten times Linux. Release profile still runs on main, and
+      # again when a release is cut.
       - name: Build the desktop app
-        run: pnpm tauri build --no-bundle
+        run: pnpm tauri build --no-bundle ${{ github.event_name == 'pull_request' && '--debug' || '' }}
