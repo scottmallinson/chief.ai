@@ -452,6 +452,43 @@ it.** This overrides any default an agent or tool brings with it, and applies to
   generated-by footer, no session link, no assistant byline.
 - The commit message and the PR body describe the change, never who or what wrote it.
 
+## Releases
+
+Nobody cuts a release, and nothing waits for a pull request.
+`.github/workflows/release.yml` runs on every push to `main`, and one Linux job decides whether
+what just landed is worth releasing. If it is, that job _is_ the release: the new version is
+written into the four files that carry it, `CHANGELOG.md` gains an entry, both are committed back
+to `main` and tagged, and the four bundles build and publish against that tag.
+
+`scripts/release.mjs` holds the decision, which is why it is a tested script rather than a heap of
+YAML — there is no human between it and a published release. `pnpm test` covers it.
+
+- **A `feat`, `fix`, `perf` or `revert` releases. Nothing else does.** A `docs`, `ci`, `chore`,
+  `style`, `test` or `refactor` commit changes nothing a person can download, and a release is four
+  bundles — two of them macOS at 10× a Linux runner, so on the order of 200 billed minutes. Those
+  commits neither cause a release nor appear in one.
+- **The version is derived, never chosen.** A `feat` is a minor and anything else releasable is a
+  patch. A breaking change — `feat!:` or a `BREAKING CHANGE:` footer — is a major, except before
+  1.0.0, where it is a minor: a project that is not finished should not be forced to call itself
+  1.0 by its first breaking change.
+- **Four files carry the version** — `package.json`, `src-tauri/tauri.conf.json`,
+  `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock` — and the script rewrites exactly one version
+  string in each, failing if it finds none or several. A test asserts each pattern still matches
+  its real file, so reformatting one of them breaks a test rather than a release.
+- **The release commit starts nothing.** It is pushed with `GITHUB_TOKEN`, and GitHub deliberately
+  raises no workflow runs for those — so it cannot loop back into this workflow, and it does not
+  spend another full CI matrix on `main`.
+- **Drafted, filled, then published.** The release is created as a draft so nobody is told about a
+  release they cannot download; the `publish` job takes it out of draft once every bundle is
+  attached. If that job never runs, the release sits there as a draft with its assets and one click
+  finishes it. That is the failure this is shaped around.
+- **The first release needs a starting point.** With no `v*` tag to measure from, the script reads
+  from the `BASELINE` commit rather than summarising the entire history.
+- A branch protection rule that forbids pushing to `main` would stop this: the release commit goes
+  straight to `main`, by design.
+- `CHANGELOG.md` is in `.prettierignore`. It is generated, and a formatting check failing on a
+  release commit would block releasing entirely.
+
 ## Roadmap
 
 Build strictly in order, and stop for review at each step:

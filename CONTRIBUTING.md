@@ -52,6 +52,15 @@ be a valid conventional commit — CI checks both.
 - CI builds the app on macOS and Windows for a pull request, and adds Linux on `main`. If you want
   all three against your branch, run the CI workflow from the Actions tab.
 
+## Releases
+
+You do not cut one, and you do not need to ask for one. Merging a `feat`, `fix`, `perf` or `revert`
+to `main` releases it: the version is bumped, the changelog written, the tag pushed and the
+installers built and published. A `docs`, `ci` or `chore` merge releases nothing.
+
+So the commit type is not paperwork — it decides whether your change ships and what the version
+becomes. Do not bump versions or push tags by hand; both are outputs of releasing now.
+
 ## The privacy bar
 
 Any change that would send user data off the device — a hosted model, a relay server, telemetry, an
