@@ -55,7 +55,7 @@ jobs:
       # Chromium is ~150 MB and the pinned version only changes when the
       # Playwright dependency does, so the lockfile is the cache key.
       - name: Restore the browser
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
