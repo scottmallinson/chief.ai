@@ -87,9 +87,9 @@ function ConnectedAccount({
           maxLength={NAME_LIMIT}
           onChange={(event) => setName(event.target.value)}
           onBlur={(event) => commit(event.target.value)}
-          className="w-full rounded-md bg-transparent text-sm font-medium placeholder:font-normal placeholder:text-muted-foreground"
+          className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm font-medium transition-colors duration-[120ms] ease-instrument placeholder:font-normal placeholder:text-muted-foreground hover:border-ring"
         />
-        <p className="mt-0.5 micro text-muted-foreground">
+        <p className="mt-1 px-[9px] micro text-muted-foreground">
           {Number.isNaN(since.getTime())
             ? 'Connected'
             : `Connected ${connectedFormat.format(since)}`}
