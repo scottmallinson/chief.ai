@@ -118,6 +118,22 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Enable corepack
+        run: corepack enable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Tauri's build script checks the bundled resource is on disk even for
+      # `cargo check`/`clippy`/`test`, so it has to be fetched here too.
+      - name: Fetch the llama.cpp engine
+        run: pnpm engine:fetch
+
       - name: Check formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 

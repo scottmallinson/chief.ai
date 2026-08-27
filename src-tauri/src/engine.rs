@@ -326,7 +326,7 @@ impl Engine {
         {
             // Without this, a console window flashes up behind the app.
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            std::os::windows::process::CommandExt::creation_flags(&mut command, CREATE_NO_WINDOW);
+            tokio::process::CommandExt::creation_flags(&mut command, CREATE_NO_WINDOW);
         }
 
         let child = command
