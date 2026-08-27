@@ -68,14 +68,32 @@ that part:
 | `pnpm verify:rust`     | Rust                 | ~4 min                     |
 | `pnpm verify:app`      | App build            | ~7 min cold, far less warm |
 
-Two things it cannot cover. `verify:app` builds for **this** machine only, so the other two
-platforms in CI's matrix are unverified until someone builds there — the Rust is portable but the
-WebKitGTK/WebView2/WKWebView differences are not. And the PR _title_ is linted by CI rather than by
-commitlint here; `verify:commits` checks the commit messages the title is usually taken from.
+Two things it cannot cover. `verify:app` builds for **this** machine only — the Rust is portable
+but the WebKitGTK/WebView2/WKWebView differences are not — and neither can CI on a pull request,
+where the app build is Linux-only because a macOS runner bills at ten times the Linux rate. The
+full three-platform matrix runs on every push to `main`, which is upstream of every release, and
+can be run against a branch from the Actions tab when a change is likely to land differently on
+Windows or macOS. And the PR _title_ is linted by CI rather than by commitlint here;
+`verify:commits` checks the commit messages the title is usually taken from.
 
 Anything that builds or runs the desktop app needs `llama-server` on disk first, which is why
 `tauri:dev`, `tauri:build` and `verify:app` all run `pnpm engine:fetch`. It is idempotent — a rerun
-with the pinned build does nothing — and CI runs it as its own step.
+with the pinned build does nothing — and CI runs it as part of setting a job up.
+
+### What CI does with its minutes
+
+Runner time is the one cost this project has, so the workflows are written to spend it once.
+
+- The setup every job repeats lives in `.github/actions/`, not in each job.
+  `setup-node` is corepack, Node with a pnpm store cache, and `pnpm install`; `setup-tauri` is that
+  plus the WebKitGTK toolchain on Linux, a Rust toolchain, a cargo cache and the llama.cpp engine.
+  A new step that more than one job needs belongs in one of those two.
+- **Cancel superseded runs, keep `main`.** Pushing again to a pull request cancels the run it
+  replaced; a run on `main` is the record that a merged commit is good, so it is left to finish.
+- **Cache anything downloaded twice** — the pnpm store, the cargo registry and target directory,
+  and Chromium for the layout tests.
+- **Pay for macOS and Windows where they tell you something.** They are 10× and 2× a Linux runner,
+  so the app build is Linux-only on a pull request and the full matrix on `main` and on demand.
 
 Building the desktop app on Linux needs the WebKitGTK toolchain:
 

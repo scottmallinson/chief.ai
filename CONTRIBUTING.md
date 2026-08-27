@@ -49,6 +49,10 @@ be a valid conventional commit — CI checks both.
 - Branch off `main`.
 - Fill in the PR template, including the privacy checklist.
 - Keep a PR to a single roadmap step where possible.
+- CI compiles the app on Linux only for a pull request; macOS and Windows build on every push to
+  `main`. If your change is likely to land differently there — anything touching the webview, the
+  bundle or a platform path — run the CI workflow against your branch from the Actions tab, which
+  builds all three.
 
 ## The privacy bar
 

@@ -1,0 +1,64 @@
+name: Set up the Tauri toolchain
+description: >-
+  Everything a job needs before it can compile Chief: the WebKitGTK toolchain on
+  Linux, Node and pnpm, a Rust toolchain with a warm cargo cache, and the
+  bundled llama.cpp engine on disk. Shared by the Rust, App build and Release
+  jobs, which otherwise repeat the same forty lines three times over.
+
+inputs:
+  components:
+    description: Extra rustup components, comma separated (e.g. `rustfmt, clippy`).
+    required: false
+    default: ''
+  targets:
+    description: Extra rustup targets, comma separated.
+    required: false
+    default: ''
+  cache-key:
+    description: Suffix for the cargo cache key, so a matrix does not share one cache across platforms.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        APT_OPTS: >-
+          -o Acquire::Retries=3
+          -o Acquire::http::Timeout=30
+          -o Acquire::https::Timeout=30
+      run: |
+        sudo apt-get update $APT_OPTS
+        sudo apt-get install -y --no-install-recommends $APT_OPTS \
+          libwebkit2gtk-4.1-dev \
+          libappindicator3-dev \
+          librsvg2-dev \
+          libxdo-dev \
+          libssl-dev \
+          patchelf \
+          build-essential \
+          file
+
+    - uses: ./.github/actions/setup-node
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src-tauri
+        key: ${{ inputs.cache-key }}
+
+    # Tauri's build script checks the bundled resource is on disk even for
+    # `cargo check`/`clippy`/`test`, so every Rust job needs it. The script is
+    # idempotent and pins the llama.cpp build, and it asks `rustc` for the host
+    # triple — which is why it runs after the toolchain is installed.
+    - name: Fetch the llama.cpp engine
+      shell: bash
+      run: pnpm engine:fetch

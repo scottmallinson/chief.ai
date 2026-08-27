@@ -13,6 +13,12 @@ on:
         required: true
         type: string
 
+concurrency:
+  # Never cancelled: a half-uploaded draft release is worse than a duplicate
+  # run, so a second attempt at the same version queues behind the first.
+  group: release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -36,54 +42,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        env:
-          APT_OPTS: >-
-            -o Acquire::Retries=3
-            -o Acquire::http::Timeout=30
-            -o Acquire::https::Timeout=30
-        run: |
-          sudo apt-get update $APT_OPTS
-          sudo apt-get install -y --no-install-recommends $APT_OPTS \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev \
-            patchelf \
-            build-essential \
-            file
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: ${{ matrix.platform }}
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # The engine is bundled, so it has to be on disk before Tauri builds. The
-      # script is idempotent and pins the llama.cpp build.
-      - name: Fetch the llama.cpp engine
-        run: pnpm engine:fetch
-
       # A missing variable would silently produce a binary whose "Connect
       # GitHub" button never works, and nobody would find out until after they
-      # had installed it.
+      # had installed it. Checked before anything is compiled, so the matrix
+      # fails in seconds rather than after four bundles.
       - name: Check the GitHub client id is configured
         shell: bash
         env:
@@ -94,6 +56,11 @@ jobs:
             exit 1
           fi
           echo "Client id is configured (${#CHIEF_GITHUB_CLIENT_ID} characters)."
+
+      - uses: ./.github/actions/setup-tauri
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          cache-key: ${{ matrix.platform }}
 
       - uses: tauri-apps/tauri-action@v0
         env:
