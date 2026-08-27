@@ -33,6 +33,12 @@ function SettingsSection({ title, description, state, children }: SettingsSectio
 
 const connectedFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
 
+/**
+ * How long a name may be. A row is a field beside a button inside a 680px
+ * measure, and a name with no end to it takes the field down to nothing.
+ */
+const NAME_LIMIT = 40;
+
 /** m:ss. A code with fifteen minutes on it reads as a clock, not a number. */
 function countdown(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
@@ -78,6 +84,7 @@ function ConnectedAccount({
           aria-label={`Name for ${identity}`}
           value={name}
           placeholder={identity}
+          maxLength={NAME_LIMIT}
           onChange={(event) => setName(event.target.value)}
           onBlur={(event) => commit(event.target.value)}
           className="w-full rounded-md bg-transparent text-sm font-medium placeholder:font-normal placeholder:text-muted-foreground"
@@ -94,7 +101,10 @@ function ConnectedAccount({
         disabled={leaving}
         onClick={() => onDisconnect(account.id)}
       >
-        Disconnect {accountName(account)}
+        {/* Bounded and truncated, so a long name ends in an ellipsis rather
+            than pushing the field that names it down to nothing. The button
+            keeps its full accessible name either way. */}
+        <span className="max-w-[9rem] truncate">Disconnect {accountName(account)}</span>
       </Button>
     </div>
   );

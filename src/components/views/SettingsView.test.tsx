@@ -346,4 +346,16 @@ describe('SettingsView', () => {
 
     expect(invoke).not.toHaveBeenCalled();
   });
+  it('bounds how long a name can be', async () => {
+    invoke.mockResolvedValue([octocat]);
+
+    render(<SettingsView />);
+
+    const field = await screen.findByLabelText('Name for octocat');
+    await userEvent.type(field, 'a'.repeat(60));
+
+    // The row is a field beside a button in a 680px measure, so a name has to
+    // end somewhere. What it does to the layout is measured in the browser.
+    expect(field).toHaveValue('a'.repeat(40));
+  });
 });
