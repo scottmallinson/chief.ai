@@ -1,25 +1,39 @@
 version: 2
+
+# One pull request per ecosystem per month, not one per dependency per week.
+# Every dependency bump touches a lockfile, which is what makes CI build the
+# app on macOS and Windows — so PR volume here turns directly into runner
+# minutes at 10× and 2× the Linux rate. Grouping the routine updates into a
+# single pull request pays for itself several times over.
+#
+# Only minor and patch updates are grouped. A major goes on its own, because
+# a batch that has to be reverted for one breaking change takes the other
+# nine with it. Security updates ignore `schedule` entirely and are raised as
+# soon as the advisory lands, whatever this file says.
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 5
     commit-message:
       prefix: 'chore(deps)'
     groups:
-      react:
-        patterns: ['react', 'react-dom', '@types/react', '@types/react-dom']
-      tooling:
-        patterns: ['eslint*', '@eslint/*', 'typescript-eslint', 'prettier*', 'vitest', '@vitest/*']
+      npm:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
 
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 5
     commit-message:
       prefix: 'chore(deps)'
+    groups:
+      cargo:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
 
   # `/` covers the workflows; the composite actions they share are separate
   # manifests and would otherwise never be updated.
@@ -31,3 +45,7 @@ updates:
       interval: monthly
     commit-message:
       prefix: 'chore(ci)'
+    groups:
+      actions:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
