@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-node
 
@@ -48,14 +48,14 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-node
 
       # Chromium is ~150 MB and the pinned version only changes when the
       # Playwright dependency does, so the lockfile is the cache key.
       - name: Restore the browser
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -74,6 +74,9 @@ jobs:
       - name: Test
         run: pnpm test:e2e
 
+      # The one action still on Node 20, and deliberately: its v5 is a Node 20
+      # action too, so bumping it would buy nothing. It also only runs when the
+      # job has already failed. Revisit when upload-artifact ships Node 24.
       - name: Upload the report
         if: failure()
         uses: actions/upload-artifact@v4
@@ -87,7 +90,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./.github/actions/setup-tauri
         with:
@@ -119,7 +122,7 @@ jobs:
           ${{ fromJSON(github.event_name == 'pull_request' && '["macos-latest", "windows-latest"]' ||
           '["ubuntu-22.04", "macos-latest", "windows-latest"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Release restores this cache rather than compiling Chief's dependencies
       # again, which is why the key is shared rather than per-job. Saving is
