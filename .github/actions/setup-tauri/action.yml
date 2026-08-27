@@ -1,0 +1,88 @@
+name: Set up the Tauri toolchain
+description: >-
+  Everything a job needs before it can compile Chief: the WebKitGTK toolchain on
+  Linux, Node and pnpm, a Rust toolchain with a warm cargo cache, and the
+  bundled llama.cpp engine on disk. Shared by the Rust, App build and Release
+  jobs, which otherwise repeat the same forty lines three times over.
+
+inputs:
+  components:
+    description: Extra rustup components, comma separated (e.g. `rustfmt, clippy`).
+    required: false
+    default: ''
+  targets:
+    description: Extra rustup targets, comma separated.
+    required: false
+    default: ''
+  shared-key:
+    description: >-
+      A cargo cache key used instead of the automatic per-job one, so two jobs
+      that compile the same thing share a cache. Both must agree on their
+      `CARGO_*` and `RUST*` environment, which is hashed into the key.
+    required: false
+    default: ''
+  save-cache:
+    description: >-
+      Whether to write the cargo cache as well as read it. A repository has 10 GB
+      for caches and evicts the least recently used, so the release-profile
+      target directories are saved from main only, where they stay warm for
+      everything that restores them.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        APT_OPTS: >-
+          -o Acquire::Retries=3
+          -o Acquire::http::Timeout=30
+          -o Acquire::https::Timeout=30
+      run: |
+        sudo apt-get update $APT_OPTS
+        sudo apt-get install -y --no-install-recommends $APT_OPTS \
+          libwebkit2gtk-4.1-dev \
+          libappindicator3-dev \
+          librsvg2-dev \
+          libxdo-dev \
+          libssl-dev \
+          patchelf \
+          build-essential \
+          file
+
+    - uses: ./.github/actions/setup-node
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src-tauri
+        shared-key: ${{ inputs.shared-key }}
+        save-if: ${{ inputs.save-cache }}
+
+    # Tauri's build script checks the bundled resource is on disk even for
+    # `cargo check`/`clippy`/`test`, so every Rust job needs it. The script is
+    # idempotent and pins the llama.cpp build, and it asks `rustc` for the host
+    # triple — which is why it runs after the toolchain is installed.
+    #
+    # Twice, because a composite step has to name its shell and this is the one
+    # place the choice matters. The script unpacks the Windows zip with `tar`,
+    # counting on that being the bsdtar in System32; under Git Bash it is MSYS
+    # tar instead, which reads `C:\Users\…` as a host:path and tries to open a
+    # network connection to a machine called `C`.
+    - name: Fetch the llama.cpp engine
+      if: runner.os != 'Windows'
+      shell: bash
+      run: pnpm engine:fetch
+
+    - name: Fetch the llama.cpp engine
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: pnpm engine:fetch

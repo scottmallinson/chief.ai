@@ -21,8 +21,12 @@ updates:
     commit-message:
       prefix: 'chore(deps)'
 
+  # `/` covers the workflows; the composite actions they share are separate
+  # manifests and would otherwise never be updated.
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /.github/actions/*
     schedule:
       interval: monthly
     commit-message:

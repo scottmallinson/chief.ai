@@ -8,7 +8,9 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseding a pull request run is free feedback; superseding a run on main
+  # would lose the only record that a merged commit is good.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -22,18 +24,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Enable corepack
-        run: corepack enable
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-node
 
       - name: Check formatting
         run: pnpm format:check
@@ -55,27 +48,35 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Enable corepack
-        run: corepack enable
+      - uses: ./.github/actions/setup-node
 
-      - uses: actions/setup-node@v4
+      # Chromium is ~150 MB and the pinned version only changes when the
+      # Playwright dependency does, so the lockfile is the cache key.
+      - name: Restore the browser
+        uses: actions/cache@v5
         with:
-          node-version: 22
-          cache: pnpm
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      # The system libraries are apt packages rather than part of the cache,
+      # so they are installed either way.
+      - name: Install Chromium's system libraries
+        run: pnpm exec playwright install-deps chromium
 
       # Only Chromium: these tests measure Chief's own layout, not how it
-      # renders across engines, and the shipped webviews are not available here.
+      # renders across engines, and the shipped webviews are not available
+      # here. A restored cache makes this a no-op rather than a download.
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm exec playwright install chromium
 
       - name: Test
         run: pnpm test:e2e
 
+      # The one action still on Node 20, and deliberately: its v5 is a Node 20
+      # action too, so bumping it would buy nothing. It also only runs when the
+      # job has already failed. Revisit when upload-artifact ships Node 24.
       - name: Upload the report
         if: failure()
         uses: actions/upload-artifact@v4
@@ -89,50 +90,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install Linux dependencies
-        env:
-          APT_OPTS: >-
-            -o Acquire::Retries=3
-            -o Acquire::http::Timeout=30
-            -o Acquire::https::Timeout=30
-        run: |
-          sudo apt-get update $APT_OPTS
-          sudo apt-get install -y --no-install-recommends $APT_OPTS \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev \
-            patchelf \
-            build-essential \
-            file
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-tauri
         with:
           components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Tauri's build script checks the bundled resource is on disk even for
-      # `cargo check`/`clippy`/`test`, so it has to be fetched here too.
-      - name: Fetch the llama.cpp engine
-        run: pnpm engine:fetch
 
       - name: Check formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
@@ -150,52 +112,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ubuntu-22.04, macos-latest, windows-latest]
+        # macOS and Windows are the platforms nothing else compiles: the Rust
+        # job already builds the whole crate on Linux, but `#[cfg(windows)]`
+        # code — `engine.rs:325`, which is where the last two fixes on main
+        # went — is compiled on Windows and nowhere else. So a pull request
+        # builds those two, and main adds Linux, where the app build is the
+        # only job that links a release profile against WebKitGTK.
+        platform:
+          ${{ fromJSON(github.event_name == 'pull_request' && '["macos-latest", "windows-latest"]' ||
+          '["ubuntu-22.04", "macos-latest", "windows-latest"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        env:
-          APT_OPTS: >-
-            -o Acquire::Retries=3
-            -o Acquire::http::Timeout=30
-            -o Acquire::https::Timeout=30
-        run: |
-          sudo apt-get update $APT_OPTS
-          sudo apt-get install -y --no-install-recommends $APT_OPTS \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev \
-            patchelf \
-            build-essential \
-            file
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - uses: actions/setup-node@v4
+      # Release restores this cache rather than compiling Chief's dependencies
+      # again, which is why the key is shared rather than per-job. Saving is
+      # left to main: a release-profile target directory per platform per open
+      # branch would evict the caches everything else restores from.
+      - uses: ./.github/actions/setup-tauri
         with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: ${{ matrix.platform }}
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # The engine is bundled, so it has to be on disk before Tauri builds. The
-      # script is idempotent and pins the llama.cpp build.
-      - name: Fetch the llama.cpp engine
-        run: pnpm engine:fetch
+          shared-key: tauri-${{ matrix.platform }}
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build the desktop app
         run: pnpm tauri build --no-bundle
