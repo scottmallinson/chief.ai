@@ -95,13 +95,25 @@ Runner time is the one cost this project has, so the workflows are written to sp
   went. `main` adds Linux, where the app build is the only job that links a release profile
   against WebKitGTK. macOS bills at 10× a Linux runner and Windows at 2×, so this is most of what
   CI costs; it buys the only proof that the platform-conditional code compiles at all.
+- **Don't build it at all when the change can't reach it.** The `changes` job spends a Linux
+  minute working out whether a pull request touches `src-tauri/`, `scripts/`, the manifests or CI
+  itself, and the app build is skipped when it does not. A change under `src/` is proved by the
+  Frontend job's `pnpm build`; it cannot break platform-conditional Rust. Everything that is not a
+  pull request builds unconditionally.
+- **A pull request builds `--debug`.** It has one question to answer — does this compile and link
+  on a platform nothing else compiles it on — and optimisation is not part of it. The release
+  profile is proved on `main` and again when a release is cut.
 - **Compile a dependency once per platform.** CI's app build and Release share one cargo cache per
   platform — `shared-key: tauri-<platform>` — so cutting a release restores what `main` already
-  built instead of starting from nothing. Two things keep that working: only `main` writes the
-  cache, because a release-profile target directory per platform per open branch would evict what
-  everything else restores from; and both workflows set the same `CARGO_TERM_COLOR`, because
-  rust-cache hashes every `CARGO_*` and `RUST*` variable into the key. Chief's own crates are
-  never cached, only its dependencies.
+  built instead of starting from nothing. Two things keep that working: both workflows set the
+  same `CARGO_TERM_COLOR`, because rust-cache hashes every `CARGO_*` and `RUST*` variable into the
+  key; and the debug builds pull-requests do are kept in a separate `tauri-dev-<platform>` cache,
+  so a branch cannot evict what a release restores from. Chief's own crates are never cached, only
+  its dependencies.
+- **One dependency pull request a month, not twenty.** Every bump touches a lockfile, which is
+  exactly what makes the app build run, so Dependabot groups minor and patch updates per ecosystem
+  and runs monthly. Majors stay on their own — a batch that has to be reverted for one breaking
+  change takes the rest with it — and security updates ignore the schedule entirely.
 
 Building the desktop app on Linux needs the WebKitGTK toolchain:
 

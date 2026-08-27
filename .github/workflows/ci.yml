@@ -19,6 +19,55 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The app build is most of what CI costs, so it is worth a Linux minute to
+  # find out whether this change could possibly affect it. A change to the
+  # frontend cannot: `pnpm build` in the Frontend job already proves the bundle
+  # compiles, and nothing under `src/` reaches the platform-conditional Rust
+  # that is the whole reason the app build runs on two paid platforms.
+  changes:
+    name: What changed
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      app: ${{ steps.decide.outputs.app }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the app has to be built
+        id: decide
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Anything that is not a pull request — main, or a branch someone ran
+          # by hand from the Actions tab — builds unconditionally. Those are the
+          # runs whose job is to be thorough.
+          if [ "$EVENT" != 'pull_request' ]; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$EVENT: building the app."
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          echo "Changed files:"
+          echo "$changed" | sed 's/^/  /'
+
+          # src-tauri carries the Rust, Cargo.lock and the Tauri config;
+          # scripts fetches the engine the build needs on disk; package.json
+          # pins the Tauri CLI that runs the build, and the lockfile moves with
+          # it; and a change to CI itself has to be proved by running it.
+          if echo "$changed" | grep -qE '^(src-tauri/|scripts/|package\.json$|pnpm-lock\.yaml$|\.github/(workflows|actions)/)'; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Building the app: the change reaches it."
+          else
+            echo "app=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping the app build: nothing outside the frontend changed."
+          fi
+
   frontend:
     name: Frontend
     runs-on: ubuntu-22.04
@@ -107,6 +156,8 @@ jobs:
 
   app:
     name: App build (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
     strategy:
@@ -124,14 +175,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Release restores this cache rather than compiling Chief's dependencies
-      # again, which is why the key is shared rather than per-job. Saving is
-      # left to main: a release-profile target directory per platform per open
-      # branch would evict the caches everything else restores from.
+      # Two caches, because a debug build shares nothing with a release one:
+      # `tauri-<platform>` is the release-profile cache main writes and Release
+      # restores, and `tauri-dev-<platform>` is the debug one a branch warms for
+      # its own later pushes. Keeping them apart is what stops a branch from
+      # evicting the cache a release depends on — and the gate above is what
+      # keeps the number of branches writing one small.
       - uses: ./.github/actions/setup-tauri
         with:
-          shared-key: tauri-${{ matrix.platform }}
-          save-cache: ${{ github.ref == 'refs/heads/main' }}
+          shared-key:
+            ${{ github.event_name == 'pull_request' && format('tauri-dev-{0}', matrix.platform) ||
+            format('tauri-{0}', matrix.platform) }}
 
+      # A pull request has one question to answer: does the platform-conditional
+      # code compile and link on a platform nothing else compiles it on. The
+      # debug profile answers it without paying for optimisation on a runner
+      # that bills at ten times Linux. Release profile still runs on main, and
+      # again when a release is cut.
       - name: Build the desktop app
-        run: pnpm tauri build --no-bundle
+        run: pnpm tauri build --no-bundle ${{ github.event_name == 'pull_request' && '--debug' || '' }}
