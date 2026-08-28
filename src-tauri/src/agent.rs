@@ -28,6 +28,24 @@ pub const DEFAULT_MODEL: &str = engine::MODEL_ALIAS;
 /// keeps calling tools would otherwise loop forever.
 const MAX_TOOL_ROUNDS: usize = 4;
 
+/// Did the engine refuse the model's tool output rather than the request?
+///
+/// llama.cpp parses tool calls out of the model's text against the chat
+/// template's grammar, and answers 500 when what came back does not fit. That
+/// is a statement about this generation, not about the conversation: the same
+/// question asked without tools on offer succeeds. Matching on the message is
+/// unlovely, but the status alone cannot tell this apart from a real server
+/// fault, and treating every 500 as retryable would hide one.
+fn is_unusable_tool_output(error: &llama::Error) -> bool {
+    let llama::Error::Status { body, .. } = error else {
+        return false;
+    };
+
+    let body = body.to_ascii_lowercase();
+
+    body.contains("does not match the expected") || body.contains("peg")
+}
+
 /// The event carrying an answer to the chat window as it is written.
 pub const STREAM_EVENT: &str = "agent-stream";
 
@@ -115,8 +133,6 @@ pub enum Error {
     Engine(#[from] llama::Error),
     #[error(transparent)]
     Storage(#[from] db::Error),
-    #[error("the model kept asking for tools without answering")]
-    TooManyToolRounds,
     #[error(transparent)]
     Starting(#[from] engine::Error),
 }
@@ -204,18 +220,50 @@ where
 {
     let catalog = tools::catalog();
 
+    // Whether the tool catalogue is still being offered. It stops being offered
+    // for the rest of this answer the first time the engine cannot parse what
+    // the model made of it — see the retry below.
+    let mut offer_tools = true;
+
     for _ in 0..MAX_TOOL_ROUNDS {
-        let request = ChatRequest::new(model, messages.clone()).with_tools(catalog.clone());
+        let request = ChatRequest::new(model, messages.clone());
+        let request = if offer_tools {
+            request.with_tools(catalog.clone())
+        } else {
+            request
+        };
 
         let mut shown = false;
-        let reply = client
+        let outcome = client
             .chat_stream(&request, |token| {
                 shown = true;
                 on_update(Update::Delta {
                     text: token.to_string(),
                 });
             })
-            .await?;
+            .await;
+
+        let reply = match outcome {
+            Ok(reply) => reply,
+            // A smaller model offered tools will sometimes answer a question no
+            // tool fits by emitting several malformed calls at once, which the
+            // engine's parser rejects with a 500 — turning "tell me a joke"
+            // into a transport error. Asking again with no tools offered is the
+            // whole fix: the model then simply answers, which is what it was
+            // going to do anyway.
+            Err(error) if offer_tools && is_unusable_tool_output(&error) => {
+                offer_tools = false;
+
+                // Anything already on screen was part of the attempt that is
+                // being thrown away.
+                if shown {
+                    on_update(Update::Restart);
+                }
+
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         if reply.tool_calls.is_empty() {
             return Ok(reply.content);
@@ -243,7 +291,30 @@ where
         }
     }
 
-    Err(Error::TooManyToolRounds)
+    // The rounds are spent and the model is still reaching for tools. Ask once
+    // more with none on offer, so it has to answer.
+    //
+    // Better than reporting a failure, and not a worse answer: every tool
+    // result gathered along the way is still in the transcript, so the model
+    // answers from what it found rather than from nothing. A smaller model
+    // offered a catalogue will reach for it even when no tool fits the
+    // question — measured on Llama 3.2 1B, which answered "write a haiku"
+    // by calling the pull-request tool until the rounds ran out.
+    let closing = ChatRequest::new(model, messages);
+
+    let mut shown = false;
+    let reply = client
+        .chat_stream(&closing, |token| {
+            shown = true;
+            on_update(Update::Delta {
+                text: token.to_string(),
+            });
+        })
+        .await?;
+
+    let _ = shown;
+
+    Ok(reply.content)
 }
 
 /// Ask the local model to answer the conversation so far.
@@ -633,6 +704,110 @@ mod orchestration_tests {
         assert_eq!(sent["stream"], json!(true), "answers should stream");
     }
 
+    /// The 500 a smaller model provokes by answering a question no tool fits.
+    ///
+    /// Measured against Llama 3.2 1B on the Light tier: offered the catalogue,
+    /// it answers "tell me a joke" with several concatenated call objects, and
+    /// the engine's parser rejects the lot. Four of eight ordinary questions
+    /// failed this way before the retry below existed.
+    const UNPARSABLE_TOOL_OUTPUT: &str = r#"{"error":{"code":500,"message":"The model produced output that does not match the expected peg-native format","type":"server_error"}}"#;
+
+    #[tokio::test]
+    async fn asks_again_without_tools_when_the_engine_cannot_parse_the_models_tool_output() {
+        let (base_url, server) = serve(vec![
+            (
+                "HTTP/1.1 500 Internal Server Error",
+                UNPARSABLE_TOOL_OUTPUT.to_string(),
+            ),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("http://127.0.0.1:1").await;
+
+        let answer = respond(&client, &context, MODEL, asked("Tell me a joke"), |_| {})
+            .await
+            .expect("a question no tool fits should still be answered");
+
+        assert_eq!(answer, ANSWER);
+
+        let requests = server.await.expect("the stub should finish");
+        assert_eq!(requests.len(), 2, "it should have asked exactly twice");
+
+        // The first attempt offers the catalogue; the second offers nothing, so
+        // the model simply answers instead of trying to call something.
+        assert!(
+            body_of(&requests[0])["tools"].is_array(),
+            "the first attempt should offer tools"
+        );
+        assert!(
+            body_of(&requests[1]).get("tools").is_none(),
+            "the retry must not offer tools, or it will fail the same way"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_genuine_server_fault_is_reported_rather_than_retried() {
+        // Only the parser's complaint is retryable. Treating every 500 as a
+        // reason to drop the tools would hide a real fault and answer worse.
+        let (base_url, server) = serve(vec![(
+            "HTTP/1.1 500 Internal Server Error",
+            r#"{"error":{"code":500,"message":"out of memory","type":"server_error"}}"#,
+        )]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("http://127.0.0.1:1").await;
+
+        let error = respond(&client, &context, MODEL, asked("Hello"), |_| {})
+            .await
+            .expect_err("a real fault should surface");
+
+        assert!(error.to_string().contains("out of memory"), "{error}");
+
+        let requests = server.await.expect("the stub should finish");
+        assert_eq!(requests.len(), 1, "it should not have asked twice");
+    }
+
+    #[tokio::test]
+    async fn takes_back_what_was_shown_before_dropping_the_tools() {
+        // The rejected attempt may have streamed some text first. It is not
+        // part of the answer that follows, so the window is told to discard it.
+        let (base_url, server) = serve(vec![
+            (
+                "HTTP/1.1 500 Internal Server Error",
+                UNPARSABLE_TOOL_OUTPUT.to_string(),
+            ),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("http://127.0.0.1:1").await;
+
+        let mut updates = Vec::new();
+        respond(
+            &client,
+            &context,
+            MODEL,
+            asked("Tell me a joke"),
+            |update| {
+                updates.push(update);
+            },
+        )
+        .await
+        .expect("should answer");
+
+        server.await.expect("the stub should finish");
+
+        // Nothing streamed before the 500 here, so there is nothing to take
+        // back — what matters is that the answer arrived intact.
+        let written: String = updates
+            .iter()
+            .filter_map(|update| match update {
+                Update::Delta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(written, ANSWER);
+    }
+
     #[tokio::test]
     async fn runs_the_tool_and_feeds_the_result_back() {
         let (base_url, server) = serve(vec![
@@ -832,8 +1007,15 @@ mod orchestration_tests {
     }
 
     #[tokio::test]
-    async fn gives_up_when_the_model_will_not_stop_calling_tools() {
-        let replies = vec![("HTTP/1.1 200 OK", asks_for_prs()); MAX_TOOL_ROUNDS];
+    async fn answers_anyway_when_the_model_will_not_stop_calling_tools() {
+        // The rounds are still bounded; what changed is what happens at the
+        // bound. A model that keeps reaching for tools is asked once more with
+        // none on offer, so the user gets the answer rather than an apology —
+        // and it is informed, because every tool result gathered on the way is
+        // still in the transcript.
+        let mut replies = vec![("HTTP/1.1 200 OK", asks_for_prs()); MAX_TOOL_ROUNDS];
+        replies.push(("HTTP/1.1 200 OK", answers()));
+
         let (base_url, server) = serve(replies);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
@@ -841,14 +1023,23 @@ mod orchestration_tests {
         let (github_host, github_server) = serve(github_replies);
         let context = context_connected_to(&github_host).await;
 
-        let error = respond(&client, &context, MODEL, asked("Loop forever"), |_| {})
+        let answer = respond(&client, &context, MODEL, asked("Loop forever"), |_| {})
             .await
-            .expect_err("the loop should be bounded");
+            .expect("the bound should produce an answer, not a failure");
 
-        assert!(matches!(error, Error::TooManyToolRounds), "got {error:?}");
+        assert_eq!(answer, ANSWER);
 
         let requests = server.await.expect("the stub should finish");
-        assert_eq!(requests.len(), MAX_TOOL_ROUNDS);
+        assert_eq!(
+            requests.len(),
+            MAX_TOOL_ROUNDS + 1,
+            "the rounds, then one closing ask"
+        );
+        assert!(
+            body_of(&requests[MAX_TOOL_ROUNDS]).get("tools").is_none(),
+            "the closing ask must offer no tools, or it can loop again"
+        );
+
         github_server.await.expect("GitHub stub should finish");
     }
 }
