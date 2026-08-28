@@ -78,11 +78,19 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
             // The engine gives its memory back when nothing is using it, so a
             // pass may have to start it. Failing to is not fatal and not worth
             // reporting twice: the pass below will say so in its own terms.
-            {
+            //
+            // The guard is held for the whole pass, not just the start. A pass
+            // is one model call per merged pull request and then the brief,
+            // which on a small model runs well past the idle timeout — without
+            // this the supervisor stops the engine halfway through, and every
+            // pass from then on dies at the same place.
+            let working = {
                 let engine = app.state::<crate::engine::Engine>();
                 let client = app.state::<llama::Client>();
                 let _ = engine.ensure_running(client.inner()).await;
-            }
+
+                engine.working()
+            };
 
             match context(&app).await {
                 Ok(context) => {
@@ -96,6 +104,9 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
             }
 
             brief_if_the_day_has_none(&app).await;
+
+            // The engine is free to go idle again from here.
+            drop(working);
 
             tokio::time::sleep(PASS_INTERVAL).await;
         }

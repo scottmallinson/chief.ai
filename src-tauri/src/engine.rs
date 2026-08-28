@@ -15,6 +15,7 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -432,6 +433,17 @@ pub struct Engine {
     /// supervisor, which gives the memory back when nothing has wanted it for
     /// a while.
     last_used: Mutex<Instant>,
+    /// How many pieces of background work are using the engine right now.
+    ///
+    /// `last_used` is a moment, and a moment is enough for a question, which is
+    /// over in seconds. It is not enough for a work-log pass: that starts the
+    /// engine once and then generates up to a summary per merged pull request,
+    /// which on a small model can outlast the idle timeout — and the supervisor
+    /// would then stop the engine halfway through its own daemon's work.
+    /// [`Attention`](crate::agent::Attention) cannot serve here because the
+    /// daemon *reads* it to stand aside for the user; raising it would make the
+    /// daemon yield to itself.
+    working: Arc<AtomicUsize>,
     /// What the child has said for itself. Kept beside the handle rather than
     /// inside it because the handle is cleared the moment the process is found
     /// to have exited — which is exactly when its last words are wanted.
@@ -468,6 +480,7 @@ impl Engine {
             owned,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
             output: Output::default(),
         })
     }
@@ -619,6 +632,21 @@ impl Engine {
         !self.owned || self.child_state() == ChildState::Running
     }
 
+    /// Hold the engine open for as long as the guard lives.
+    ///
+    /// For background work that runs longer than the idle timeout. The engine
+    /// is not stopped while any guard is alive, whatever the clock says.
+    pub fn working(&self) -> Working {
+        self.working.fetch_add(1, Ordering::SeqCst);
+
+        Working(Arc::clone(&self.working))
+    }
+
+    /// Is anything holding the engine open?
+    fn is_working(&self) -> bool {
+        self.working.load(Ordering::SeqCst) > 0
+    }
+
     /// Note that something wanted the engine just now.
     pub fn touch(&self) {
         if let Ok(mut last) = self.last_used.lock() {
@@ -641,7 +669,7 @@ impl Engine {
     /// "is somebody owed an answer right now", which the supervisor takes from
     /// [`crate::agent::Attention`].
     fn stop_if_idle(&self, waiting: bool, timeout: Duration) -> bool {
-        if !self.owned || waiting || self.idle_for() < timeout {
+        if !self.owned || waiting || self.is_working() || self.idle_for() < timeout {
             return false;
         }
 
@@ -711,6 +739,16 @@ impl Drop for Engine {
 ///
 /// Failure is expected and reported rather than raised: on a fresh machine the
 /// model has not been downloaded yet, which is what the setup screen is for.
+/// Background work in flight. While one of these is alive the engine is not
+/// stopped for being idle, however long the work takes.
+pub struct Working(Arc<AtomicUsize>);
+
+impl Drop for Working {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Watch for the engine going unused, and give its memory back when it does.
 ///
 /// Chief runs `llama-server` as a child process, which means stopping it
@@ -930,6 +968,7 @@ mod tests {
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
             output: Output::default(),
         }
     }
@@ -942,6 +981,45 @@ mod tests {
             !engine.stop_if_idle(false, Duration::from_secs(600)),
             "a fresh engine has not been idle for ten minutes"
         );
+    }
+
+    #[test]
+    fn work_in_flight_holds_the_engine_open_however_long_it_takes() {
+        // The case this exists for: a work-log pass is one model call per
+        // merged pull request and then a brief. On a small model that runs
+        // past the idle timeout, and stopping the engine halfway through the
+        // daemon's own work makes every pass from then on die at the same
+        // place. Attention cannot serve here — the daemon reads it to stand
+        // aside for the user, so raising it would make the daemon yield to
+        // itself.
+        let engine = stopped_engine();
+        let working = engine.working();
+
+        assert!(
+            !engine.stop_if_idle(false, Duration::ZERO),
+            "the engine must stay up while background work holds it"
+        );
+
+        drop(working);
+
+        // And once the work is done it is idle again like anything else. There
+        // is no child here, so nothing is stopped — what is being asserted is
+        // that the guard no longer refuses on its own account.
+        assert!(!engine.is_working(), "the guard should have been released");
+    }
+
+    #[test]
+    fn two_pieces_of_work_both_have_to_finish() {
+        let engine = stopped_engine();
+
+        let first = engine.working();
+        let second = engine.working();
+
+        drop(first);
+        assert!(engine.is_working(), "the second is still holding it");
+
+        drop(second);
+        assert!(!engine.is_working());
     }
 
     #[test]
@@ -994,6 +1072,7 @@ mod tests {
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
             output: Output::default(),
         };
 
@@ -1012,6 +1091,7 @@ mod tests {
             owned: false,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
             output: Output::default(),
         };
 
@@ -1030,6 +1110,7 @@ mod tests {
             owned: false,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
             output: Output::default(),
         };
 
@@ -1193,6 +1274,7 @@ mod tests {
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
             output: Output::default(),
         }
     }
