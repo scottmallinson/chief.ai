@@ -13,6 +13,7 @@ mod db;
 mod engine;
 mod github;
 mod integrations;
+mod microsoft;
 // OAuth machinery shared by every provider. Part of the crate's library API,
 // the same as `llama` below.
 pub mod oauth;
@@ -49,6 +50,8 @@ pub fn run() {
             app.manage(llama);
             // Pinned to GitHub, for the account the user connected.
             app.manage(github::Client::new()?);
+            // And Outlook, for the mailbox and calendar they connected.
+            app.manage(microsoft::Client::new()?);
             app.manage(connect::Pending::default());
             app.manage(agent::Attention::default());
 

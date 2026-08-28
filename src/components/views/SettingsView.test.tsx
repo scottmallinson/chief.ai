@@ -31,6 +31,7 @@ const hubot = {
 };
 
 const deviceLogin = {
+  kind: 'device',
   userCode: 'WDJB-MJHT',
   verificationUri: 'https://github.com/login/device',
   expiresIn: 900,
@@ -69,7 +70,10 @@ describe('SettingsView', () => {
 
     render(<SettingsView />);
 
-    expect(await screen.findByText('Not connected')).toBeInTheDocument();
+    // Two services now, each carrying its own state.
+    expect(await screen.findAllByText('Not connected')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Outlook' })).toBeInTheDocument();
     expect(screen.getByText('On this machine')).toBeInTheDocument();
 
     // The model is whatever this machine was given, not a name written into
@@ -103,6 +107,33 @@ describe('SettingsView', () => {
 
     expect(await screen.findByText('WDJB-MJHT')).toBeInTheDocument();
     expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device');
+  });
+
+  it('sends an Outlook sign-in to the browser rather than showing a code', async () => {
+    const browserLogin = {
+      kind: 'browser',
+      url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=abc',
+    };
+
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([]);
+      if (command === 'start_login') return Promise.resolve(browserLogin);
+      // Never settles, so the waiting state stays on screen.
+      return new Promise(() => {});
+    });
+
+    render(<SettingsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect Outlook' }));
+
+    expect(await screen.findByText(/Finish signing in on the page/)).toBeInTheDocument();
+    expect(openUrl).toHaveBeenCalledWith(browserLogin.url);
+
+    // There is no code in this flow, and offering one would be a lie.
+    expect(screen.queryByText(/Enter this code/)).not.toBeInTheDocument();
+
+    // The destination is shown as well as opened, so a browser that did not
+    // open leaves the user something to act on.
+    expect(screen.getByText(browserLogin.url)).toBeInTheDocument();
   });
 
   it('reports the connection once the user finishes', async () => {

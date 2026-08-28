@@ -16,6 +16,9 @@ use crate::db::Error;
 /// The services Chief knows how to connect.
 pub const GITHUB: &str = "github";
 
+/// Outlook mail and calendar, through Microsoft Graph.
+pub const MICROSOFT: &str = "microsoft";
+
 /// How a credential was obtained, so routing is explicit rather than inferred
 /// from which columns happen to be NULL.
 pub const OAUTH: &str = "oauth";

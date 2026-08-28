@@ -35,7 +35,11 @@ describe('useIntegrations', () => {
   });
 
   it('shows the code while it waits for the browser', async () => {
-    const login = { userCode: 'ABCD-1234', verificationUri: 'https://github.com/login/device' };
+    const login = {
+      kind: 'device',
+      userCode: 'ABCD-1234',
+      verificationUri: 'https://github.com/login/device',
+    };
 
     invoke.mockImplementation((command: string) => {
       if (command === 'connections') return Promise.resolve([]);

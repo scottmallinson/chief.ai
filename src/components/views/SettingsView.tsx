@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Github } from 'lucide-react';
+import { Github, Mail } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
@@ -7,7 +7,7 @@ import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
 import { useIntegrations } from '@/hooks/use-integrations';
-import { accountName, GITHUB, type Account } from '@/lib/integrations';
+import { accountName, GITHUB, MICROSOFT, type Account } from '@/lib/integrations';
 
 interface SettingsSectionProps {
   title: string;
@@ -111,7 +111,33 @@ function ConnectedAccount({
   );
 }
 
-function GithubIntegration() {
+/** One provider's row: how it signs in, and which accounts are connected. */
+interface IntegrationProps {
+  /** The value stored in `integration_accounts.service`. */
+  service: string;
+  title: string;
+  description: string;
+  /** What the connect button says when nothing is connected yet. */
+  connectLabel: string;
+  /** What it says when adding a second account. */
+  addLabel: string;
+  icon: ReactNode;
+}
+
+/**
+ * A connected service.
+ *
+ * Written once for every provider rather than per service: the hook already
+ * takes the service by name, and the only thing that differed was the words.
+ */
+function Integration({
+  service,
+  title,
+  description,
+  connectLabel,
+  addLabel,
+  icon,
+}: IntegrationProps) {
   const {
     accountsFor,
     login,
@@ -125,23 +151,24 @@ function GithubIntegration() {
     rename,
   } = useIntegrations();
 
-  const accounts = accountsFor(GITHUB);
+  const accounts = accountsFor(service);
   // Only the sign-in flow blocks, and only the sign-in button: a browser tab
   // the user has not come back from is no reason another account cannot be
   // renamed or removed.
   const signingIn = status === 'working' || status === 'awaiting-user';
-  const showCode = login !== null && connecting === GITHUB;
+  const prompt = login !== null && connecting === service ? login : null;
 
-  // The user is the one being waited on here, and their code does not last
+  // The user is the one being waited on here, and a device code does not last
   // forever, so the wait is stated as what is left of it rather than as an
-  // indicator that could run all afternoon.
-  const waited = useElapsed(showCode);
-  const remaining = login === null ? 0 : Math.max(0, login.expiresIn - waited);
+  // indicator that could run all afternoon. A browser sign-in has no code and
+  // no countdown of its own, so it is simply waited on.
+  const waited = useElapsed(prompt !== null);
+  const remaining = prompt?.kind === 'device' ? Math.max(0, prompt.expiresIn - waited) : 0;
 
   return (
     <SettingsSection
-      title="GitHub"
-      description="Lets Chief read your pull requests. Sign-in happens in your browser and the token is stored only on this machine."
+      title={title}
+      description={description}
       state={
         status === 'loading' ? (
           <Chip tone="quiet">Checking</Chip>
@@ -168,16 +195,16 @@ function GithubIntegration() {
         </div>
       )}
 
-      {showCode && (
+      {prompt?.kind === 'device' && (
         <div className="mt-4 rounded-md border border-border p-4" role="status">
           <p className="text-sm">
             Enter this code at{' '}
             <span className="font-mono text-[13px]" data-selectable>
-              {login.verificationUri}
+              {prompt.verificationUri}
             </span>
           </p>
           <p className="mt-2 font-mono text-xl tracking-[0.2em]" data-selectable>
-            {login.userCode}
+            {prompt.userCode}
           </p>
           {remaining > 0 ? (
             <p className="mt-2.5 flex items-center gap-2 micro text-muted-foreground">
@@ -189,6 +216,29 @@ function GithubIntegration() {
               This code has expired. Start again to get another.
             </p>
           )}
+          <div className="mt-3">
+            <Button variant="outline" size="sm" onClick={cancel}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {prompt?.kind === 'browser' && (
+        <div className="mt-4 rounded-md border border-border p-4" role="status">
+          <p className="text-sm">
+            Finish signing in on the page that just opened. Chief is listening on this machine for
+            the browser to come back.
+          </p>
+          {/* Shown as well as opened: if the browser did not open, this is the
+              only way through, and it is a machine fact either way. */}
+          <p className="mt-2 font-mono text-[12px] break-all text-muted-foreground" data-selectable>
+            {prompt.url}
+          </p>
+          <p className="mt-2.5 flex items-center gap-2 micro text-muted-foreground">
+            <Dots />
+            Waiting for you to finish in the browser
+          </p>
           <div className="mt-3">
             <Button variant="outline" size="sm" onClick={cancel}>
               Cancel
@@ -210,11 +260,11 @@ function GithubIntegration() {
         <Button
           size="sm"
           variant={accounts.length > 0 ? 'outline' : 'default'}
-          onClick={() => connect(GITHUB)}
+          onClick={() => connect(service)}
           disabled={signingIn || status === 'loading'}
         >
-          <Github aria-hidden />
-          {accounts.length > 0 ? 'Add another GitHub account' : 'Connect GitHub'}
+          {icon}
+          {accounts.length > 0 ? addLabel : connectLabel}
         </Button>
       </div>
     </SettingsSection>
@@ -343,7 +393,22 @@ export function SettingsView() {
         <div className="flex max-w-[680px] flex-col gap-3">
           <LocalModel />
           <ThisMachine />
-          <GithubIntegration />
+          <Integration
+            service={GITHUB}
+            title="GitHub"
+            description="Lets Chief read your pull requests. Sign-in happens in your browser and the token is stored only on this machine."
+            connectLabel="Connect GitHub"
+            addLabel="Add another GitHub account"
+            icon={<Github aria-hidden />}
+          />
+          <Integration
+            service={MICROSOFT}
+            title="Outlook"
+            description="Lets Chief read your mail and calendar. Sign-in opens your browser and comes back to a port on this machine; the token is stored only here."
+            connectLabel="Connect Outlook"
+            addLabel="Add another Outlook account"
+            icon={<Mail aria-hidden />}
+          />
           <SettingsSection
             title="Local data"
             description="Your work log and integration tokens live in a SQLite file inside this app's config directory. Nothing is synchronised anywhere."
