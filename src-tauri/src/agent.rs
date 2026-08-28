@@ -46,6 +46,33 @@ fn is_unusable_tool_output(error: &llama::Error) -> bool {
     body.contains("does not match the expected") || body.contains("peg")
 }
 
+/// Cut `text` down to roughly `tokens` worth, and say that it was cut.
+///
+/// Only ever reached by a message too big for the entire budget — a pasted
+/// document, usually. The beginning is kept rather than the end because that is
+/// where a person puts what they want done with the thing they are pasting, and
+/// the note is not decoration: a model reading half a document and told nothing
+/// will answer as though it read all of it.
+fn shorten(text: &str, tokens: u32) -> String {
+    const NOTE: &str = "\n\n[This message was too long to send in full. The rest was cut.]";
+
+    // Leave room for the note itself, and never fall to nothing.
+    let room = tokens
+        .saturating_sub(context::estimate_tokens(NOTE))
+        .max(64);
+    let mut cut = text.len().min(room as usize * 4);
+
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+
+    if cut >= text.len() {
+        return text.to_string();
+    }
+
+    format!("{}{NOTE}", &text[..cut])
+}
+
 /// The event carrying an answer to the chat window as it is written.
 pub const STREAM_EVENT: &str = "agent-stream";
 
@@ -165,6 +192,13 @@ fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
     // the user just asked is the part that has to survive.
     let mut kept: Vec<Message> = Vec::new();
 
+    // Kept aside so it can be salvaged if nothing fits whole.
+    let newest = turns
+        .iter()
+        .rev()
+        .find(|turn| turn.role != Role::System)
+        .cloned();
+
     for turn in turns
         .into_iter()
         .rev()
@@ -176,6 +210,20 @@ fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
 
         let _ = budget.add("turn", &turn.content);
         kept.push(Message::new(turn.role, turn.content));
+    }
+
+    // A single message larger than the whole budget would leave nothing at all
+    // here, and a model handed a system prompt and no question answers the only
+    // thing in front of it. Whatever else is dropped, the newest turn is not:
+    // it is cut down to what there is room for and marked as cut, so the model
+    // knows it is working from part of something rather than all of it.
+    if kept.is_empty() {
+        if let Some(turn) = newest {
+            kept.push(Message::new(
+                turn.role,
+                shorten(&turn.content, budget.remaining()),
+            ));
+        }
     }
 
     kept.reverse();
@@ -457,6 +505,44 @@ mod tests {
         );
         assert_eq!(messages[1].content, "first question\n\nfollow-up question");
         assert_eq!(messages[2].content, "answer\n\nadditional detail");
+    }
+
+    #[test]
+    fn a_question_too_big_for_the_budget_still_reaches_the_model() {
+        // Paste a long document and the whole transcript used to fall outside
+        // the budget, leaving the model a system prompt and nothing to answer.
+        let huge = format!("Summarise this for me:\n\n{}", "x".repeat(200_000));
+        let messages = conversation(vec![turn(Role::User, &huge)], PRESENT);
+
+        let question = messages
+            .iter()
+            .find(|message| message.role == Role::User)
+            .expect("the model must be given something to answer");
+
+        assert!(
+            question.content.starts_with("Summarise this for me:"),
+            "the beginning is where the ask lives, so it is the part kept"
+        );
+        assert!(
+            question.content.contains("too long to send in full"),
+            "a model reading part of a document must be told it is part"
+        );
+        assert!(
+            context::estimate_tokens(&question.content) <= context::DEFAULT_CEILING,
+            "the salvaged turn must still fit the budget"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_fits_is_not_cut_or_marked() {
+        let messages = conversation(vec![turn(Role::User, "a short question")], PRESENT);
+
+        let question = messages
+            .iter()
+            .find(|message| message.role == Role::User)
+            .expect("should be there");
+
+        assert_eq!(question.content, "a short question");
     }
 
     #[test]
