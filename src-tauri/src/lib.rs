@@ -56,6 +56,11 @@ pub fn run() {
             // first question does not wait for the weights to come off disk.
             engine::start(&app.handle().clone());
 
+            // And give its memory back when nothing is using it. A resident
+            // model holds a couple of gigabytes, which on the machines Chief
+            // is written for is most of the room there is.
+            engine::supervise(&app.handle().clone());
+
             // Keeps the work log up to date in the background.
             daemon::spawn(&app.handle().clone());
 

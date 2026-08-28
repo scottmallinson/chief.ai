@@ -74,6 +74,15 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
         tokio::time::sleep(FIRST_PASS_DELAY).await;
 
         loop {
+            // The engine gives its memory back when nothing is using it, so a
+            // pass may have to start it. Failing to is not fatal and not worth
+            // reporting twice: the pass below will say so in its own terms.
+            {
+                let engine = app.state::<crate::engine::Engine>();
+                let client = app.state::<llama::Client>();
+                let _ = engine.ensure_running(client.inner()).await;
+            }
+
             match context(&app).await {
                 Ok(context) => {
                     // A pass failing is not fatal: GitHub may be unreachable or

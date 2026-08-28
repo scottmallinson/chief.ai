@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::clock;
 use crate::db;
@@ -59,6 +59,10 @@ pub enum Update {
     Restart,
     /// A tool is running, so the wait has a reason the user can see.
     Tool { name: String },
+    /// The engine was stopped to give its memory back and is being started
+    /// again. Reading a couple of gigabytes off disk takes seconds, and a
+    /// silent wait is the thing this design does not do.
+    Waking,
 }
 
 /// One [`Update`], tagged with the question it belongs to. The window may have
@@ -111,6 +115,8 @@ pub enum Error {
     Storage(#[from] db::Error),
     #[error("the model kept asking for tools without answering")]
     TooManyToolRounds,
+    #[error(transparent)]
+    Starting(#[from] engine::Error),
 }
 
 impl serde::Serialize for Error {
@@ -227,7 +233,25 @@ pub async fn ask_agent<R: Runtime>(
     };
 
     // The daemon shares this engine. Hold the door while someone is waiting.
+    // Taken before the engine is woken, so the idle supervisor cannot stop it
+    // again between the wake and the question.
     let _waiting = attention.begin();
+
+    // The engine gives its memory back when nothing is using it, so it may not
+    // be running. Starting it is a few seconds of reading weights off disk, and
+    // the window is told that is what the wait is.
+    let engine = app.state::<engine::Engine>();
+    if !engine.is_running() {
+        let _ = app.emit(
+            STREAM_EVENT,
+            StreamEvent {
+                request_id: request_id.clone(),
+                update: Update::Waking,
+            },
+        );
+    }
+
+    engine.start_and_wait(client.inner()).await?;
 
     let conversation = conversation(messages, &clock::present());
 

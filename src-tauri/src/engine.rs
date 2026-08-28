@@ -16,6 +16,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::io::AsyncBufReadExt;
@@ -43,6 +44,19 @@ pub const MODEL_ALIAS: &str = "chief";
 /// shifting. Too small and the engine spends more on bookkeeping than it saves;
 /// 256 is the value llama.cpp's own guidance settles on.
 const CACHE_REUSE_CHUNK: u32 = 256;
+
+/// How long the engine may sit unused before its memory is given back.
+///
+/// A resident model holds a couple of gigabytes on a machine written to have
+/// three or four spare, and an app left open all day is used for minutes of it.
+/// Deliberately shorter than the work-log daemon's interval, so an idle machine
+/// spends most of each half hour with the memory returned rather than none of
+/// it — the daemon's own pass wakes the engine and is the reason it is measured
+/// in minutes rather than seconds.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// How often idleness is looked at. Cheap, so the granularity costs nothing.
+const IDLE_CHECK: Duration = Duration::from_secs(60);
 
 /// Point Chief at a `llama-server` you are running yourself, instead of the one
 /// it ships. Must still be loopback; the client refuses anything else.
@@ -414,6 +428,10 @@ pub struct Engine {
     /// when the user pointed Chief at their own, which is not ours to kill.
     owned: bool,
     child: Mutex<Option<Child>>,
+    /// When the engine was last asked for anything. Read by the idle
+    /// supervisor, which gives the memory back when nothing has wanted it for
+    /// a while.
+    last_used: Mutex<Instant>,
     /// What the child has said for itself. Kept beside the handle rather than
     /// inside it because the handle is cleared the moment the process is found
     /// to have exited — which is exactly when its last words are wanted.
@@ -449,6 +467,7 @@ impl Engine {
             model,
             owned,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
             output: Output::default(),
         })
     }
@@ -494,6 +513,11 @@ impl Engine {
     /// already started, and one the user is running themselves are all left
     /// alone.
     pub async fn ensure_running(&self, client: &llama::Client) -> Result<(), Error> {
+        // Anything that wants the engine counts as use, whether or not it ends
+        // up starting it — otherwise a busy hour of answered questions would
+        // look idle to the supervisor below.
+        self.touch();
+
         if !self.owned {
             return Ok(());
         }
@@ -586,6 +610,49 @@ impl Engine {
         }
     }
 
+    /// Whether a server this process started is up right now.
+    ///
+    /// Only a question about *our* child: a server the user runs themselves is
+    /// never stopped, so it is always considered up.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        !self.owned || self.child_state() == ChildState::Running
+    }
+
+    /// Note that something wanted the engine just now.
+    pub fn touch(&self) {
+        if let Ok(mut last) = self.last_used.lock() {
+            *last = Instant::now();
+        }
+    }
+
+    /// How long the engine has gone unwanted.
+    fn idle_for(&self) -> Duration {
+        self.last_used
+            .lock()
+            .map_or(Duration::ZERO, |last| last.elapsed())
+    }
+
+    /// Give the memory back if nothing has wanted the engine for a while.
+    ///
+    /// Returns whether it stopped anything, which is what the test asserts on.
+    /// A server the user is running themselves is never stopped, and neither is
+    /// one that is still being waited on: `waiting` is the caller's answer to
+    /// "is somebody owed an answer right now", which the supervisor takes from
+    /// [`crate::agent::Attention`].
+    fn stop_if_idle(&self, waiting: bool, timeout: Duration) -> bool {
+        if !self.owned || waiting || self.idle_for() < timeout {
+            return false;
+        }
+
+        if self.child_state() != ChildState::Running {
+            return false;
+        }
+
+        self.stop();
+        true
+    }
+
     /// Stop the server this process started. A server the user is running
     /// themselves is left alone.
     pub fn stop(&self) {
@@ -644,6 +711,31 @@ impl Drop for Engine {
 ///
 /// Failure is expected and reported rather than raised: on a fresh machine the
 /// model has not been downloaded yet, which is what the setup screen is for.
+/// Watch for the engine going unused, and give its memory back when it does.
+///
+/// Chief runs `llama-server` as a child process, which means stopping it
+/// returns every byte it held — the whole benefit of a separate process, and
+/// one the app was not using: the model stayed resident for the life of the
+/// window whether or not anybody asked it anything.
+///
+/// Nothing here has to wake it again. [`Engine::ensure_running`] is idempotent
+/// and is called on the way into a question and on the way into a work-log
+/// pass, so the next thing that wants the engine starts it.
+pub fn supervise<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(IDLE_CHECK).await;
+
+            let engine = app.state::<Engine>();
+            let waiting = app.state::<crate::agent::Attention>().is_engaged();
+
+            engine.stop_if_idle(waiting, IDLE_TIMEOUT);
+        }
+    });
+}
+
 pub fn start<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
 
@@ -825,6 +917,71 @@ mod tests {
         assert_eq!(searched, [PathBuf::from("/opt/chief/lib")]);
     }
 
+    /// An engine with no child process, for the idle rules — which decide
+    /// whether to stop something, and can be asked that without one running.
+    fn stopped_engine() -> Engine {
+        Engine {
+            base_url: "http://127.0.0.1:11435".to_string(),
+            server: None,
+            library_dirs: Vec::new(),
+            weights: PathBuf::from("/models/model.gguf"),
+            tier: Tier::Standard,
+            model: weights::STANDARD,
+            owned: true,
+            child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
+            output: Output::default(),
+        }
+    }
+
+    #[test]
+    fn an_engine_nobody_has_used_is_not_stopped_before_its_time() {
+        let engine = stopped_engine();
+
+        assert!(
+            !engine.stop_if_idle(false, Duration::from_secs(600)),
+            "a fresh engine has not been idle for ten minutes"
+        );
+    }
+
+    #[test]
+    fn an_engine_still_being_waited_on_is_left_alone() {
+        let engine = stopped_engine();
+
+        // Idle by the clock, but somebody is owed an answer: a question that
+        // takes longer than the timeout must not have the engine pulled out
+        // from under it.
+        assert!(
+            !engine.stop_if_idle(true, Duration::ZERO),
+            "the engine must not be stopped while a question is in flight"
+        );
+    }
+
+    #[test]
+    fn a_server_the_user_runs_themselves_is_never_stopped() {
+        let mut engine = stopped_engine();
+        engine.owned = false;
+
+        assert!(
+            !engine.stop_if_idle(false, Duration::ZERO),
+            "an engine Chief did not start is not Chief's to stop"
+        );
+    }
+
+    #[test]
+    fn asking_for_the_engine_counts_as_using_it() {
+        let engine = stopped_engine();
+        std::thread::sleep(Duration::from_millis(20));
+
+        let before = engine.idle_for();
+        engine.touch();
+
+        assert!(
+            engine.idle_for() < before,
+            "touching should reset how long the engine has gone unwanted"
+        );
+    }
+
     #[test]
     fn nothing_was_started_before_anything_starts_it() {
         let engine = Engine {
@@ -836,6 +993,7 @@ mod tests {
             model: weights::STANDARD,
             owned: true,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
             output: Output::default(),
         };
 
@@ -853,6 +1011,7 @@ mod tests {
             model: weights::STANDARD,
             owned: false,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
             output: Output::default(),
         };
 
@@ -870,6 +1029,7 @@ mod tests {
             model: weights::STANDARD,
             owned: false,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
             output: Output::default(),
         };
 
@@ -1032,6 +1192,7 @@ mod tests {
             model: weights::STANDARD,
             owned: true,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
             output: Output::default(),
         }
     }
