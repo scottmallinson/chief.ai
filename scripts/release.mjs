@@ -149,7 +149,7 @@ export const VERSIONED = [
   // The lockfile records the workspace member's own version. Cargo rewrites it
   // at build time anyway, but leaving it stale means every later build shows a
   // dirty tree.
-  { file: 'src-tauri/Cargo.lock', pattern: /^name = "chief-ai"\nversion = "[^"]+"$/m },
+  { file: 'src-tauri/Cargo.lock', pattern: /^name = "Chief"\nversion = "[^"]+"$/m },
 ];
 
 export function writeVersion(version, root = ROOT) {
