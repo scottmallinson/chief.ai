@@ -8,6 +8,8 @@
 mod agent;
 mod clock;
 mod connect;
+mod context;
+mod corpus;
 mod daemon;
 mod db;
 mod engine;
@@ -19,6 +21,7 @@ mod microsoft;
 pub mod oauth;
 mod probe;
 mod session;
+mod settings;
 mod setup;
 mod tools;
 mod weights;
@@ -64,6 +67,9 @@ pub fn run() {
             // is written for is most of the room there is.
             engine::supervise(&app.handle().clone());
 
+            // The folder of markdown the user can edit themselves.
+            corpus::prepare(&app.handle().clone());
+
             // Keeps the work log up to date in the background.
             daemon::spawn(&app.handle().clone());
 
@@ -76,6 +82,11 @@ pub fn run() {
             connect::connections,
             connect::disconnect,
             connect::label_account,
+            corpus::corpus_location,
+            corpus::list_corpus,
+            corpus::read_corpus_file,
+            corpus::write_corpus_file,
+            corpus::set_corpus_root,
             probe::run_doctor,
             setup::check_readiness,
             setup::download_model,

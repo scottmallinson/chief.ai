@@ -52,6 +52,13 @@ describe('SettingsView', () => {
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
   });
 
+  const corpus = {
+    root: '/Users/someone/Chief',
+    exists: true,
+    files: 7,
+    estimatedTokens: 1840,
+  };
+
   const report = {
     tier: 'standard',
     model: 'Llama 3.2 3B Instruct (Q4_K_M)',
@@ -64,9 +71,11 @@ describe('SettingsView', () => {
   };
 
   it('carries the connection as state, not as an action', async () => {
-    invoke.mockImplementation((command: string) =>
-      command === 'run_doctor' ? Promise.resolve(report) : Promise.resolve([]),
-    );
+    invoke.mockImplementation((command: string) => {
+      if (command === 'run_doctor') return Promise.resolve(report);
+      if (command === 'corpus_location') return Promise.resolve(corpus);
+      return Promise.resolve([]);
+    });
 
     render(<SettingsView />);
 
@@ -84,6 +93,11 @@ describe('SettingsView', () => {
     expect(screen.getByText('16.0 GB')).toBeInTheDocument();
     expect(screen.getByText('8192 tokens')).toBeInTheDocument();
     expect(screen.getByText('0.9s')).toBeInTheDocument();
+
+    // And where the corpus is, in words a person can act on: a folder they
+    // can open, not a path buried in the app's own data.
+    expect(screen.getByText('/Users/someone/Chief')).toBeInTheDocument();
+    expect(screen.getByText('7 files')).toBeInTheDocument();
   });
 
   it('says when a connected account was connected', async () => {
@@ -107,6 +121,22 @@ describe('SettingsView', () => {
 
     expect(await screen.findByText('WDJB-MJHT')).toBeInTheDocument();
     expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device');
+  });
+
+  it('says so when the corpus folder is not there yet', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'corpus_location') {
+        return Promise.resolve({ ...corpus, exists: false, files: 0 });
+      }
+      return Promise.resolve([]);
+    });
+
+    render(<SettingsView />);
+
+    expect(await screen.findByText(/This folder is not there/)).toBeInTheDocument();
+
+    // Nothing to show yet, so the control that would show it is not offered.
+    expect(screen.getByRole('button', { name: /Show folder/ })).toBeDisabled();
   });
 
   it('sends an Outlook sign-in to the browser rather than showing a code', async () => {

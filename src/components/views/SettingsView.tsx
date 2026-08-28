@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Github, Mail } from 'lucide-react';
+import { FolderOpen, Github, Mail, RefreshCw } from 'lucide-react';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
+import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
 import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
@@ -273,6 +275,84 @@ function Integration({
 
 /** Configuration surface for the model, integrations and local data. */
 /**
+ * The folder of markdown Chief reads and writes.
+ *
+ * Deliberately a folder the user can open, not a hidden one inside the app's
+ * data: these files are theirs, and every source document describes this layer
+ * as human-editable. So the most useful control here is the one that opens it.
+ */
+function Corpus() {
+  const [location, setLocation] = useState<CorpusLocation | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setLocation(await corpusLocation());
+      setProblem(null);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <SettingsSection
+      title="Your corpus"
+      description="Notes, briefs and drafts, as plain markdown you can open in any editor. Chief reads from here and writes back to it; nothing in it is synchronised anywhere."
+      state={
+        location ? (
+          <Chip tone="verified" dot>
+            {location.files === 1 ? '1 file' : `${location.files} files`}
+          </Chip>
+        ) : (
+          <Chip tone="quiet">Checking</Chip>
+        )
+      }
+    >
+      {location && (
+        <>
+          <p className="mt-3 font-mono text-[13px] break-all text-muted-foreground" data-selectable>
+            {location.root}
+          </p>
+          {!location.exists && (
+            <p className="mt-2 text-sm text-attention-text">
+              This folder is not there. Chief will create it the next time it starts.
+            </p>
+          )}
+        </>
+      )}
+
+      {problem && <p className="mt-3 text-sm text-attention-text">{problem}</p>}
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            // revealItemInDir rather than openPath: the renderer is granted
+            // `opener:default`, which covers revealing an item and not opening
+            // an arbitrary path, and widening a capability to save a click is
+            // not a trade worth making.
+            if (location) void revealItemInDir(location.root).catch(() => undefined);
+          }}
+          disabled={!location?.exists}
+        >
+          <FolderOpen aria-hidden />
+          Show folder
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => void load()}>
+          <RefreshCw aria-hidden />
+          Rescan
+        </Button>
+      </div>
+    </SettingsSection>
+  );
+}
+
+/**
  * The engine, and the model it is actually serving.
  *
  * The name was written into this file, which made it wrong the moment there
@@ -392,6 +472,7 @@ export function SettingsView() {
       <div className="px-7 py-6">
         <div className="flex max-w-[680px] flex-col gap-3">
           <LocalModel />
+          <Corpus />
           <ThisMachine />
           <Integration
             service={GITHUB}

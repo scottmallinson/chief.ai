@@ -371,26 +371,12 @@ const MEASUREMENT_KEY: &str = "probe.measurement";
 pub async fn remember(pool: &SqlitePool, measurement: Measurement) -> Result<(), sqlx::Error> {
     let value = serde_json::to_string(&measurement).unwrap_or_default();
 
-    sqlx::query(
-        "INSERT INTO settings (key, value, updated_at)
-         VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-         ON CONFLICT (key) DO UPDATE
-            SET value = excluded.value, updated_at = excluded.updated_at",
-    )
-    .bind(MEASUREMENT_KEY)
-    .bind(value)
-    .execute(pool)
-    .await?;
-
-    Ok(())
+    crate::settings::set(pool, MEASUREMENT_KEY, &value).await
 }
 
 /// What was measured last, if anything ever was.
 pub async fn remembered(pool: &SqlitePool) -> Result<Option<Measurement>, sqlx::Error> {
-    let stored: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?1")
-        .bind(MEASUREMENT_KEY)
-        .fetch_optional(pool)
-        .await?;
+    let stored = crate::settings::get(pool, MEASUREMENT_KEY).await?;
 
     Ok(stored.and_then(|value| serde_json::from_str(&value).ok()))
 }

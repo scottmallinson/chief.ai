@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::clock;
+use crate::context;
 use crate::db;
 use crate::engine;
 use crate::github;
@@ -133,10 +134,43 @@ impl serde::Serialize for Error {
 /// `present` is what the clock says right now, worked out fresh for every
 /// question so an app left open overnight does not still think it is yesterday.
 fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
-    let mut messages = Vec::with_capacity(turns.len() + 1);
-    messages.push(Message::system(format!("{SYSTEM_PROMPT}\n\n{present}")));
+    let mut budget = context::Budget::new();
+    let opening = format!("{SYSTEM_PROMPT}\n\n{present}");
 
-    for turn in turns.into_iter().filter(|turn| turn.role != Role::System) {
+    // The system prompt and the clock are not negotiable and are added first,
+    // both because they must survive any trimming and because llama.cpp reuses
+    // the cached prefix of a prompt it has seen before — stable parts first is
+    // what turns prefill into something paid once.
+    let _ = budget.add("system", &opening);
+
+    // Then as much of the transcript as fits, newest first. A conversation long
+    // enough to overrun the budget loses its oldest turns rather than having
+    // the engine silently drop whatever fell off the end of the window: what
+    // the user just asked is the part that has to survive.
+    let mut kept: Vec<Message> = Vec::new();
+
+    for turn in turns
+        .into_iter()
+        .rev()
+        .filter(|turn| turn.role != Role::System)
+    {
+        if context::estimate_tokens(&turn.content) > budget.remaining() {
+            break;
+        }
+
+        let _ = budget.add("turn", &turn.content);
+        kept.push(Message::new(turn.role, turn.content));
+    }
+
+    kept.reverse();
+
+    let mut messages = Vec::with_capacity(kept.len() + 1);
+    messages.push(Message::system(opening));
+
+    // Adjacent turns in the same role are merged: some chat templates require
+    // strict alternation, and a transcript that arrives with two user turns in
+    // a row is a renderer bug this should survive rather than pass on.
+    for turn in kept {
         if let Some(previous) = messages
             .last_mut()
             .filter(|message| message.role == turn.role)
@@ -146,7 +180,7 @@ fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
             }
             previous.content.push_str(&turn.content);
         } else {
-            messages.push(Message::new(turn.role, turn.content));
+            messages.push(turn);
         }
     }
 

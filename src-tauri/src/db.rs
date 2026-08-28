@@ -169,6 +169,26 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 ";
 
+/// An index of the corpus, so assembling a prompt is a query.
+///
+/// The corpus is a folder of markdown in the user's own directory, and the
+/// question asked of it — which files exist, and what would they cost to put in
+/// a prompt — is one a table answers in a statement and a filesystem answers in
+/// a walk and a `stat` per file. The rows are a cache of the disk and the disk
+/// wins every disagreement: nothing here is authoritative, which is why it can
+/// be rebuilt wholesale.
+///
+/// `path` is relative to the corpus root and slash-separated whatever the
+/// platform, so an index built on one machine reads on another.
+const ADD_CORPUS_FILES: &str = r"
+CREATE TABLE IF NOT EXISTS corpus_files (
+    path             TEXT PRIMARY KEY,
+    size             INTEGER NOT NULL,
+    modified_at      TEXT NOT NULL,
+    estimated_tokens INTEGER NOT NULL
+);
+";
+
 /// Migrations applied to [`DB_URL`], in order.
 ///
 /// Migrations are append-only: once a version has shipped, add a new one rather
@@ -197,6 +217,12 @@ pub fn migrations() -> Vec<Migration> {
             version: 4,
             description: "remember what this machine can do",
             sql: ADD_SETTINGS,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 5,
+            description: "index the corpus",
+            sql: ADD_CORPUS_FILES,
             kind: MigrationKind::Up,
         },
     ]
