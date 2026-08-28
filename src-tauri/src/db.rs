@@ -189,6 +189,21 @@ CREATE TABLE IF NOT EXISTS corpus_files (
 );
 ";
 
+/// When a brief was written, and from what.
+///
+/// One row per day, replaced when the day's brief is regenerated: a brief is
+/// what today looks like now, not a history of what it looked like at each
+/// point during it. The brief itself is a markdown file in the corpus — this is
+/// only the record that it exists, so the daemon can tell whether the day has
+/// been briefed without reading the folder.
+const ADD_BRIEFS: &str = r"
+CREATE TABLE IF NOT EXISTS briefs (
+    date         TEXT PRIMARY KEY,
+    generated_at TEXT NOT NULL,
+    sources      TEXT NOT NULL DEFAULT ''
+);
+";
+
 /// Migrations applied to [`DB_URL`], in order.
 ///
 /// Migrations are append-only: once a version has shipped, add a new one rather
@@ -223,6 +238,12 @@ pub fn migrations() -> Vec<Migration> {
             version: 5,
             description: "index the corpus",
             sql: ADD_CORPUS_FILES,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 6,
+            description: "record the briefs that were written",
+            sql: ADD_BRIEFS,
             kind: MigrationKind::Up,
         },
     ]

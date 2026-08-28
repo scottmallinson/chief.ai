@@ -125,6 +125,41 @@ impl Default for Budget {
     }
 }
 
+/// Strip what costs tokens and carries nothing.
+///
+/// The blueprint calls this `slimtoken`. Markdown written by people is full of
+/// runs of blank lines and trailing spaces that mean something to an editor and
+/// nothing to a model — and every one of them is prefill on a CPU. What it does
+/// *not* do is touch the words, reflow paragraphs or strip markdown syntax:
+/// headings and list markers are structure the model reads, and a minifier that
+/// changed meaning to save fifty tokens would be a bad trade.
+#[must_use]
+pub fn slim(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut blank_run = 0;
+
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+
+        if trimmed.trim().is_empty() {
+            blank_run += 1;
+            // One blank line separates; more is whitespace.
+            if blank_run > 1 {
+                continue;
+            }
+            out.push('\n');
+            continue;
+        }
+
+        blank_run = 0;
+        out.push_str(trimmed);
+        out.push('\n');
+    }
+
+    // No leading or trailing blank lines: pure cost at the join.
+    out.trim_matches('\n').to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +238,32 @@ mod tests {
         budget.add("block", "abcdefgh").expect("two tokens");
 
         assert_eq!(budget.remaining(), 8);
+    }
+
+    #[test]
+    fn the_minifier_drops_what_costs_tokens_and_carries_nothing() {
+        let messy = "# Heading   \n\n\n\nSome text.   \n\n\n- a point\n- another   \n\n\n";
+
+        assert_eq!(
+            slim(messy),
+            "# Heading\n\nSome text.\n\n- a point\n- another"
+        );
+    }
+
+    #[test]
+    fn the_minifier_leaves_the_structure_a_model_reads() {
+        // Headings, list markers and code fences are meaning, not decoration.
+        let text = "# Title\n\n- one\n- two\n\n```rust\nlet x = 1;\n```";
+
+        assert_eq!(slim(text), text, "structure should survive untouched");
+    }
+
+    #[test]
+    fn the_minifier_is_idempotent() {
+        let messy = "#  Heading \n\n\n\ntext\n\n\n";
+        let once = slim(messy);
+
+        assert_eq!(slim(&once), once, "slimming twice should change nothing");
     }
 
     #[test]

@@ -20,6 +20,7 @@ mod microsoft;
 // the same as `llama` below.
 pub mod oauth;
 mod probe;
+mod recipe;
 mod session;
 mod settings;
 mod setup;
@@ -88,6 +89,8 @@ pub fn run() {
             corpus::write_corpus_file,
             corpus::set_corpus_root,
             probe::run_doctor,
+            recipe::generate_brief,
+            recipe::todays_brief,
             setup::check_readiness,
             setup::download_model,
             setup::start_engine,

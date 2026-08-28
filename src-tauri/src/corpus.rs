@@ -382,9 +382,9 @@ pub async fn reindex(pool: &SqlitePool, corpus: &Corpus) -> Result<Vec<Entry>, E
 
 /// What the index currently holds.
 ///
-/// Test-only for now: production reindexes and uses what that returns. It
-/// becomes public the moment something assembles a prompt from a query.
-#[cfg(test)]
+/// The reason the index exists: a recipe asks for the always-loaded corpus
+/// files and what they would cost, and that is a statement here rather than a
+/// walk of the folder and a `stat` per file.
 pub async fn indexed(pool: &SqlitePool) -> Result<Vec<Entry>, Error> {
     let rows: Vec<(String, i64, String, i64)> = sqlx::query_as(
         "SELECT path, size, modified_at, estimated_tokens FROM corpus_files ORDER BY path",
