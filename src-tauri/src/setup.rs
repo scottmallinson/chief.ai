@@ -21,6 +21,14 @@ pub const DOWNLOAD_PROGRESS_EVENT: &str = "model-download-progress";
 pub struct Readiness {
     /// The model Chief runs, named for a person to read.
     pub model: String,
+    /// What this machine qualified for — `standard` or `light`. Shown before a
+    /// download starts, because a person about to spend two gigabytes and a
+    /// share of their memory is entitled to know which of them they are getting
+    /// and that something looked at their machine before deciding.
+    pub tier: String,
+    /// Roughly what the model holds once loaded, in mebibytes. "2400" is the
+    /// number that answers "will this slow my laptop down"; "Q4_K_M" is not.
+    pub model_size_mb: u32,
     /// Whether the weights have been downloaded to this machine.
     pub model_installed: bool,
     /// Whether the engine is answering, still loading, or not running.
@@ -76,7 +84,9 @@ pub async fn check_readiness(
     let model_installed = engine.has_weights();
 
     Ok(Readiness {
-        model: weights::describe(),
+        model: engine.model().describe(),
+        tier: engine.tier().to_string(),
+        model_size_mb: engine.model().approx_resident_mb,
         model_installed,
         engine: health,
         problem: problem(health, engine.is_available(), model_installed),
@@ -91,11 +101,15 @@ pub async fn download_model<R: Runtime>(
     engine: State<'_, Engine>,
     client: State<'_, Client>,
 ) -> Result<(), Error> {
-    weights::download(engine.weights(), |progress: DownloadProgress| {
-        // A dropped event only costs a progress tick, so it is not worth
-        // failing the download over.
-        let _ = app.emit(DOWNLOAD_PROGRESS_EVENT, &progress);
-    })
+    weights::download(
+        &engine.model(),
+        engine.weights(),
+        |progress: DownloadProgress| {
+            // A dropped event only costs a progress tick, so it is not worth
+            // failing the download over.
+            let _ = app.emit(DOWNLOAD_PROGRESS_EVENT, &progress);
+        },
+    )
     .await?;
 
     engine.ensure_running(client.inner()).await?;
@@ -157,7 +171,9 @@ mod tests {
     #[test]
     fn describes_readiness_for_the_setup_screen() {
         let readiness = Readiness {
-            model: weights::describe(),
+            model: weights::STANDARD.describe(),
+            tier: crate::probe::Tier::Standard.to_string(),
+            model_size_mb: weights::STANDARD.approx_resident_mb,
             model_installed: false,
             engine: Health::Down,
             problem: problem(Health::Down, true, false),
@@ -166,7 +182,12 @@ mod tests {
         let body = serde_json::to_value(&readiness).expect("should serialize");
 
         assert_eq!(body["modelInstalled"], serde_json::json!(false));
+        assert_eq!(body["tier"], serde_json::json!("standard"));
+        assert_eq!(body["modelSizeMb"], serde_json::json!(2400));
         assert_eq!(body["engine"], serde_json::json!("down"));
-        assert_eq!(body["model"], serde_json::json!(weights::describe()));
+        assert_eq!(
+            body["model"],
+            serde_json::json!(weights::STANDARD.describe())
+        );
     }
 }

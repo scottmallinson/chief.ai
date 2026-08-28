@@ -12,6 +12,8 @@ vi.mock('@tauri-apps/api/event', () => ({ listen }));
 
 const noModel = {
   model: 'Llama 3.2 3B Instruct (Q4_K_M)',
+  tier: 'standard',
+  modelSizeMb: 2400,
   modelInstalled: false,
   engine: 'down',
   problem: 'the model has not been downloaded yet.',
@@ -19,6 +21,8 @@ const noModel = {
 
 const stoppedEngine = {
   ...noModel,
+  tier: 'standard',
+  modelSizeMb: 2400,
   modelInstalled: true,
   problem: 'the inference engine started but never began answering.',
 };

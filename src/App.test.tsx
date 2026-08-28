@@ -13,6 +13,8 @@ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 
 const ready = {
   model: 'Llama 3.2 3B Instruct (Q4_K_M)',
+  tier: 'standard',
+  modelSizeMb: 2400,
   modelInstalled: true,
   engine: 'ready',
   problem: null,
@@ -20,6 +22,8 @@ const ready = {
 
 const notReady = {
   model: 'Llama 3.2 3B Instruct (Q4_K_M)',
+  tier: 'standard',
+  modelSizeMb: 2400,
   modelInstalled: false,
   engine: 'down',
   problem: 'the model has not been downloaded yet.',

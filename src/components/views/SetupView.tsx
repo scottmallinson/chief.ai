@@ -46,6 +46,21 @@ function megabytes(bytes: number): string {
 }
 
 /**
+ * How big the model is, in the units a person thinks in.
+ *
+ * The size is tier-dependent now, so it comes from the backend rather than
+ * being a number written into this sentence. Under a gigabyte reads better in
+ * megabytes; above it, one decimal place is enough.
+ */
+function describeSize(mebibytes: number | undefined): string {
+  if (mebibytes === undefined || mebibytes <= 0) {
+    return 'a couple of gigabytes';
+  }
+
+  return mebibytes >= 1024 ? `${(mebibytes / 1024).toFixed(1)} GB` : `${mebibytes} MB`;
+}
+
+/**
  * The one determinate bar in the product.
  *
  * A download reports real bytes, so it is allowed to fill. Before the total is
@@ -130,7 +145,7 @@ export function SetupView({ onSkip }: SetupViewProps) {
             description={
               modelInstalled
                 ? `${readiness?.model} is on this machine.`
-                : `Chief uses ${readiness?.model ?? 'a small local model'}, about 2 GB. It is downloaded once, and an interrupted download resumes where it left off.`
+                : `Chief uses ${readiness?.model ?? 'a small local model'}, about ${describeSize(readiness?.modelSizeMb)}. It was chosen to fit this machine. It is downloaded once, and an interrupted download resumes where it left off.`
             }
             done={modelInstalled}
           >

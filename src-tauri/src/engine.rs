@@ -403,6 +403,9 @@ pub struct Engine {
     server: Option<PathBuf>,
     library_dirs: Vec<PathBuf>,
     weights: PathBuf,
+    /// The model this tier runs, so the setup screen can name it and the
+    /// download can fetch it without working the tier out a second time.
+    model: weights::Model,
     /// What this machine qualifies for, measured once when the engine is
     /// discovered. It decides the context window and the cache ceiling the
     /// server is started with, so it is read here rather than at every launch.
@@ -434,12 +437,16 @@ impl Engine {
 
         let server = owned.then(find_server).flatten();
 
+        let tier = Tier::for_machine(Machine::detect());
+        let model = weights::for_tier(tier);
+
         Ok(Self {
             base_url,
             library_dirs: library_dirs(app, server.as_deref()),
             server,
-            weights: weights::path(&data_dir),
-            tier: Tier::for_machine(Machine::detect()),
+            weights: model.path(&data_dir),
+            tier,
+            model,
             owned,
             child: Mutex::new(None),
             output: Output::default(),
@@ -452,6 +459,18 @@ impl Engine {
     }
 
     /// Where the model file belongs on this machine.
+    /// The model this machine runs, for naming it and for fetching it.
+    #[must_use]
+    pub fn model(&self) -> weights::Model {
+        self.model
+    }
+
+    /// What this machine qualified for.
+    #[must_use]
+    pub fn tier(&self) -> Tier {
+        self.tier
+    }
+
     pub fn weights(&self) -> &Path {
         &self.weights
     }
@@ -814,6 +833,7 @@ mod tests {
             library_dirs: Vec::new(),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
+            model: weights::STANDARD,
             owned: true,
             child: Mutex::new(None),
             output: Output::default(),
@@ -830,6 +850,7 @@ mod tests {
             library_dirs: Vec::new(),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
+            model: weights::STANDARD,
             owned: false,
             child: Mutex::new(None),
             output: Output::default(),
@@ -846,6 +867,7 @@ mod tests {
             library_dirs: Vec::new(),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
+            model: weights::STANDARD,
             owned: false,
             child: Mutex::new(None),
             output: Output::default(),
@@ -1007,6 +1029,7 @@ mod tests {
             library_dirs: Vec::new(),
             weights,
             tier: Tier::Standard,
+            model: weights::STANDARD,
             owned: true,
             child: Mutex::new(None),
             output: Output::default(),

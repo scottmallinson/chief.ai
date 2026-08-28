@@ -18,29 +18,75 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
-/// The model Chief runs: small enough for a laptop with no GPU, and — the part
-/// that decides it — one of the models llama.cpp recognises for **native tool
-/// calling**. Chief's orchestrator asks the model which tool to run and with
-/// what arguments, through the model's own chat template, so a template with no
-/// tool-use structures is not a smaller version of this: it is a different
-/// architecture. That is why the model is not simply the lightest one that fits.
-pub const MODEL_NAME: &str = "Llama 3.2 3B Instruct";
+use crate::probe::Tier;
 
-/// The quantisation, which is what makes it fit. Q4_K_M is the usual balance
-/// between size and quality, and it is what lets llama.cpp run this on older
-/// hardware with a couple of gigabytes to spare.
-pub const QUANTISATION: &str = "Q4_K_M";
+/// One model Chief can run, and everything needed to fetch and name it.
+///
+/// A catalogue rather than a single pinned file, because the machine decides.
+/// Every entry here must be a model llama.cpp recognises for **native tool
+/// calling**: Chief's orchestrator asks the model which tool to run and with
+/// what arguments through the model's own chat template, so a template with no
+/// tool-use structures is not a smaller option, it is a different application.
+/// That is why both entries are Llama 3.2 — same family, same template, one
+/// third the size — rather than the lightest model that would load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Model {
+    /// What a person calls it.
+    pub name: &'static str,
+    /// The quantisation, which is what makes it fit. Q4_K_M is the usual
+    /// balance between size and quality.
+    pub quantisation: &'static str,
+    /// The file on disk. Named after the release it came from, so a future
+    /// upgrade lands beside it rather than silently replacing it.
+    pub file_name: &'static str,
+    /// Where the weights come from. Pinned to a revision rather than a branch,
+    /// so the file Chief downloads today is the file it downloaded yesterday.
+    pub source: &'static str,
+    /// Roughly what it holds once loaded, in mebibytes: the weights plus a
+    /// working KV cache. Shown to the user before a download starts, because
+    /// "2 GB" is the number they need and "Q4_K_M" is not.
+    pub approx_resident_mb: u32,
+}
 
-/// The file on disk. Named after the release it came from, so a future upgrade
-/// lands beside it rather than silently replacing it.
-pub const FILE_NAME: &str = "Llama-3.2-3B-Instruct-Q4_K_M.gguf";
+/// The model Chief would rather run, on a machine with room for it.
+pub const STANDARD: Model = Model {
+    name: "Llama 3.2 3B Instruct",
+    quantisation: "Q4_K_M",
+    file_name: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    source: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/5ab33fa94d1d04e903623ae72c95d1696f09f9e8/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    approx_resident_mb: 2400,
+};
+
+/// The same family a third of the size, for a machine that cannot hold the
+/// other one. It answers less well; it answers.
+pub const LIGHT: Model = Model {
+    name: "Llama 3.2 1B Instruct",
+    quantisation: "Q4_K_M",
+    file_name: "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+    source: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/067b946cf014b7c697f3654f621d577a3e3afd1c/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+    approx_resident_mb: 1100,
+};
+
+/// Everything Chief can run.
+///
+/// Test-only: production reaches a model through [`for_tier`], and this exists
+/// so the invariants every entry must hold — a pinned HTTPS source on the model
+/// host, a file name nothing else shares — are asserted across the whole
+/// catalogue rather than against whichever one someone remembered.
+#[cfg(test)]
+const CATALOGUE: [Model; 2] = [STANDARD, LIGHT];
+
+/// The model this machine gets.
+#[must_use]
+pub const fn for_tier(tier: Tier) -> Model {
+    match tier {
+        Tier::Standard => STANDARD,
+        Tier::Light => LIGHT,
+    }
+}
 
 /// The only host these weights are ever fetched from.
 const SOURCE_HOST: &str = "huggingface.co";
-
-/// Where the weights come from. Pinned to a revision rather than `main`, so
-/// the file Chief downloads today is the file it downloaded yesterday.
-pub const SOURCE: &str = "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/5ab33fa94d1d04e903623ae72c95d1696f09f9e8/Llama-3.2-3B-Instruct-Q4_K_M.gguf";
 
 /// Every GGUF file starts with these four bytes. Checking them catches the
 /// classic failure — an error page, a login wall or a truncated transfer saved
@@ -90,13 +136,21 @@ impl serde::Serialize for Error {
 }
 
 /// A short, human name for the model, for the setup screen and settings.
-pub fn describe() -> String {
-    format!("{MODEL_NAME} ({QUANTISATION})")
-}
+impl Model {
+    /// How the model is named to a person: "Llama 3.2 3B Instruct (Q4_K_M)".
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!("{} ({})", self.name, self.quantisation)
+    }
 
-/// Where the weights live, given the app's data directory.
-pub fn path(data_dir: &Path) -> PathBuf {
-    data_dir.join(FOLDER).join(FILE_NAME)
+    /// Where this model belongs inside the app's data directory.
+    ///
+    /// Keyed on the file name, so switching tiers lands the new weights beside
+    /// the old ones rather than on top of them.
+    #[must_use]
+    pub fn path(&self, data_dir: &Path) -> PathBuf {
+        data_dir.join(FOLDER).join(self.file_name)
+    }
 }
 
 /// Where a download in progress is written. Kept beside the finished file so
@@ -129,12 +183,12 @@ fn https_only() -> reqwest::redirect::Policy {
 /// A part-finished download is resumed rather than restarted: this is a couple
 /// of gigabytes, and a dropped connection three quarters of the way through
 /// should not cost the whole thing.
-pub async fn download<F>(destination: &Path, mut on_progress: F) -> Result<(), Error>
+pub async fn download<F>(model: &Model, destination: &Path, mut on_progress: F) -> Result<(), Error>
 where
     F: FnMut(DownloadProgress),
 {
-    let url =
-        reqwest::Url::parse(SOURCE).map_err(|_| Error::UntrustedSource(SOURCE.to_string()))?;
+    let url = reqwest::Url::parse(model.source)
+        .map_err(|_| Error::UntrustedSource(model.source.to_string()))?;
 
     if url.scheme() != "https" || url.host_str() != Some(SOURCE_HOST) {
         return Err(Error::UntrustedSource(url.to_string()));
@@ -289,14 +343,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_source_is_a_pinned_https_url_on_the_model_host() {
-        let url = reqwest::Url::parse(SOURCE).expect("should be a URL");
+    fn every_source_is_a_pinned_https_url_on_the_model_host() {
+        for model in CATALOGUE {
+            let url = reqwest::Url::parse(model.source).expect("should be a URL");
 
-        assert_eq!(url.scheme(), "https");
-        assert_eq!(url.host_str(), Some(SOURCE_HOST));
+            assert_eq!(url.scheme(), "https", "{}", model.name);
+            assert_eq!(url.host_str(), Some(SOURCE_HOST), "{}", model.name);
+            assert!(
+                url.path().ends_with(model.file_name),
+                "the URL and the file name should agree for {}: {url}",
+                model.name
+            );
+
+            // Pinned to a revision, not a branch. `/resolve/main/` would let
+            // the file change underneath an installation that already has it.
+            assert!(
+                !url.path().contains("/resolve/main/"),
+                "{} is pinned to a branch rather than a revision",
+                model.name
+            );
+        }
+    }
+
+    #[test]
+    fn no_two_models_share_a_file_name() {
+        // They land in one folder, so a shared name would have the light tier
+        // load the standard model's weights, or the reverse.
+        for (at, model) in CATALOGUE.iter().enumerate() {
+            for other in &CATALOGUE[at + 1..] {
+                assert_ne!(model.file_name, other.file_name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_tier_that_needs_less_gets_less() {
         assert!(
-            url.path().ends_with(FILE_NAME),
-            "the URL and the file name should agree: {url}"
+            for_tier(Tier::Light).approx_resident_mb < for_tier(Tier::Standard).approx_resident_mb,
+            "the light tier exists to hold less"
         );
     }
 
@@ -305,14 +389,14 @@ mod tests {
         let data_dir = Path::new("/home/someone/.local/share/chief");
 
         assert_eq!(
-            path(data_dir),
-            Path::new("/home/someone/.local/share/chief/models").join(FILE_NAME)
+            STANDARD.path(data_dir),
+            Path::new("/home/someone/.local/share/chief/models").join(STANDARD.file_name)
         );
     }
 
     #[test]
     fn a_download_in_progress_sits_beside_the_finished_file() {
-        let destination = path(Path::new("/data"));
+        let destination = STANDARD.path(Path::new("/data"));
         let partial = part_path(&destination);
 
         assert_eq!(partial.parent(), destination.parent());
@@ -366,7 +450,8 @@ mod tests {
 
     #[test]
     fn describes_the_model_for_the_setup_screen() {
-        assert_eq!(describe(), "Llama 3.2 3B Instruct (Q4_K_M)");
+        assert_eq!(STANDARD.describe(), "Llama 3.2 3B Instruct (Q4_K_M)");
+        assert_eq!(LIGHT.describe(), "Llama 3.2 1B Instruct (Q4_K_M)");
     }
 
     /// The real download, against the real host.
@@ -394,7 +479,10 @@ mod tests {
             .await
             .expect("should create");
 
-        let destination = path(&dir);
+        // The ignored test exercises the real host, so it uses the model a
+        // standard machine would actually fetch.
+        let model = STANDARD;
+        let destination = model.path(&dir);
         let partial = part_path(&destination);
         tokio::fs::create_dir_all(destination.parent().expect("has a parent"))
             .await
@@ -403,7 +491,7 @@ mod tests {
         // A download that got 8 MiB in and then dropped.
         const SEEDED: u64 = 8 * 1024 * 1024;
         let head = reqwest::Client::new()
-            .get(SOURCE)
+            .get(model.source)
             .header(reqwest::header::RANGE, format!("bytes=0-{}", SEEDED - 1))
             .send()
             .await
@@ -418,7 +506,7 @@ mod tests {
             .expect("should write");
 
         let mut last = None;
-        download(&destination, |progress| last = Some(progress))
+        download(&model, &destination, |progress| last = Some(progress))
             .await
             .expect("should download the weights");
 

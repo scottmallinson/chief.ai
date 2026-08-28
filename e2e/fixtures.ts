@@ -220,6 +220,8 @@ function installBackend(setup: Setup) {
         case 'check_readiness':
           return Promise.resolve({
             model: 'Llama 3.2 3B Instruct (Q4_K_M)',
+            tier: 'standard',
+            modelSizeMb: 2400,
             modelInstalled: true,
             engine: 'ready',
             problem: null,
