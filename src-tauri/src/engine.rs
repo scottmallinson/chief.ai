@@ -23,6 +23,7 @@ use tokio::process::{Child, ChildStderr, Command};
 use tokio::task::JoinHandle;
 
 use crate::llama::{self, Health};
+use crate::probe::{Machine, Tier};
 use crate::weights;
 
 /// The name the loaded model answers to.
@@ -32,11 +33,16 @@ use crate::weights;
 /// whatever GGUF is on disk.
 pub const MODEL_ALIAS: &str = "chief";
 
-/// The context window, in tokens, fixed for the life of the server.
+/// How far back the model can see. Tier-dependent rather than fixed: the window
+/// costs memory in the KV cache, and the machine that needs the smaller model
+/// needs the smaller window for the same reason. See [`crate::probe::Tier`].
 ///
-/// Room for a conversation plus a page of tool results. Larger costs memory for
-/// the key/value cache and buys nothing Chief asks for.
-const CONTEXT_SIZE: u32 = 8192;
+/// This is the engine's window, not Chief's prompt budget.
+///
+/// The smallest run of tokens worth reusing from a cached prompt via KV
+/// shifting. Too small and the engine spends more on bookkeeping than it saves;
+/// 256 is the value llama.cpp's own guidance settles on.
+const CACHE_REUSE_CHUNK: u32 = 256;
 
 /// Point Chief at a `llama-server` you are running yourself, instead of the one
 /// it ships. Must still be loopback; the client refuses anything else.
@@ -278,7 +284,7 @@ fn library_path(directories: &[PathBuf], inherited: Option<OsString>) -> OsStrin
 /// Kept separate from the spawning so the flags Chief actually relies on —
 /// loopback only, a fixed context window, and the Jinja chat templates that
 /// tool calling needs — are covered by a test rather than by hoping.
-fn arguments(weights: &Path, port: u16) -> Vec<OsString> {
+fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> {
     vec![
         OsString::from("--model"),
         weights.into(),
@@ -290,7 +296,22 @@ fn arguments(weights: &Path, port: u16) -> Vec<OsString> {
         OsString::from("--port"),
         OsString::from(port.to_string()),
         OsString::from("--ctx-size"),
-        OsString::from(CONTEXT_SIZE.to_string()),
+        OsString::from(tier.context_size().to_string()),
+        // llama.cpp caches the KV state of a prompt prefix already; what it does
+        // not do by default is reuse a cache entry whose prefix only partly
+        // matches. Chief assembles every prompt with the stable parts first and
+        // the volatile parts last precisely so that reuse can happen, and this
+        // is the flag that lets it: prefill on a repeated prefix is paid once
+        // rather than on every turn, which on a CPU is the difference between a
+        // pause and a wait.
+        OsString::from("--cache-reuse"),
+        OsString::from(CACHE_REUSE_CHUNK.to_string()),
+        // And a ceiling on what those caches may hold. The engine's own default
+        // is 8192 MiB — more than twice the headroom this app is written to live
+        // within, spent on top of a resident model. Left alone it would cause
+        // the swapping the cache exists to avoid.
+        OsString::from("--cache-ram"),
+        OsString::from(tier.cache_ram_mb().to_string()),
         // Tool calling goes through the model's own chat template, which
         // llama.cpp only applies in Jinja mode.
         OsString::from("--jinja"),
@@ -382,6 +403,10 @@ pub struct Engine {
     server: Option<PathBuf>,
     library_dirs: Vec<PathBuf>,
     weights: PathBuf,
+    /// What this machine qualifies for, measured once when the engine is
+    /// discovered. It decides the context window and the cache ceiling the
+    /// server is started with, so it is read here rather than at every launch.
+    tier: Tier,
     /// Whether this process is the one that starts and stops the server. False
     /// when the user pointed Chief at their own, which is not ours to kill.
     owned: bool,
@@ -414,6 +439,7 @@ impl Engine {
             library_dirs: library_dirs(app, server.as_deref()),
             server,
             weights: weights::path(&data_dir),
+            tier: Tier::for_machine(Machine::detect()),
             owned,
             child: Mutex::new(None),
             output: Output::default(),
@@ -471,7 +497,7 @@ impl Engine {
 
         let mut command = Command::new(server);
         command
-            .args(arguments(&self.weights, port))
+            .args(arguments(&self.weights, port, self.tier))
             .stdin(Stdio::null())
             // Read rather than inherited. A server that dies on the way up says
             // why on this stream, and inherited it goes to whatever terminal
@@ -618,7 +644,7 @@ mod tests {
 
     #[test]
     fn keeps_the_engine_on_loopback() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 11435);
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
         let rendered: Vec<String> = arguments
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -633,7 +659,7 @@ mod tests {
 
     #[test]
     fn fixes_the_context_window_when_the_server_starts() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 11435);
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
         let rendered: Vec<String> = arguments
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -643,12 +669,75 @@ mod tests {
             .iter()
             .position(|argument| argument == "--ctx-size")
             .expect("the context size should be set");
-        assert_eq!(rendered[size + 1], CONTEXT_SIZE.to_string());
+        assert_eq!(
+            rendered[size + 1],
+            Tier::Standard.context_size().to_string()
+        );
+    }
+
+    #[test]
+    fn the_window_follows_the_tier_rather_than_a_single_number() {
+        let render = |tier| {
+            arguments(Path::new("/models/model.gguf"), 11435, tier)
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let value_after = |rendered: &[String], flag: &str| {
+            let at = rendered
+                .iter()
+                .position(|argument| argument == flag)
+                .unwrap_or_else(|| panic!("{flag} should be set"));
+            rendered[at + 1].clone()
+        };
+
+        let standard = render(Tier::Standard);
+        let light = render(Tier::Light);
+
+        assert_eq!(value_after(&standard, "--ctx-size"), "8192");
+        assert_eq!(value_after(&light, "--ctx-size"), "4096");
+
+        // The machine that gets the smaller model gets the smaller cache for
+        // the same reason, and neither may reach the engine's own 8192 MiB
+        // default — which is more memory than this app is written to use in
+        // total, spent on top of a resident model.
+        let standard_cache: u32 = value_after(&standard, "--cache-ram")
+            .parse()
+            .expect("the cache ceiling should be a number");
+        let light_cache: u32 = value_after(&light, "--cache-ram")
+            .parse()
+            .expect("the cache ceiling should be a number");
+
+        assert!(standard_cache < 8192, "got {standard_cache} MiB");
+        assert!(light_cache < standard_cache);
+    }
+
+    #[test]
+    fn lets_a_repeated_prompt_prefix_be_reused_rather_than_recomputed() {
+        // Prefill is the dominant cost of a question on a CPU, and llama.cpp
+        // will not reuse a partly matching prefix unless asked. Without this
+        // flag every turn pays for the whole prompt again.
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
+        let rendered: Vec<String> = arguments
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+
+        let at = rendered
+            .iter()
+            .position(|argument| argument == "--cache-reuse")
+            .expect("prompt-prefix reuse should be enabled");
+
+        let chunk: u32 = rendered[at + 1]
+            .parse()
+            .expect("the reuse chunk should be a number");
+        assert!(chunk > 0, "a chunk of zero leaves reuse switched off");
     }
 
     #[test]
     fn asks_for_the_templates_that_tool_calling_needs() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 11435);
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
 
         assert!(
             arguments.iter().any(|argument| argument == "--jinja"),
@@ -658,7 +747,7 @@ mod tests {
 
     #[test]
     fn serves_the_model_under_the_name_requests_use() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 11435);
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
         let rendered: Vec<String> = arguments
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -679,7 +768,7 @@ mod tests {
 
     #[test]
     fn starts_the_server_on_the_port_the_client_will_use() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 4242);
+        let arguments = arguments(Path::new("/models/model.gguf"), 4242, Tier::Standard);
         let rendered: Vec<String> = arguments
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -724,6 +813,7 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             weights: PathBuf::from("/models/model.gguf"),
+            tier: Tier::Standard,
             owned: true,
             child: Mutex::new(None),
             output: Output::default(),
@@ -739,6 +829,7 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             weights: PathBuf::from("/models/model.gguf"),
+            tier: Tier::Standard,
             owned: false,
             child: Mutex::new(None),
             output: Output::default(),
@@ -754,6 +845,7 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             weights: PathBuf::from("/models/model.gguf"),
+            tier: Tier::Standard,
             owned: false,
             child: Mutex::new(None),
             output: Output::default(),
@@ -914,6 +1006,7 @@ mod tests {
             server: Some(stand_in_server(dir, complaint)),
             library_dirs: Vec::new(),
             weights,
+            tier: Tier::Standard,
             owned: true,
             child: Mutex::new(None),
             output: Output::default(),

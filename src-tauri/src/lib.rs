@@ -16,6 +16,7 @@ mod integrations;
 // OAuth machinery shared by every provider. Part of the crate's library API,
 // the same as `llama` below.
 pub mod oauth;
+mod probe;
 mod session;
 mod setup;
 mod tools;
