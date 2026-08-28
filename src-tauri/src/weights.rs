@@ -18,9 +18,13 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
-/// The model Chief runs: small enough for a laptop with no GPU, and trained to
-/// call tools, which is most of what Chief asks of it.
-pub const MODEL_NAME: &str = "Gemma 3 1B Instruct";
+/// The model Chief runs: small enough for a laptop with no GPU, and — the part
+/// that decides it — one of the models llama.cpp recognises for **native tool
+/// calling**. Chief's orchestrator asks the model which tool to run and with
+/// what arguments, through the model's own chat template, so a template with no
+/// tool-use structures is not a smaller version of this: it is a different
+/// architecture. That is why the model is not simply the lightest one that fits.
+pub const MODEL_NAME: &str = "Llama 3.2 3B Instruct";
 
 /// The quantisation, which is what makes it fit. Q4_K_M is the usual balance
 /// between size and quality, and it is what lets llama.cpp run this on older
@@ -29,14 +33,14 @@ pub const QUANTISATION: &str = "Q4_K_M";
 
 /// The file on disk. Named after the release it came from, so a future upgrade
 /// lands beside it rather than silently replacing it.
-pub const FILE_NAME: &str = "google_gemma-3-1b-it-Q4_K_M.gguf";
+pub const FILE_NAME: &str = "Llama-3.2-3B-Instruct-Q4_K_M.gguf";
 
 /// The only host these weights are ever fetched from.
 const SOURCE_HOST: &str = "huggingface.co";
 
 /// Where the weights come from. Pinned to a revision rather than `main`, so
 /// the file Chief downloads today is the file it downloaded yesterday.
-pub const SOURCE: &str = "https://huggingface.co/bartowski/google_gemma-3-1b-it-GGUF/resolve/fd9cc90e35ad30626265b03534320330c830bd80/google_gemma-3-1b-it-Q4_K_M.gguf";
+pub const SOURCE: &str = "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/5ab33fa94d1d04e903623ae72c95d1696f09f9e8/Llama-3.2-3B-Instruct-Q4_K_M.gguf";
 
 /// Every GGUF file starts with these four bytes. Checking them catches the
 /// classic failure — an error page, a login wall or a truncated transfer saved
@@ -362,7 +366,7 @@ mod tests {
 
     #[test]
     fn describes_the_model_for_the_setup_screen() {
-        assert_eq!(describe(), "Gemma 3 1B Instruct (Q4_K_M)");
+        assert_eq!(describe(), "Llama 3.2 3B Instruct (Q4_K_M)");
     }
 
     /// The real download, against the real host.

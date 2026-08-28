@@ -107,14 +107,6 @@ pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
     }
 }
 
-/// Fetch pull requests for models whose chat template cannot call tools.
-pub async fn prefetch_github_prs(context: &Context, state: PullRequestState) -> Value {
-    match fetch_github_prs(context, state).await {
-        Ok(result) => result,
-        Err(error) => json!({ "error": error.to_string() }),
-    }
-}
-
 fn parse(function: &ToolCallFunction) -> Result<FetchGithubPrsArgs, String> {
     let arguments = function.arguments()?;
 
