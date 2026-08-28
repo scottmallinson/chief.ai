@@ -91,7 +91,7 @@ Runner time is the one cost this project has, so the workflows are written to sp
   and Chromium for the layout tests.
 - **Build where nothing else is looking.** A pull request builds the app on macOS and Windows, and
   not on Linux: the Rust job already compiles the whole crate there, but `#[cfg(windows)]` code is
-  compiled on Windows and nowhere else — `engine.rs:325` is where the last two fixes on `main`
+  compiled on Windows and nowhere else — `engine.rs:493` is where the last two fixes on `main`
   went. `main` adds Linux, where the app build is the only job that links a release profile
   against WebKitGTK. macOS bills at 10× a Linux runner and Windows at 2×, so this is most of what
   CI costs; it buys the only proof that the platform-conditional code compiles at all.
@@ -180,6 +180,12 @@ the user to install a runtime, which is the whole reason the engine is a module 
   kill.
 - The process is killed on `RunEvent::Exit`. Nothing else would stop it, and a resident model holds
   a couple of gigabytes after the window has gone.
+- The server's **stderr is read rather than inherited**, and the last twenty lines are kept. A
+  server that dies on the way up is quoted, not guessed at: Chief used to report every early exit as
+  the model not fitting in this machine's memory, and on macOS 12 — where the bundled build wants a
+  LAPACK symbol that arrived in 13.3 — the real answer was on that stream the whole time, going to a
+  terminal nobody installing the app ever sees. Every line read is written straight back out, so
+  `tauri dev` still shows the model loading.
 - Two things llama.cpp makes unnecessary that Ollama needed. The **context window** is a launch flag
   (`--ctx-size`), not a per-request option, so no request can evict the weights and there is no
   keep-alive to negotiate — the server owns one model for its lifetime. And it **warms itself** as

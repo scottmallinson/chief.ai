@@ -13,6 +13,9 @@ mod db;
 mod engine;
 mod github;
 mod integrations;
+// OAuth machinery shared by every provider. Part of the crate's library API,
+// the same as `llama` below.
+pub mod oauth;
 mod session;
 mod setup;
 mod tools;
@@ -59,10 +62,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             agent::ask_agent,
-            connect::start_github_login,
-            connect::finish_github_login,
-            connect::github_connection,
-            connect::disconnect_github,
+            connect::start_login,
+            connect::finish_login,
+            connect::connections,
+            connect::disconnect,
+            connect::label_account,
             setup::check_readiness,
             setup::download_model,
             setup::start_engine,

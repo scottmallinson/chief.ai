@@ -30,7 +30,14 @@ pub struct WorkLogEntry {
     /// Identifies the thing this entry describes, for entries written by the
     /// background daemon. `None` for entries the user wrote themselves.
     pub external_id: Option<String>,
+    /// Which connected account this came from, and `0` — the sentinel the
+    /// schema uses, which `AUTOINCREMENT` never issues — for an entry the user
+    /// wrote by hand or one an upgrade could attribute to nothing.
+    pub account_id: i64,
 }
+
+/// The columns that make up a [`WorkLogEntry`], so every query agrees.
+const ENTRY_COLUMNS: &str = "id, timestamp, source, content, summary, external_id, account_id";
 
 /// A new entry. `timestamp` defaults to now, `summary` to nothing.
 #[derive(Debug, Clone, Deserialize)]
@@ -45,18 +52,22 @@ pub struct NewWorkLogEntry {
     /// Set by the daemon so the same activity is only ever logged once.
     #[serde(default)]
     pub external_id: Option<String>,
+    /// Which connected account the activity came from. `None` for an entry the
+    /// user wrote by hand.
+    #[serde(default)]
+    pub account_id: Option<i64>,
 }
 
 /// Read entries newest first.
 pub async fn fetch(pool: &SqlitePool, limit: Option<i64>) -> Result<Vec<WorkLogEntry>, Error> {
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
-    let entries = sqlx::query_as::<_, WorkLogEntry>(
-        "SELECT id, timestamp, source, content, summary, external_id
+    let entries = sqlx::query_as::<_, WorkLogEntry>(&format!(
+        "SELECT {ENTRY_COLUMNS}
          FROM work_logs
          ORDER BY timestamp DESC, id DESC
-         LIMIT ?1",
-    )
+         LIMIT ?1"
+    ))
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -66,23 +77,25 @@ pub async fn fetch(pool: &SqlitePool, limit: Option<i64>) -> Result<Vec<WorkLogE
 
 /// Append an entry and return it as stored, including the values SQLite filled in.
 pub async fn insert(pool: &SqlitePool, entry: NewWorkLogEntry) -> Result<WorkLogEntry, Error> {
-    let stored = sqlx::query_as::<_, WorkLogEntry>(
-        "INSERT INTO work_logs (timestamp, source, content, summary, external_id)
-         VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4, ?5)
-         RETURNING id, timestamp, source, content, summary, external_id",
-    )
+    let stored = sqlx::query_as::<_, WorkLogEntry>(&format!(
+        "INSERT INTO work_logs (timestamp, source, content, summary, external_id, account_id)
+         VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4, ?5,
+                 IFNULL(?6, 0))
+         RETURNING {ENTRY_COLUMNS}"
+    ))
     .bind(entry.timestamp)
     .bind(entry.source)
     .bind(entry.content)
     .bind(entry.summary)
     .bind(entry.external_id)
+    .bind(entry.account_id)
     .fetch_one(pool)
     .await?;
 
     Ok(stored)
 }
 
-/// Append an entry unless this source has already logged that thing.
+/// Append an entry unless this account has already logged that thing.
 ///
 /// Returns the stored entry, or `None` when it was already there. This is what
 /// lets the daemon run as often as it likes.
@@ -90,29 +103,39 @@ pub async fn insert_new(
     pool: &SqlitePool,
     entry: NewWorkLogEntry,
 ) -> Result<Option<WorkLogEntry>, Error> {
-    let stored = sqlx::query_as::<_, WorkLogEntry>(
-        "INSERT INTO work_logs (timestamp, source, content, summary, external_id)
-         VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4, ?5)
-         ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL DO NOTHING
-         RETURNING id, timestamp, source, content, summary, external_id",
-    )
+    let stored = sqlx::query_as::<_, WorkLogEntry>(&format!(
+        "INSERT INTO work_logs (timestamp, source, content, summary, external_id, account_id)
+         VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4, ?5,
+                 IFNULL(?6, 0))
+         ON CONFLICT (source, account_id, external_id) WHERE external_id IS NOT NULL DO NOTHING
+         RETURNING {ENTRY_COLUMNS}"
+    ))
     .bind(entry.timestamp)
     .bind(entry.source)
     .bind(entry.content)
     .bind(entry.summary)
     .bind(entry.external_id)
+    .bind(entry.account_id)
     .fetch_optional(pool)
     .await?;
 
     Ok(stored)
 }
 
-/// Whether this source has already logged that thing.
-pub async fn has_logged(pool: &SqlitePool, source: &str, external_id: &str) -> Result<bool, Error> {
+/// Whether this account has already logged that thing.
+pub async fn has_logged(
+    pool: &SqlitePool,
+    source: &str,
+    account_id: i64,
+    external_id: &str,
+) -> Result<bool, Error> {
     let existing = sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM work_logs WHERE source = ?1 AND external_id = ?2 LIMIT 1",
+        "SELECT 1 FROM work_logs
+          WHERE source = ?1 AND account_id = ?2 AND external_id = ?3
+          LIMIT 1",
     )
     .bind(source)
+    .bind(account_id)
     .bind(external_id)
     .fetch_optional(pool)
     .await?;
@@ -152,6 +175,7 @@ mod tests {
             timestamp: None,
             summary: None,
             external_id: None,
+            account_id: None,
         }
     }
 
@@ -203,6 +227,41 @@ mod tests {
 
         assert_eq!(stored.timestamp, "2026-08-19T09:00:00.000Z");
         assert_eq!(stored.summary.as_deref(), Some("Shipped the shell"));
+    }
+
+    #[tokio::test]
+    async fn says_which_account_an_entry_came_from() {
+        // Attribution is written on every insert; without it on the way out,
+        // whose work an entry records is only visible to raw SQL.
+        let pool = migrated_pool().await;
+
+        let attributed = insert(
+            &pool,
+            NewWorkLogEntry {
+                account_id: Some(7),
+                ..entry("github", "Merged PR #4")
+            },
+        )
+        .await
+        .expect("insert should succeed");
+        let by_hand = insert(&pool, entry("manual", "Wrote something down"))
+            .await
+            .expect("insert should succeed");
+
+        assert_eq!(attributed.account_id, 7);
+        assert_eq!(
+            by_hand.account_id, 0,
+            "an entry the user wrote carries the sentinel, not an account"
+        );
+
+        let read = fetch(&pool, None).await.expect("read should succeed");
+        assert_eq!(
+            read.iter()
+                .map(|entry| entry.account_id)
+                .collect::<Vec<_>>(),
+            [0, 7],
+            "reading the log back should say the same"
+        );
     }
 
     #[tokio::test]
@@ -262,6 +321,7 @@ mod deduplication_tests {
             timestamp: None,
             summary: Some("Shipped something".to_string()),
             external_id: Some(external_id.to_string()),
+            account_id: None,
         }
     }
 
@@ -326,6 +386,7 @@ mod deduplication_tests {
                     timestamp: None,
                     summary: None,
                     external_id: None,
+                    account_id: None,
                 },
             )
             .await
@@ -335,5 +396,50 @@ mod deduplication_tests {
         }
 
         assert_eq!(fetch(&pool, None).await.expect("read").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn two_accounts_may_log_the_same_identifier() {
+        let pool = migrated_pool().await;
+
+        // Two people can merge the same pull request number in the same
+        // repository — on two different accounts, it is two people's work.
+        let entry = |account_id| NewWorkLogEntry {
+            source: "github".to_string(),
+            content: "Merged PR #7".to_string(),
+            timestamp: None,
+            summary: None,
+            external_id: Some("owner/repo#7".to_string()),
+            account_id: Some(account_id),
+        };
+
+        assert!(
+            insert_new(&pool, entry(1))
+                .await
+                .expect("should insert")
+                .is_some(),
+            "the first account should log it"
+        );
+        assert!(
+            insert_new(&pool, entry(2))
+                .await
+                .expect("should insert")
+                .is_some(),
+            "a different account is different work"
+        );
+        assert!(
+            insert_new(&pool, entry(1))
+                .await
+                .expect("should insert")
+                .is_none(),
+            "the same account should not log it twice"
+        );
+
+        assert!(has_logged(&pool, "github", 1, "owner/repo#7")
+            .await
+            .expect("should read"));
+        assert!(!has_logged(&pool, "github", 3, "owner/repo#7")
+            .await
+            .expect("should read"));
     }
 }

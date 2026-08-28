@@ -12,14 +12,14 @@ vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 
 const ready = {
-  model: 'Llama 3.2 3B Instruct (Q4_K_M)',
+  model: 'Gemma 3 1B Instruct (Q4_K_M)',
   modelInstalled: true,
   engine: 'ready',
   problem: null,
 };
 
 const notReady = {
-  model: 'Llama 3.2 3B Instruct (Q4_K_M)',
+  model: 'Gemma 3 1B Instruct (Q4_K_M)',
   modelInstalled: false,
   engine: 'down',
   problem: 'the model has not been downloaded yet.',

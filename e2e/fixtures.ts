@@ -28,6 +28,16 @@ export interface WorkLogEntry {
   externalId: string | null;
 }
 
+/** One connected account, as `connections` returns it. */
+export interface Account {
+  id: number;
+  service: string;
+  accountKey: string;
+  label: string | null;
+  identity: string | null;
+  connectedAt: string;
+}
+
 /** A step in an answer, as `agent::Update` serialises it. */
 export type AgentUpdate =
   { kind: 'delta'; text: string } | { kind: 'restart' } | { kind: 'tool'; name: string };
@@ -38,6 +48,8 @@ export interface Backend {
   answer?: string;
   /** What the work log is filled with. */
   workLog?: WorkLogEntry[];
+  /** Which accounts the settings screen finds connected. */
+  accounts?: Account[];
   /**
    * Leave questions unanswered until {@link Chief.finish} is called, so the
    * streaming states can be held still and measured.
@@ -82,10 +94,15 @@ export interface ShellOptions {
    * Whether this project renders scrollbars that take space out of the layout,
    * the way Windows does, rather than ones that take none, the way macOS does.
    *
-   * The switch itself is `ignoreDefaultArgs: ['--hide-scrollbars']` in the
-   * project's `launchOptions` — Playwright hides scrollbars in headless Chromium
-   * by default, which no real user ever sees. This flag only tells the tests
-   * which of the two they are looking at; one of them checks the pair agree.
+   * Turning it on takes two things, and this flag drives both. The project's
+   * `launchOptions` pass `ignoreDefaultArgs: ['--hide-scrollbars']`, because
+   * Playwright hides scrollbars in headless Chromium by default, which no real
+   * user ever sees. That alone is enough on Linux, where CI runs — but not on
+   * macOS, where Chromium takes its scrollbar style from the OS and draws
+   * overlay scrollbars whatever the flags say. So {@link CLASSIC_SCROLLBARS} is
+   * installed on top: a styled scrollbar is a custom one, and a custom one is
+   * never an overlay on any host. One test checks the pair agree, so this
+   * project cannot quietly become a second copy of the default one.
    */
   classicScrollbars: boolean;
 }
@@ -110,6 +127,7 @@ export interface Chief {
 interface Setup {
   answer: string;
   workLog: WorkLogEntry[];
+  accounts: Account[];
   holdAnswers: boolean;
 }
 
@@ -219,8 +237,8 @@ function installBackend(setup: Setup) {
         case 'list_work_logs':
           return Promise.resolve(setup.workLog);
 
-        case 'github_connection':
-          return Promise.resolve({ connected: false, account: null, connectedAt: null });
+        case 'connections':
+          return Promise.resolve(setup.accounts);
 
         case 'plugin:event|listen': {
           const event = args?.event as string;
@@ -299,7 +317,20 @@ function settle(page: Page): Promise<void> {
   return page.evaluate(() => (window as unknown as { __chief: Bridge }).__chief.settle());
 }
 
-function handleFor(page: Page): Chief {
+/**
+ * A scrollbar that takes space out of the layout, on any host.
+ *
+ * 15px is what Chromium gives a Windows scrollbar at 100% scaling, which is the
+ * layout this stands in for. It is applied to the test page rather than shipped:
+ * Chief's own CSS leaves scrollbars to the platform, and the point here is to
+ * measure the app under a platform that draws them wide.
+ */
+const CLASSIC_SCROLLBARS = `
+  ::-webkit-scrollbar { width: 15px; height: 15px; }
+  ::-webkit-scrollbar-thumb { background: #8883; }
+`;
+
+function handleFor(page: Page, classicScrollbars: boolean): Chief {
   const composer = page.getByRole('textbox', { name: 'Message your chief of staff' });
 
   return {
@@ -309,10 +340,12 @@ function handleFor(page: Page): Chief {
       await page.addInitScript(installBackend, {
         answer: backend.answer ?? 'Two pull requests are waiting on review.',
         workLog: backend.workLog ?? [],
+        accounts: backend.accounts ?? [],
         holdAnswers: backend.holdAnswers ?? false,
       });
 
       await page.goto('/');
+      if (classicScrollbars) await page.addStyleTag({ content: CLASSIC_SCROLLBARS });
       await composer.waitFor();
     },
 
@@ -381,8 +414,8 @@ function handleFor(page: Page): Chief {
 export const test = base.extend<ShellOptions & { chief: Chief }>({
   classicScrollbars: [false, { option: true }],
 
-  chief: async ({ page }, use) => {
-    await use(handleFor(page));
+  chief: async ({ page, classicScrollbars }, use) => {
+    await use(handleFor(page, classicScrollbars));
   },
 });
 

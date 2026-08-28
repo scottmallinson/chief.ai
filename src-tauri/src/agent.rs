@@ -17,6 +17,7 @@ use crate::engine;
 use crate::github;
 use crate::llama::{self, ChatRequest, Client, Message, Role};
 use crate::tools;
+use crate::weights;
 
 /// The model the engine is serving. It runs one, under the name it was given
 /// when it started, so this identifies the model rather than choosing it.
@@ -25,6 +26,30 @@ pub const DEFAULT_MODEL: &str = engine::MODEL_ALIAS;
 /// How many times we will run tools before insisting on an answer. A model that
 /// keeps calling tools would otherwise loop forever.
 const MAX_TOOL_ROUNDS: usize = 4;
+
+/// Gemma 3's bundled chat template is text-only and rejects the OpenAI tools
+/// field, so its one available data source is fetched before the request.
+fn github_state_for(question: &str) -> Option<tools::PullRequestState> {
+    let question = question.to_ascii_lowercase();
+
+    if question.contains("ship")
+        || question.contains("shipped")
+        || question.contains("merged")
+        || question.contains("release")
+    {
+        Some(tools::PullRequestState::Merged)
+    } else if question.contains("pull request")
+        || question.contains("pull requests")
+        || question.contains("pr ")
+        || question.ends_with("pr")
+        || question.contains("review")
+        || question.contains("waiting")
+    {
+        Some(tools::PullRequestState::Open)
+    } else {
+        None
+    }
+}
 
 /// The event carrying an answer to the chat window as it is written.
 pub const STREAM_EVENT: &str = "agent-stream";
@@ -129,12 +154,19 @@ fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
     let mut messages = Vec::with_capacity(turns.len() + 1);
     messages.push(Message::system(format!("{SYSTEM_PROMPT}\n\n{present}")));
 
-    messages.extend(
-        turns
-            .into_iter()
-            .filter(|turn| turn.role != Role::System)
-            .map(|turn| Message::new(turn.role, turn.content)),
-    );
+    for turn in turns.into_iter().filter(|turn| turn.role != Role::System) {
+        if let Some(previous) = messages
+            .last_mut()
+            .filter(|message| message.role == turn.role)
+        {
+            if !previous.content.is_empty() && !turn.content.is_empty() {
+                previous.content.push_str("\n\n");
+            }
+            previous.content.push_str(&turn.content);
+        } else {
+            messages.push(Message::new(turn.role, turn.content));
+        }
+    }
 
     messages
 }
@@ -156,8 +188,40 @@ where
 {
     let catalog = tools::catalog();
 
+    let native_tools = model != engine::MODEL_ALIAS || !weights::MODEL_NAME.starts_with("Gemma 3");
+    if !native_tools {
+        if let Some(question) = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+        {
+            if let Some(state) = github_state_for(&question.content) {
+                let result = tools::prefetch_github_prs(context, state).await;
+                on_update(Update::Tool {
+                    name: "fetch_github_prs".to_string(),
+                });
+
+                if let Some(question) = messages
+                    .iter_mut()
+                    .rev()
+                    .find(|message| message.role == Role::User)
+                {
+                    question.content.push_str(
+                        "\n\nUse this GitHub data to answer the question. Do not invent anything:\n",
+                    );
+                    question.content.push_str(&result.to_string());
+                }
+            }
+        }
+    }
+
     for _ in 0..MAX_TOOL_ROUNDS {
-        let request = ChatRequest::new(model, messages.clone()).with_tools(catalog.clone());
+        let request = ChatRequest::new(model, messages.clone());
+        let request = if native_tools {
+            request.with_tools(catalog.clone())
+        } else {
+            request
+        };
 
         let mut shown = false;
         let reply = client
@@ -298,6 +362,45 @@ mod tests {
     }
 
     #[test]
+    fn merges_adjacent_turns_for_templates_that_require_alternation() {
+        let messages = conversation(
+            vec![
+                turn(Role::User, "first question"),
+                turn(Role::User, "follow-up question"),
+                turn(Role::Assistant, "answer"),
+                turn(Role::Assistant, "additional detail"),
+            ],
+            PRESENT,
+        );
+
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.role)
+                .collect::<Vec<_>>(),
+            [Role::System, Role::User, Role::Assistant]
+        );
+        assert_eq!(messages[1].content, "first question\n\nfollow-up question");
+        assert_eq!(messages[2].content, "answer\n\nadditional detail");
+    }
+
+    #[test]
+    fn routes_shipping_questions_to_merged_pull_requests() {
+        assert_eq!(
+            github_state_for("What did I ship this week?"),
+            Some(tools::PullRequestState::Merged)
+        );
+    }
+
+    #[test]
+    fn routes_review_questions_to_open_pull_requests() {
+        assert_eq!(
+            github_state_for("What is waiting on me?"),
+            Some(tools::PullRequestState::Open)
+        );
+    }
+
+    #[test]
     fn refuses_a_system_prompt_from_the_frontend() {
         let messages = conversation(
             vec![
@@ -400,13 +503,27 @@ mod orchestration_tests {
         }]
     }"#;
 
-    /// A tool context whose GitHub client talks to `host`, with a token stored
-    /// so the tool gets as far as making a request.
+    /// A tool context whose GitHub client talks to `host`, with an account
+    /// connected so the tool gets as far as making a request.
     async fn context_connected_to(host: &str) -> tools::Context {
         let pool = migrated_pool().await;
-        integrations::save(&pool, integrations::GITHUB, "gho_token", None)
-            .await
-            .expect("should store a token");
+        integrations::save(
+            &pool,
+            integrations::NewAccount {
+                service: integrations::GITHUB,
+                account_key: "octocat",
+                identity: Some("octocat"),
+                credential_kind: integrations::OAUTH,
+                access_token: "gho_token",
+                refresh_token: None,
+                expires_at: None,
+                scopes: None,
+                client_id: None,
+                client_secret: None,
+            },
+        )
+        .await
+        .expect("should store a credential");
 
         tools::Context {
             pool,
@@ -449,8 +566,8 @@ mod orchestration_tests {
 
     const ANSWER: &str = "One pull request is waiting on review.";
 
-    /// The model this suite pretends the engine is serving.
-    const MODEL: &str = DEFAULT_MODEL;
+    /// A tool-capable model name used by the native tool-calling fixtures.
+    const MODEL: &str = "test-tool-model";
 
     fn body_of(request: &str) -> Value {
         let (_, body) = split(request);

@@ -9,7 +9,16 @@
  * second chance from a CDN.
  */
 
-import { expect, longAnswer, test } from './fixtures';
+import { expect, longAnswer, test, type Account } from './fixtures';
+
+const octocat: Account = {
+  id: 1,
+  service: 'github',
+  accountKey: 'octocat',
+  label: null,
+  identity: 'octocat',
+  connectedAt: '2026-08-19T14:00:00.000Z',
+};
 
 test.describe('shell metrics', () => {
   test('runs a 56px icon rail beside a 48px header', async ({ chief, page }) => {
@@ -68,6 +77,26 @@ test.describe('reduced motion', () => {
 
     await expect(status.locator('.motion-loop')).toBeVisible();
     await expect(status.locator('.motion-still')).toBeHidden();
+  });
+});
+
+test.describe('the focus ring', () => {
+  test('is one ring, and every field wears it', async ({ chief, page }) => {
+    // A Tailwind utility outranks the `:focus-visible` rule in globals.css, so
+    // a control that brings its own ring quietly leaves the system — and the
+    // difference is a shadow, which jsdom cannot see at all. Measured against
+    // the composer rather than against a literal: the rule is that they match.
+    await chief.open({ accounts: [octocat] });
+
+    await chief.composer.focus();
+    const composer = await chief.composer.evaluate((node) => getComputedStyle(node).boxShadow);
+
+    await chief.goTo('Settings');
+    const name = page.getByLabel('Name for octocat');
+    await name.focus();
+
+    expect(await name.evaluate((node) => getComputedStyle(node).boxShadow)).toBe(composer);
+    expect(composer, 'the ring should be a 3px spread').toContain('3px');
   });
 });
 

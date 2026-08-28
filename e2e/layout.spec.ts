@@ -7,7 +7,17 @@
  * rail out of the window, and put a second scrollbar beside the first.
  */
 
-import { expect, longAnswer, longWorkLog, test } from './fixtures';
+import { expect, longAnswer, longWorkLog, test, type Account } from './fixtures';
+
+/** An account named right up to the limit the field allows. */
+const longNamed: Account = {
+  id: 1,
+  service: 'github',
+  accountKey: 'octocat',
+  label: 'a'.repeat(40),
+  identity: 'octocat',
+  connectedAt: '2026-08-19T14:00:00.000Z',
+};
 
 test.describe('a conversation taller than the window', () => {
   test('moves inside the transcript, never the window', async ({ chief }) => {
@@ -115,6 +125,21 @@ test.describe('following an answer as it is written', () => {
     await chief.stream({ kind: 'delta', text: `\n${longAnswer()}` });
 
     expect((await chief.position()).atBottom).toBe(true);
+  });
+});
+
+test.describe('an account with a long name', () => {
+  test('does not squeeze the field that names it', async ({ chief, page }) => {
+    await chief.open({ accounts: [longNamed] });
+    await chief.goTo('Settings');
+
+    const field = await page.getByLabel('Name for octocat').boundingBox();
+    const button = await page.getByRole('button', { name: /^Disconnect/ }).boundingBox();
+
+    // The button echoes the whole name and never wraps, so without a bound on
+    // it the field it names is what gives way.
+    expect(button?.width ?? 0, 'the button should stop growing').toBeLessThanOrEqual(220);
+    expect(field?.width ?? 0, 'the field should keep most of the row').toBeGreaterThan(300);
   });
 });
 
