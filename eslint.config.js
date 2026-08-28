@@ -7,7 +7,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['dist', 'coverage', 'node_modules', 'src-tauri/target', 'src-tauri/gen'],
+    ignores: ['dist', 'coverage', 'node_modules', 'src-tauri/target', 'src-tauri/gen', '.claude'],
   },
 
   // Type-aware linting for application and test sources.
