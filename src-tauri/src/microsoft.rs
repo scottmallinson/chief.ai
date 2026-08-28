@@ -331,6 +331,205 @@ impl Client {
     }
 }
 
+/// How many of anything one read returns.
+///
+/// Graph will page further, and Chief does not: what the agent needs is what is
+/// recent, and every extra item is prompt the model has to read before it can
+/// answer. The context budget is the constraint, not the API's.
+pub const READ_LIMIT: u8 = 25;
+
+/// One meeting, reduced to what the agent needs to answer questions.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Event {
+    pub subject: String,
+    /// ISO-8601, in the time zone Graph was asked for.
+    pub start: String,
+    pub end: String,
+    pub organiser: Option<String>,
+    /// Names rather than addresses: this is what goes to the model, and a
+    /// mailbox address is more identifying than the answer needs.
+    pub attendees: Vec<String>,
+    pub online: bool,
+}
+
+/// One message, reduced the same way.
+///
+/// **Preview rather than body.** `Mail.Read` grants the whole message and Chief
+/// takes the first couple of hundred characters Graph already summarises. Two
+/// reasons and both matter: a mailbox of full bodies would exhaust the context
+/// budget several times over on a single read, and the model does not need the
+/// whole of a message to say who is waiting on what.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MailMessage {
+    pub subject: String,
+    pub from: Option<String>,
+    pub received_at: String,
+    pub preview: String,
+    pub unread: bool,
+}
+
+impl Client {
+    /// What is in the calendar between two instants.
+    ///
+    /// `calendarView` rather than `events`, because it expands recurrences —
+    /// asking for `events` returns the series and leaves the app to work out
+    /// which Tuesday it is, which is exactly the date arithmetic a small model
+    /// is bad at and Chief does deterministically or not at all.
+    pub async fn events(
+        &self,
+        access_token: &str,
+        from: &str,
+        to: &str,
+        limit: u8,
+    ) -> Result<Vec<Event>, Error> {
+        let url = format!(
+            "{}/v1.0/me/calendarView?startDateTime={}&endDateTime={}&$top={}&$orderby=start/dateTime&$select=subject,start,end,organizer,attendees,isOnlineMeeting",
+            self.graph_host,
+            urlencode(from),
+            urlencode(to),
+            limit
+        );
+
+        let page: Page<RawEvent> = self.read(access_token, &url).await?;
+
+        Ok(page.value.into_iter().map(RawEvent::reduce).collect())
+    }
+
+    /// The most recent messages in the inbox.
+    pub async fn messages(&self, access_token: &str, limit: u8) -> Result<Vec<MailMessage>, Error> {
+        let url = format!(
+            "{}/v1.0/me/messages?$top={limit}&$orderby=receivedDateTime desc&$select=subject,from,receivedDateTime,bodyPreview,isRead",
+            self.graph_host
+        );
+
+        let page: Page<RawMessage> = self.read(access_token, &url).await?;
+
+        Ok(page.value.into_iter().map(RawMessage::reduce).collect())
+    }
+
+    /// One authenticated GET against Graph, with the refusals named.
+    async fn read<T: serde::de::DeserializeOwned>(
+        &self,
+        access_token: &str,
+        url: &str,
+    ) -> Result<T, Error> {
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::TokenRejected);
+        }
+
+        if !response.status().is_success() {
+            return Err(Error::Status {
+                status: response.status().as_u16(),
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|error| Error::Decode(error.to_string()))
+    }
+}
+
+/// Graph wraps every collection in `value`.
+#[derive(Debug, Deserialize)]
+struct Page<T> {
+    #[serde(default = "Vec::new")]
+    value: Vec<T>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawEvent {
+    subject: Option<String>,
+    start: Option<GraphTime>,
+    end: Option<GraphTime>,
+    organizer: Option<Recipient>,
+    #[serde(default)]
+    attendees: Vec<Recipient>,
+    is_online_meeting: Option<bool>,
+}
+
+impl RawEvent {
+    fn reduce(self) -> Event {
+        Event {
+            // A meeting with no subject is a real thing people send, and
+            // "(no subject)" is what every mail client calls it.
+            subject: self.subject.unwrap_or_else(|| "(no subject)".to_string()),
+            start: self.start.map(|at| at.date_time).unwrap_or_default(),
+            end: self.end.map(|at| at.date_time).unwrap_or_default(),
+            organiser: self.organizer.and_then(Recipient::name),
+            attendees: self
+                .attendees
+                .into_iter()
+                .filter_map(Recipient::name)
+                .collect(),
+            online: self.is_online_meeting.unwrap_or(false),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMessage {
+    subject: Option<String>,
+    from: Option<Recipient>,
+    received_date_time: Option<String>,
+    body_preview: Option<String>,
+    is_read: Option<bool>,
+}
+
+impl RawMessage {
+    fn reduce(self) -> MailMessage {
+        MailMessage {
+            subject: self.subject.unwrap_or_else(|| "(no subject)".to_string()),
+            from: self.from.and_then(Recipient::name),
+            received_at: self.received_date_time.unwrap_or_default(),
+            preview: self.body_preview.unwrap_or_default(),
+            unread: !self.is_read.unwrap_or(true),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphTime {
+    #[serde(default)]
+    date_time: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Recipient {
+    email_address: Option<EmailAddress>,
+}
+
+impl Recipient {
+    /// A person's name, falling back to their address when Graph has no name.
+    fn name(self) -> Option<String> {
+        let address = self.email_address?;
+
+        address
+            .name
+            .filter(|name| !name.trim().is_empty())
+            .or(address.address)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EmailAddress {
+    name: Option<String>,
+    address: Option<String>,
+}
+
 /// Build the authorization URL.
 ///
 /// Split out from the request so the query it sends is covered by a test rather

@@ -16,6 +16,7 @@ use crate::db;
 use crate::engine;
 use crate::github;
 use crate::llama::{self, ChatRequest, Client, Message, Role};
+use crate::microsoft;
 use crate::tools;
 
 /// The model the engine is serving. It runs one, under the name it was given
@@ -221,6 +222,7 @@ pub async fn ask_agent<R: Runtime>(
     app: AppHandle<R>,
     client: State<'_, Client>,
     github: State<'_, github::Client>,
+    microsoft: State<'_, microsoft::Client>,
     attention: State<'_, Attention>,
     messages: Vec<Turn>,
     model: Option<String>,
@@ -230,6 +232,7 @@ pub async fn ask_agent<R: Runtime>(
     let context = tools::Context {
         pool: db::pool(&app).await?,
         github: github.inner().clone(),
+        microsoft: microsoft.inner().clone(),
     };
 
     // The daemon shares this engine. Hold the door while someone is waiting.
@@ -479,6 +482,7 @@ mod orchestration_tests {
         tools::Context {
             pool,
             github: github::Client::against(host).expect("should build a client"),
+            microsoft: microsoft::Client::against(host).expect("should build a client"),
         }
     }
 

@@ -14,6 +14,7 @@ use sqlx::SqlitePool;
 
 use crate::github::{self, Client, PullRequest, State};
 use crate::integrations;
+use crate::microsoft;
 use crate::oauth::Provider;
 
 /// A conversation with one connected account.
@@ -138,6 +139,65 @@ impl<'a, P: Provider> Session<'a, P> {
         integrations::set_identity(self.pool, self.account_id, identity)
             .await
             .map_err(P::Error::from)
+    }
+}
+
+/// Reading Outlook on behalf of one connected account.
+///
+/// The same shape as [`GithubSession`]: the session owns renewal, the provider
+/// module owns the reading. Two of these now, which is what a third provider
+/// would justify collapsing — one example is a guess and two is a pattern, but
+/// the bodies here are four lines each and an abstraction over them would be
+/// longer than they are.
+pub struct OutlookSession<'a> {
+    session: Session<'a, microsoft::Client>,
+    client: &'a microsoft::Client,
+}
+
+impl<'a> OutlookSession<'a> {
+    pub fn new(pool: &'a SqlitePool, client: &'a microsoft::Client, account_id: i64) -> Self {
+        Self {
+            session: Session::new(pool, client, account_id),
+            client,
+        }
+    }
+
+    /// What is in the calendar between two instants.
+    pub async fn events(
+        &self,
+        from: &str,
+        to: &str,
+        limit: u8,
+    ) -> Result<Vec<microsoft::Event>, microsoft::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| microsoft::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.events(&token, from, to, limit).await
+            })
+            .await
+    }
+
+    /// The most recent messages in the inbox.
+    pub async fn messages(
+        &self,
+        limit: u8,
+    ) -> Result<Vec<microsoft::MailMessage>, microsoft::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| microsoft::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.messages(&token, limit).await
+            })
+            .await
     }
 }
 
