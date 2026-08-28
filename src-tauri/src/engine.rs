@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -444,6 +444,8 @@ pub struct Engine {
     /// daemon *reads* it to stand aside for the user; raising it would make the
     /// daemon yield to itself.
     working: Arc<AtomicUsize>,
+    /// Whether the stray-engine warning has already been given.
+    warned_about_stray: AtomicBool,
     /// What the child has said for itself. Kept beside the handle rather than
     /// inside it because the handle is cleared the moment the process is found
     /// to have exited — which is exactly when its last words are wanted.
@@ -481,6 +483,7 @@ impl Engine {
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
             working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         })
     }
@@ -536,6 +539,20 @@ impl Engine {
         }
 
         if client.health().await != Health::Down {
+            // Something is answering on our port that this process did not
+            // start. Almost always our own engine, orphaned by a crash or a
+            // force-quit: `RunEvent::Exit` never ran, so nothing killed it, and
+            // the health check above means we will now never start one either.
+            //
+            // It is not killed, because a server the user is running themselves
+            // looks identical from here and is not ours to take. But it is said
+            // once, because the consequence is otherwise invisible: the idle
+            // supervisor holds no handle for it, so its memory is never given
+            // back for as long as this installation runs.
+            if self.child_state() == ChildState::None {
+                self.warn_once_about_the_stray();
+            }
+
             return Ok(());
         }
 
@@ -630,6 +647,24 @@ impl Engine {
     #[must_use]
     pub fn is_running(&self) -> bool {
         !self.owned || self.child_state() == ChildState::Running
+    }
+
+    /// Say once that something else is serving our port.
+    ///
+    /// Once, rather than on every question and every daemon pass, which is what
+    /// makes it worth a flag rather than a bare `eprintln!`.
+    fn warn_once_about_the_stray(&self) {
+        if self.warned_about_stray.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        eprintln!(
+            "an inference engine is already answering at {} that Chief did not start. \
+             Chief will use it, but cannot stop it when it goes idle, so its memory \
+             stays held. Quit anything else serving that address and restart Chief to \
+             have it manage its own.",
+            self.base_url
+        );
     }
 
     /// Hold the engine open for as long as the guard lives.
@@ -969,6 +1004,7 @@ mod tests {
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
             working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         }
     }
@@ -981,6 +1017,24 @@ mod tests {
             !engine.stop_if_idle(false, Duration::from_secs(600)),
             "a fresh engine has not been idle for ten minutes"
         );
+    }
+
+    #[test]
+    fn the_stray_engine_warning_is_given_once_and_not_on_every_question() {
+        // ensure_running is called on the way into every question and every
+        // daemon pass. A warning without this flag would be printed on all of
+        // them.
+        let engine = stopped_engine();
+
+        assert!(!engine.warned_about_stray.load(Ordering::SeqCst));
+
+        engine.warn_once_about_the_stray();
+        assert!(engine.warned_about_stray.load(Ordering::SeqCst));
+
+        // The second call is a no-op; what is asserted is that the flag latches
+        // rather than toggling.
+        engine.warn_once_about_the_stray();
+        assert!(engine.warned_about_stray.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -1073,6 +1127,7 @@ mod tests {
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
             working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         };
 
@@ -1092,6 +1147,7 @@ mod tests {
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
             working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         };
 
@@ -1111,6 +1167,7 @@ mod tests {
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
             working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         };
 
@@ -1275,6 +1332,7 @@ mod tests {
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
             working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         }
     }
