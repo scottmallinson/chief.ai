@@ -154,6 +154,21 @@ CREATE UNIQUE INDEX idx_work_logs_external_id
     WHERE external_id IS NOT NULL;
 ";
 
+/// Somewhere to keep what Chief has worked out about this machine.
+///
+/// A key/value table rather than a column per fact, because the facts are few,
+/// unrelated, and read one at a time: the tier this machine qualified for, and
+/// what it measured when it last ran. Storing the measurement is what lets the
+/// settings screen say how fast this machine answers without spending a
+/// generation to find out again every time somebody opens it.
+const ADD_SETTINGS: &str = r"
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+";
+
 /// Migrations applied to [`DB_URL`], in order.
 ///
 /// Migrations are append-only: once a version has shipped, add a new one rather
@@ -176,6 +191,12 @@ pub fn migrations() -> Vec<Migration> {
             version: 3,
             description: "hold many labelled accounts per service",
             sql: ADD_INTEGRATION_ACCOUNTS,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 4,
+            description: "remember what this machine can do",
+            sql: ADD_SETTINGS,
             kind: MigrationKind::Up,
         },
     ]

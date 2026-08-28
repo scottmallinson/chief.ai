@@ -51,14 +51,35 @@ describe('SettingsView', () => {
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
   });
 
+  const report = {
+    tier: 'standard',
+    model: 'Llama 3.2 3B Instruct (Q4_K_M)',
+    modelSizeMb: 2400,
+    contextSize: 8192,
+    memoryMb: 16384,
+    cores: 8,
+    measurement: { firstTokenMs: 900, totalMs: 4900, characters: 400 },
+    charactersPerSecond: 100,
+  };
+
   it('carries the connection as state, not as an action', async () => {
-    invoke.mockResolvedValue([]);
+    invoke.mockImplementation((command: string) =>
+      command === 'run_doctor' ? Promise.resolve(report) : Promise.resolve([]),
+    );
 
     render(<SettingsView />);
 
     expect(await screen.findByText('Not connected')).toBeInTheDocument();
     expect(screen.getByText('On this machine')).toBeInTheDocument();
-    expect(screen.getByText('llama-3.2-3b-instruct')).toBeInTheDocument();
+
+    // The model is whatever this machine was given, not a name written into
+    // the component — there is more than one now.
+    expect(await screen.findByText('Llama 3.2 3B Instruct (Q4_K_M)')).toBeInTheDocument();
+
+    // And what it worked out about the machine, in the units a person reads.
+    expect(screen.getByText('16.0 GB')).toBeInTheDocument();
+    expect(screen.getByText('8192 tokens')).toBeInTheDocument();
+    expect(screen.getByText('0.9s')).toBeInTheDocument();
   });
 
   it('says when a connected account was connected', async () => {

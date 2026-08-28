@@ -73,6 +73,7 @@ pub fn run() {
             connect::connections,
             connect::disconnect,
             connect::label_account,
+            probe::run_doctor,
             setup::check_readiness,
             setup::download_model,
             setup::start_engine,

@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Github } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
+import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
 import { useIntegrations } from '@/hooks/use-integrations';
@@ -221,16 +222,127 @@ function GithubIntegration() {
 }
 
 /** Configuration surface for the model, integrations and local data. */
+/**
+ * The engine, and the model it is actually serving.
+ *
+ * The name was written into this file, which made it wrong the moment there
+ * was more than one model to run.
+ */
+function LocalModel() {
+  const [model, setModel] = useState<string | null>(null);
+
+  useEffect(() => {
+    void runDoctor(false)
+      .then((report) => setModel(report.model))
+      .catch(() => setModel(null));
+  }, []);
+
+  return (
+    <SettingsSection
+      title="Local model"
+      description="Chief runs llama.cpp itself, on a loopback address only this machine can reach. The engine ships with the app and stops when nothing is using it; the client refuses any address that is not local."
+      state={model ? <Chip tone="machine">{model}</Chip> : <Chip tone="quiet">Checking</Chip>}
+    />
+  );
+}
+
+/** Machine facts read in the units a person thinks in. */
+function gigabytes(mebibytes: number): string {
+  return `${(mebibytes / 1024).toFixed(1)} GB`;
+}
+
+/** Seconds, to one decimal place, from milliseconds. */
+function seconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
+ * What Chief worked out about this machine, and what it measured.
+ *
+ * Opens with whatever was recorded last rather than spending a generation on
+ * every visit. "Measure again" is the only thing here that costs anything, and
+ * it says so.
+ */
+function ThisMachine() {
+  const [report, setReport] = useState<Report | null>(null);
+  const [measuring, setMeasuring] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const load = useCallback(async (remeasure: boolean) => {
+    setProblem(null);
+    if (remeasure) setMeasuring(true);
+
+    try {
+      setReport(await runDoctor(remeasure));
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      setMeasuring(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load(false);
+  }, [load]);
+
+  const measurement = report?.measurement ?? null;
+
+  return (
+    <SettingsSection
+      title="This machine"
+      description="Chief looked at the memory and cores here and chose a model that fits. Nothing about this leaves the machine."
+      state={
+        report ? <Chip tone="machine">{report.tier}</Chip> : <Chip tone="quiet">Checking</Chip>
+      }
+    >
+      {report && (
+        <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
+          <dt className="pt-1 micro text-muted-foreground">Memory</dt>
+          <dd className="font-mono text-[13px]">{gigabytes(report.memoryMb)}</dd>
+          <dt className="pt-1 micro text-muted-foreground">Cores</dt>
+          <dd className="font-mono text-[13px]">{report.cores}</dd>
+          <dt className="pt-1 micro text-muted-foreground">Window</dt>
+          <dd className="font-mono text-[13px]">{report.contextSize} tokens</dd>
+          {measurement && (
+            <>
+              <dt className="pt-1 micro text-muted-foreground">First reply</dt>
+              <dd className="font-mono text-[13px]">{seconds(measurement.firstTokenMs)}</dd>
+              <dt className="pt-1 micro text-muted-foreground">Writing</dt>
+              <dd className="font-mono text-[13px]">
+                {Math.round(report.charactersPerSecond ?? 0)} chars/s
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
+
+      {!measurement && report && (
+        <p className="mt-3 text-sm text-muted-foreground">This machine has not been timed yet.</p>
+      )}
+
+      {problem && <p className="mt-3 text-sm text-attention-text">{problem}</p>}
+
+      <Button
+        size="sm"
+        variant="secondary"
+        className="mt-3"
+        onClick={() => void load(true)}
+        disabled={measuring}
+      >
+        {measuring ? <Dots /> : null}
+        {measuring ? 'Measuring…' : 'Measure again'}
+      </Button>
+    </SettingsSection>
+  );
+}
+
 export function SettingsView() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="px-7 py-6">
         <div className="flex max-w-[680px] flex-col gap-3">
-          <SettingsSection
-            title="Local model"
-            description="Chief runs llama.cpp itself, on a loopback address only this machine can reach. The engine ships with the app and stops when you close it; the client refuses any address that is not local."
-            state={<Chip tone="machine">llama-3.2-3b-instruct</Chip>}
-          />
+          <LocalModel />
+          <ThisMachine />
           <GithubIntegration />
           <SettingsSection
             title="Local data"
