@@ -679,17 +679,22 @@ is checked by hand. `pnpm test` covers it.
 
 ## Roadmap
 
-Build strictly in order, and stop for review at each step:
+**[`docs/implementation-plan.md`](docs/implementation-plan.md) is the roadmap.** It holds the build
+order from step 8 to step 22, decisions D1–D8 with what each one costs, the hardware budget, and
+§0's ledger of what is actually built. Steps 1–7 shipped before it was written.
 
-1. **Project scaffolding & UI foundation** — Tauri v2 + React + Vite, Tailwind, app shell. ✅
-2. **SQLite local database** — `@tauri-apps/plugin-sql`, migrations for `work_logs` and
-   `integrations`, Tauri commands to read/write the log. ✅
-3. **Local LLM engine** — bundled `llama-server`, Rust client posting to `/v1/chat/completions`,
-   `ask_agent` command. ✅
-4. **Tool calling orchestrator** — `fetch_github_prs` schema, intercept `tool_calls`, feed results
-   back to the model. ✅
-5. **GitHub sign-in** — device flow from the desktop app, token stored in `integrations`, and
-   `fetch_github_prs` reading real data. ✅
-6. **Background daemon & work log** — periodic fetch, summarise locally, write to `work_logs`. ✅
+It is **a living document, updated in the pull request that changes it** — see its §8. A step that
+lands without moving its row in §0 has left the plan describing something that is no longer true,
+which is the state it was in when it sat unmerged on a branch for seven steps.
 
-Do not start a later step before the earlier one is reviewed and merged.
+Three things to do with it rather than around it:
+
+- **Before starting a step**, read its section and §9's open questions. Something you are about to
+  decide may already be recorded as decided, or as deliberately somebody else's call.
+- **When the code and the plan disagree**, the code is usually right and the plan is stale — say so
+  in the plan under a `— revision N` note rather than quietly changing the code to match prose.
+- **Anything you find and do not fix** goes in §9, with the issue number if there is one.
+
+Do not start a later step before the earlier one is reviewed and merged, unless the plan itself
+says otherwise — it does for step 22, which comes before step 14 because an empty corpus is step
+14's failure mode.
