@@ -9,15 +9,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Runtime, State};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::clock;
+use crate::context;
 use crate::db;
 use crate::engine;
 use crate::github;
 use crate::llama::{self, ChatRequest, Client, Message, Role};
+use crate::microsoft;
 use crate::tools;
-use crate::weights;
 
 /// The model the engine is serving. It runs one, under the name it was given
 /// when it started, so this identifies the model rather than choosing it.
@@ -27,28 +29,117 @@ pub const DEFAULT_MODEL: &str = engine::MODEL_ALIAS;
 /// keeps calling tools would otherwise loop forever.
 const MAX_TOOL_ROUNDS: usize = 4;
 
-/// Gemma 3's bundled chat template is text-only and rejects the OpenAI tools
-/// field, so its one available data source is fetched before the request.
-fn github_state_for(question: &str) -> Option<tools::PullRequestState> {
-    let question = question.to_ascii_lowercase();
+/// Did the engine refuse the model's tool output rather than the request?
+///
+/// llama.cpp parses tool calls out of the model's text against the chat
+/// template's grammar, and answers 500 when what came back does not fit. That
+/// is a statement about this generation, not about the conversation: the same
+/// question asked without tools on offer succeeds. Matching on the message is
+/// unlovely, but the status alone cannot tell this apart from a real server
+/// fault, and treating every 500 as retryable would hide one.
+fn is_unusable_tool_output(error: &llama::Error) -> bool {
+    let llama::Error::Status { body, .. } = error else {
+        return false;
+    };
 
-    if question.contains("ship")
-        || question.contains("shipped")
-        || question.contains("merged")
-        || question.contains("release")
-    {
-        Some(tools::PullRequestState::Merged)
-    } else if question.contains("pull request")
-        || question.contains("pull requests")
-        || question.contains("pr ")
-        || question.ends_with("pr")
-        || question.contains("review")
-        || question.contains("waiting")
-    {
-        Some(tools::PullRequestState::Open)
-    } else {
-        None
+    let body = body.to_ascii_lowercase();
+
+    body.contains("does not match the expected") || body.contains("peg")
+}
+
+/// What a message cut on the way in is marked with.
+const MESSAGE_CUT: &str = "\n\n[This message was too long to send in full. The rest was cut.]";
+
+/// Cut a tool result down to `tokens` without breaking it.
+///
+/// Structurally, by dropping whole entries from the longest list it contains —
+/// **not** by cutting the text. Slicing JSON at a byte boundary leaves the model
+/// something like `{"number":41,"tit`, which it cannot read: measured, a
+/// question answered from a string-truncated list came back as the single word
+/// "None" while twenty-odd pull requests were sitting in the reply. A shorter
+/// valid list is worth having; half a malformed one is worse than nothing.
+///
+/// What was dropped is said in the result itself, so the model can tell the
+/// user it is looking at part of a list rather than all of it.
+fn trim_result(mut result: Value, tokens: u32) -> String {
+    if context::estimate_tokens(&result.to_string()) <= tokens {
+        return result.to_string();
     }
+
+    // The longest array is the one worth shortening; everything else in a tool
+    // result is a handful of scalars.
+    let Some(field) = longest_array(&result) else {
+        // Nothing to drop entries from, so the whole thing has to go rather
+        // than go out malformed.
+        return json!({ "error": "the result was too large to send to the model" }).to_string();
+    };
+
+    // Said before trimming, not after: the note is itself part of what has to
+    // fit, and adding it afterwards put the result back over the budget.
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "truncated".to_string(),
+            json!("There was more than would fit. Say so if you list these."),
+        );
+    }
+
+    while context::estimate_tokens(&result.to_string()) > tokens {
+        let left = result
+            .get_mut(&field)
+            .and_then(Value::as_array_mut)
+            .map(|items| {
+                items.pop();
+                items.len()
+            });
+
+        match left {
+            Some(0) | None => break,
+            Some(_) => {}
+        }
+    }
+
+    result.to_string()
+}
+
+/// The field holding the longest array, if there is one.
+fn longest_array(result: &Value) -> Option<String> {
+    result
+        .as_object()?
+        .iter()
+        .filter_map(|(name, value)| value.as_array().map(|items| (name.clone(), items.len())))
+        .max_by_key(|(_, length)| *length)
+        .map(|(name, _)| name)
+}
+
+/// Roughly what the tool catalogue costs.
+///
+/// It is sent as its own field and rendered into the prompt by the chat
+/// template, so it never appears in any message — and it is several hundred
+/// tokens on every single turn. A budget that ignores it is short by that much
+/// before it starts.
+fn catalog_cost(catalog: &[llama::Tool]) -> u32 {
+    serde_json::to_string(catalog)
+        .map(|rendered| context::estimate_tokens(&rendered))
+        .unwrap_or(0)
+}
+
+/// What the model is told when a lookup it attempted could not be read.
+///
+/// Deliberately conditional. A question that needed no lookup — most of the
+/// ones that reach here — should still just be answered.
+const NOTHING_LOOKED_UP: &str = "\
+A lookup you attempted could not be completed, so you have no results from it. \
+Answer only from what is already in this conversation. If the question needs \
+information you were not given, say plainly that you could not look it up. Do \
+not guess, and do not state that something is absent when you simply have no \
+data about it.";
+
+/// Roughly what a transcript costs to send.
+fn spent_on(messages: &[Message]) -> u32 {
+    messages
+        .iter()
+        .map(|message| context::estimate_tokens(&message.content))
+        .sum()
 }
 
 /// The event carrying an answer to the chat window as it is written.
@@ -84,6 +175,10 @@ pub enum Update {
     Restart,
     /// A tool is running, so the wait has a reason the user can see.
     Tool { name: String },
+    /// The engine was stopped to give its memory back and is being started
+    /// again. Reading a couple of gigabytes off disk takes seconds, and a
+    /// silent wait is the thing this design does not do.
+    Waking,
 }
 
 /// One [`Update`], tagged with the question it belongs to. The window may have
@@ -134,8 +229,8 @@ pub enum Error {
     Engine(#[from] llama::Error),
     #[error(transparent)]
     Storage(#[from] db::Error),
-    #[error("the model kept asking for tools without answering")]
-    TooManyToolRounds,
+    #[error(transparent)]
+    Starting(#[from] engine::Error),
 }
 
 impl serde::Serialize for Error {
@@ -151,10 +246,64 @@ impl serde::Serialize for Error {
 /// `present` is what the clock says right now, worked out fresh for every
 /// question so an app left open overnight does not still think it is yesterday.
 fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
-    let mut messages = Vec::with_capacity(turns.len() + 1);
-    messages.push(Message::system(format!("{SYSTEM_PROMPT}\n\n{present}")));
+    let mut budget = context::Budget::new();
+    let opening = format!("{SYSTEM_PROMPT}\n\n{present}");
 
-    for turn in turns.into_iter().filter(|turn| turn.role != Role::System) {
+    // The system prompt and the clock are not negotiable and are added first,
+    // both because they must survive any trimming and because llama.cpp reuses
+    // the cached prefix of a prompt it has seen before — stable parts first is
+    // what turns prefill into something paid once.
+    let _ = budget.add("system", &opening);
+
+    // Then as much of the transcript as fits, newest first. A conversation long
+    // enough to overrun the budget loses its oldest turns rather than having
+    // the engine silently drop whatever fell off the end of the window: what
+    // the user just asked is the part that has to survive.
+    let mut kept: Vec<Message> = Vec::new();
+
+    // Kept aside so it can be salvaged if nothing fits whole.
+    let newest = turns
+        .iter()
+        .rev()
+        .find(|turn| turn.role != Role::System)
+        .cloned();
+
+    for turn in turns
+        .into_iter()
+        .rev()
+        .filter(|turn| turn.role != Role::System)
+    {
+        if context::estimate_tokens(&turn.content) > budget.remaining() {
+            break;
+        }
+
+        let _ = budget.add("turn", &turn.content);
+        kept.push(Message::new(turn.role, turn.content));
+    }
+
+    // A single message larger than the whole budget would leave nothing at all
+    // here, and a model handed a system prompt and no question answers the only
+    // thing in front of it. Whatever else is dropped, the newest turn is not:
+    // it is cut down to what there is room for and marked as cut, so the model
+    // knows it is working from part of something rather than all of it.
+    if kept.is_empty() {
+        if let Some(turn) = newest {
+            kept.push(Message::new(
+                turn.role,
+                context::fit(&turn.content, budget.remaining(), MESSAGE_CUT),
+            ));
+        }
+    }
+
+    kept.reverse();
+
+    let mut messages = Vec::with_capacity(kept.len() + 1);
+    messages.push(Message::system(opening));
+
+    // Adjacent turns in the same role are merged: some chat templates require
+    // strict alternation, and a transcript that arrives with two user turns in
+    // a row is a renderer bug this should survive rather than pass on.
+    for turn in kept {
         if let Some(previous) = messages
             .last_mut()
             .filter(|message| message.role == turn.role)
@@ -164,7 +313,7 @@ fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
             }
             previous.content.push_str(&turn.content);
         } else {
-            messages.push(Message::new(turn.role, turn.content));
+            messages.push(turn);
         }
     }
 
@@ -188,50 +337,63 @@ where
 {
     let catalog = tools::catalog();
 
-    let native_tools = model != engine::MODEL_ALIAS || !weights::MODEL_NAME.starts_with("Gemma 3");
-    if !native_tools {
-        if let Some(question) = messages
-            .iter()
-            .rev()
-            .find(|message| message.role == Role::User)
-        {
-            if let Some(state) = github_state_for(&question.content) {
-                let result = tools::prefetch_github_prs(context, state).await;
-                on_update(Update::Tool {
-                    name: "fetch_github_prs".to_string(),
-                });
-
-                if let Some(question) = messages
-                    .iter_mut()
-                    .rev()
-                    .find(|message| message.role == Role::User)
-                {
-                    question.content.push_str(
-                        "\n\nUse this GitHub data to answer the question. Do not invent anything:\n",
-                    );
-                    question.content.push_str(&result.to_string());
-                }
-            }
-        }
-    }
+    // Whether the tool catalogue is still being offered. It stops being offered
+    // for the rest of this answer the first time the engine cannot parse what
+    // the model made of it — see the retry below.
+    let mut offer_tools = true;
 
     for _ in 0..MAX_TOOL_ROUNDS {
         let request = ChatRequest::new(model, messages.clone());
-        let request = if native_tools {
+        let request = if offer_tools {
             request.with_tools(catalog.clone())
         } else {
             request
         };
 
         let mut shown = false;
-        let reply = client
+        let outcome = client
             .chat_stream(&request, |token| {
                 shown = true;
                 on_update(Update::Delta {
                     text: token.to_string(),
                 });
             })
-            .await?;
+            .await;
+
+        let reply = match outcome {
+            Ok(reply) => reply,
+            // A smaller model offered tools will sometimes answer a question no
+            // tool fits by emitting several malformed calls at once, which the
+            // engine's parser rejects with a 500 — turning "tell me a joke"
+            // into a transport error. Asking again with no tools offered is the
+            // whole fix: the model then simply answers, which is what it was
+            // going to do anyway.
+            Err(error) if offer_tools && is_unusable_tool_output(&error) => {
+                offer_tools = false;
+
+                // Dropping the tools is not free, and leaving it there was the
+                // worse half of this fix. Measured: asked what pull requests
+                // were waiting, the model fumbled the call, the retry went out
+                // with nothing, and it answered "there are no pull requests
+                // waiting" — with fifteen of them sitting in the reply it had
+                // just failed to fetch. A visible error became an invisible
+                // wrong answer.
+                //
+                // So the retry is told what it is missing. Conditional, because
+                // most questions that reach this point needed no lookup at all
+                // and should simply be answered.
+                messages.push(Message::system(NOTHING_LOOKED_UP));
+
+                // Anything already on screen was part of the attempt that is
+                // being thrown away.
+                if shown {
+                    on_update(Update::Restart);
+                }
+
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         if reply.tool_calls.is_empty() {
             return Ok(reply.content);
@@ -255,11 +417,43 @@ where
 
             let result = tools::dispatch(context, call).await;
 
-            messages.push(Message::tool_result(call, result.to_string()));
+            // Tool output is prompt, and it is the least bounded thing that
+            // becomes prompt: twenty-five pull requests of JSON took one
+            // measured question to 2,504 tokens on a 4,096 window, and two more
+            // rounds would have overflowed the context entirely. So a result is
+            // charged against the same ceiling as everything else, and cut to
+            // what is left rather than appended whole.
+            let spent = spent_on(&messages) + catalog_cost(&catalog);
+            let room = context::DEFAULT_CEILING.saturating_sub(spent);
+
+            messages.push(Message::tool_result(call, trim_result(result, room)));
         }
     }
 
-    Err(Error::TooManyToolRounds)
+    // The rounds are spent and the model is still reaching for tools. Ask once
+    // more with none on offer, so it has to answer.
+    //
+    // Better than reporting a failure, and not a worse answer: every tool
+    // result gathered along the way is still in the transcript, so the model
+    // answers from what it found rather than from nothing. A smaller model
+    // offered a catalogue will reach for it even when no tool fits the
+    // question — measured on Llama 3.2 1B, which answered "write a haiku"
+    // by calling the pull-request tool until the rounds ran out.
+    let closing = ChatRequest::new(model, messages);
+
+    let mut shown = false;
+    let reply = client
+        .chat_stream(&closing, |token| {
+            shown = true;
+            on_update(Update::Delta {
+                text: token.to_string(),
+            });
+        })
+        .await?;
+
+    let _ = shown;
+
+    Ok(reply.content)
 }
 
 /// Ask the local model to answer the conversation so far.
@@ -272,6 +466,7 @@ pub async fn ask_agent<R: Runtime>(
     app: AppHandle<R>,
     client: State<'_, Client>,
     github: State<'_, github::Client>,
+    microsoft: State<'_, microsoft::Client>,
     attention: State<'_, Attention>,
     messages: Vec<Turn>,
     model: Option<String>,
@@ -281,10 +476,29 @@ pub async fn ask_agent<R: Runtime>(
     let context = tools::Context {
         pool: db::pool(&app).await?,
         github: github.inner().clone(),
+        microsoft: microsoft.inner().clone(),
     };
 
     // The daemon shares this engine. Hold the door while someone is waiting.
+    // Taken before the engine is woken, so the idle supervisor cannot stop it
+    // again between the wake and the question.
     let _waiting = attention.begin();
+
+    // The engine gives its memory back when nothing is using it, so it may not
+    // be running. Starting it is a few seconds of reading weights off disk, and
+    // the window is told that is what the wait is.
+    let engine = app.state::<engine::Engine>();
+    if !engine.is_running() {
+        let _ = app.emit(
+            STREAM_EVENT,
+            StreamEvent {
+                request_id: request_id.clone(),
+                update: Update::Waking,
+            },
+        );
+    }
+
+    engine.start_and_wait(client.inner()).await?;
 
     let conversation = conversation(messages, &clock::present());
 
@@ -385,19 +599,41 @@ mod tests {
     }
 
     #[test]
-    fn routes_shipping_questions_to_merged_pull_requests() {
-        assert_eq!(
-            github_state_for("What did I ship this week?"),
-            Some(tools::PullRequestState::Merged)
+    fn a_question_too_big_for_the_budget_still_reaches_the_model() {
+        // Paste a long document and the whole transcript used to fall outside
+        // the budget, leaving the model a system prompt and nothing to answer.
+        let huge = format!("Summarise this for me:\n\n{}", "x".repeat(200_000));
+        let messages = conversation(vec![turn(Role::User, &huge)], PRESENT);
+
+        let question = messages
+            .iter()
+            .find(|message| message.role == Role::User)
+            .expect("the model must be given something to answer");
+
+        assert!(
+            question.content.starts_with("Summarise this for me:"),
+            "the beginning is where the ask lives, so it is the part kept"
+        );
+        assert!(
+            question.content.contains("too long to send in full"),
+            "a model reading part of a document must be told it is part"
+        );
+        assert!(
+            context::estimate_tokens(&question.content) <= context::DEFAULT_CEILING,
+            "the salvaged turn must still fit the budget"
         );
     }
 
     #[test]
-    fn routes_review_questions_to_open_pull_requests() {
-        assert_eq!(
-            github_state_for("What is waiting on me?"),
-            Some(tools::PullRequestState::Open)
-        );
+    fn a_turn_that_fits_is_not_cut_or_marked() {
+        let messages = conversation(vec![turn(Role::User, "a short question")], PRESENT);
+
+        let question = messages
+            .iter()
+            .find(|message| message.role == Role::User)
+            .expect("should be there");
+
+        assert_eq!(question.content, "a short question");
     }
 
     #[test]
@@ -528,6 +764,7 @@ mod orchestration_tests {
         tools::Context {
             pool,
             github: github::Client::against(host).expect("should build a client"),
+            microsoft: microsoft::Client::against(host).expect("should build a client"),
         }
     }
 
@@ -566,8 +803,10 @@ mod orchestration_tests {
 
     const ANSWER: &str = "One pull request is waiting on review.";
 
-    /// A tool-capable model name used by the native tool-calling fixtures.
-    const MODEL: &str = "test-tool-model";
+    /// The model this suite pretends the engine is serving — the same alias the
+    /// app runs under, so the suite exercises the shipped configuration rather
+    /// than one no installation uses.
+    const MODEL: &str = DEFAULT_MODEL;
 
     fn body_of(request: &str) -> Value {
         let (_, body) = split(request);
@@ -640,6 +879,243 @@ mod orchestration_tests {
             json!("fetch_github_prs")
         );
         assert_eq!(sent["stream"], json!(true), "answers should stream");
+    }
+
+    /// The 500 a smaller model provokes by answering a question no tool fits.
+    ///
+    /// Measured against Llama 3.2 1B on the Light tier: offered the catalogue,
+    /// it answers "tell me a joke" with several concatenated call objects, and
+    /// the engine's parser rejects the lot. Four of eight ordinary questions
+    /// failed this way before the retry below existed.
+    const UNPARSABLE_TOOL_OUTPUT: &str = r#"{"error":{"code":500,"message":"The model produced output that does not match the expected peg-native format","type":"server_error"}}"#;
+
+    #[tokio::test]
+    async fn asks_again_without_tools_when_the_engine_cannot_parse_the_models_tool_output() {
+        let (base_url, server) = serve(vec![
+            (
+                "HTTP/1.1 500 Internal Server Error",
+                UNPARSABLE_TOOL_OUTPUT.to_string(),
+            ),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("http://127.0.0.1:1").await;
+
+        let answer = respond(&client, &context, MODEL, asked("Tell me a joke"), |_| {})
+            .await
+            .expect("a question no tool fits should still be answered");
+
+        assert_eq!(answer, ANSWER);
+
+        let requests = server.await.expect("the stub should finish");
+        assert_eq!(requests.len(), 2, "it should have asked exactly twice");
+
+        // The first attempt offers the catalogue; the second offers nothing, so
+        // the model simply answers instead of trying to call something.
+        assert!(
+            body_of(&requests[0])["tools"].is_array(),
+            "the first attempt should offer tools"
+        );
+        assert!(
+            body_of(&requests[1]).get("tools").is_none(),
+            "the retry must not offer tools, or it will fail the same way"
+        );
+
+        // And it is told that it is answering without the lookup it tried to
+        // make. Without this the model fills the gap: measured, it reported
+        // "there are no pull requests waiting" while fifteen sat in the reply
+        // it had just failed to read.
+        let retry: String = body_of(&requests[1])["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .filter_map(|message| message["content"].as_str())
+            .collect();
+
+        assert!(
+            retry.contains("could not be completed"),
+            "the retry must know it is missing a lookup: {retry}"
+        );
+        assert!(
+            retry.contains("Do not guess"),
+            "and must be told not to fill the gap"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_genuine_server_fault_is_reported_rather_than_retried() {
+        // Only the parser's complaint is retryable. Treating every 500 as a
+        // reason to drop the tools would hide a real fault and answer worse.
+        let (base_url, server) = serve(vec![(
+            "HTTP/1.1 500 Internal Server Error",
+            r#"{"error":{"code":500,"message":"out of memory","type":"server_error"}}"#,
+        )]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("http://127.0.0.1:1").await;
+
+        let error = respond(&client, &context, MODEL, asked("Hello"), |_| {})
+            .await
+            .expect_err("a real fault should surface");
+
+        assert!(error.to_string().contains("out of memory"), "{error}");
+
+        let requests = server.await.expect("the stub should finish");
+        assert_eq!(requests.len(), 1, "it should not have asked twice");
+    }
+
+    #[tokio::test]
+    async fn takes_back_what_was_shown_before_dropping_the_tools() {
+        // The rejected attempt may have streamed some text first. It is not
+        // part of the answer that follows, so the window is told to discard it.
+        let (base_url, server) = serve(vec![
+            (
+                "HTTP/1.1 500 Internal Server Error",
+                UNPARSABLE_TOOL_OUTPUT.to_string(),
+            ),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("http://127.0.0.1:1").await;
+
+        let mut updates = Vec::new();
+        respond(
+            &client,
+            &context,
+            MODEL,
+            asked("Tell me a joke"),
+            |update| {
+                updates.push(update);
+            },
+        )
+        .await
+        .expect("should answer");
+
+        server.await.expect("the stub should finish");
+
+        // Nothing streamed before the 500 here, so there is nothing to take
+        // back — what matters is that the answer arrived intact.
+        let written: String = updates
+            .iter()
+            .filter_map(|update| match update {
+                Update::Delta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(written, ANSWER);
+    }
+
+    #[test]
+    fn a_trimmed_tool_result_is_still_valid_json() {
+        // The failure this replaced: cutting the text at a byte boundary left
+        // the model something like `{"number":41,"tit`, which it could not
+        // read. Asked what needed review with twenty-odd pull requests in the
+        // reply, it answered the single word "None".
+        let items: Vec<Value> = (0..40)
+            .map(|n| json!({ "number": n, "title": "a fairly long pull request title here" }))
+            .collect();
+        let result = json!({ "pull_requests": items, "count": 40 });
+
+        let trimmed = trim_result(result, 200);
+
+        let parsed: Value =
+            serde_json::from_str(&trimmed).expect("a trimmed result must still parse");
+
+        let left = parsed["pull_requests"].as_array().expect("still a list");
+        assert!(!left.is_empty(), "something should survive");
+        assert!(left.len() < 40, "it should actually have dropped some");
+
+        // Every surviving entry is whole, not half of one.
+        for item in left {
+            assert!(item["number"].is_number(), "{item}");
+            assert!(item["title"].is_string(), "{item}");
+        }
+
+        assert!(
+            parsed.get("truncated").is_some(),
+            "the model has to know it is seeing part of a list"
+        );
+        assert!(context::estimate_tokens(&trimmed) <= 200);
+    }
+
+    #[test]
+    fn a_result_that_fits_is_passed_through_untouched() {
+        let result = json!({ "pull_requests": [{ "number": 1 }], "count": 1 });
+        let same = result.clone();
+
+        assert_eq!(trim_result(result, 2_000), same.to_string());
+    }
+
+    #[test]
+    fn a_result_with_no_list_to_shorten_is_refused_rather_than_mangled() {
+        let result = json!({ "error": "x".repeat(10_000) });
+        let trimmed = trim_result(result, 50);
+
+        let parsed: Value = serde_json::from_str(&trimmed).expect("must still parse");
+        assert!(parsed["error"].is_string());
+    }
+
+    #[test]
+    fn the_tool_catalogue_is_counted_against_the_budget() {
+        // It never appears in a message — llama.cpp renders it into the prompt
+        // from its own field — so a budget reading only messages is short by
+        // several hundred tokens on every turn.
+        let cost = catalog_cost(&tools::catalog());
+
+        assert!(cost > 100, "the catalogue is not free: got {cost}");
+        assert!(
+            cost < context::DEFAULT_CEILING,
+            "nor is it the whole budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_large_tool_result_is_cut_to_the_budget_rather_than_appended_whole() {
+        // Measured in the product before this existed: a question answered from
+        // twenty-five pull requests took the second round trip to 2,504 tokens
+        // on a 4,096 window, and two more rounds would have overflowed the
+        // context. Tool output is prompt, and it was the only prompt nothing
+        // charged for.
+        let flood = format!(
+            r#"{{"total_count":1,"items":[{{"number":1,"title":"{}","repository_url":"https://api.github.com/repos/a/b","state":"open","draft":false,"html_url":"https://x","updated_at":"2026-08-29T00:00:00Z"}}]}}"#,
+            "long title ".repeat(4000)
+        );
+
+        let (base_url, server) = serve(vec![
+            ("HTTP/1.1 200 OK", asks_for_prs()),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", flood.as_str())]);
+        let context = context_connected_to(&github_host).await;
+
+        respond(&client, &context, MODEL, asked("What is waiting?"), |_| {})
+            .await
+            .expect("should still answer");
+
+        let requests = server.await.expect("the stub should finish");
+        github_server.await.expect("GitHub stub should finish");
+
+        // The second request carries the tool result. It must fit the budget.
+        let sent = body_of(&requests[1]);
+        let whole: String = sent["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .filter_map(|message| message["content"].as_str())
+            .collect();
+
+        assert!(
+            context::estimate_tokens(&whole) <= context::DEFAULT_CEILING,
+            "the prompt reached {} tokens, over the {} ceiling",
+            context::estimate_tokens(&whole),
+            context::DEFAULT_CEILING
+        );
+        assert!(
+            whole.contains("truncated"),
+            "a cut result must say it was cut, or the model answers as though it read all of it"
+        );
     }
 
     #[tokio::test]
@@ -841,8 +1317,15 @@ mod orchestration_tests {
     }
 
     #[tokio::test]
-    async fn gives_up_when_the_model_will_not_stop_calling_tools() {
-        let replies = vec![("HTTP/1.1 200 OK", asks_for_prs()); MAX_TOOL_ROUNDS];
+    async fn answers_anyway_when_the_model_will_not_stop_calling_tools() {
+        // The rounds are still bounded; what changed is what happens at the
+        // bound. A model that keeps reaching for tools is asked once more with
+        // none on offer, so the user gets the answer rather than an apology —
+        // and it is informed, because every tool result gathered on the way is
+        // still in the transcript.
+        let mut replies = vec![("HTTP/1.1 200 OK", asks_for_prs()); MAX_TOOL_ROUNDS];
+        replies.push(("HTTP/1.1 200 OK", answers()));
+
         let (base_url, server) = serve(replies);
         let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
 
@@ -850,14 +1333,23 @@ mod orchestration_tests {
         let (github_host, github_server) = serve(github_replies);
         let context = context_connected_to(&github_host).await;
 
-        let error = respond(&client, &context, MODEL, asked("Loop forever"), |_| {})
+        let answer = respond(&client, &context, MODEL, asked("Loop forever"), |_| {})
             .await
-            .expect_err("the loop should be bounded");
+            .expect("the bound should produce an answer, not a failure");
 
-        assert!(matches!(error, Error::TooManyToolRounds), "got {error:?}");
+        assert_eq!(answer, ANSWER);
 
         let requests = server.await.expect("the stub should finish");
-        assert_eq!(requests.len(), MAX_TOOL_ROUNDS);
+        assert_eq!(
+            requests.len(),
+            MAX_TOOL_ROUNDS + 1,
+            "the rounds, then one closing ask"
+        );
+        assert!(
+            body_of(&requests[MAX_TOOL_ROUNDS]).get("tools").is_none(),
+            "the closing ask must offer no tools, or it can loop again"
+        );
+
         github_server.await.expect("GitHub stub should finish");
     }
 }

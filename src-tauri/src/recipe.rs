@@ -1,0 +1,844 @@
+//! Deterministic work, then one sentence from the model.
+//!
+//! Small models are poor at planning and good at writing. So a recipe runs in
+//! three phases and the model is only present for the last of them:
+//!
+//! 1. **Gather** — plain Rust. Read the calendar, the pull requests, the work
+//!    log, the corpus. No model, no planning, no tool calls, nothing that can
+//!    decide to do something else.
+//! 2. **Assemble** — build one prompt, through a [`crate::context::Budget`] that
+//!    refuses to go over rather than letting the engine truncate.
+//! 3. **Render** — exactly one call, no tools. If a recipe needs two calls it is
+//!    two recipes.
+//!
+//! That third rule is the one worth defending. An agent loop asked to compose a
+//! brief will call a tool, narrate, call another, and arrive somewhere unrepeatable
+//! forty seconds later. The same brief assembled in Rust and written once is the
+//! same brief every morning, and the only part that varies is the prose.
+//!
+//! There is one recipe. The shape above is documented rather than abstracted
+//! into a trait, for the reason [`crate::oauth::Provider`] gives about flows: an
+//! abstraction drawn from one example is a guess. Meeting prep is the second,
+//! and that is when the shared parts will be obvious rather than imagined.
+
+use serde::Serialize;
+use sqlx::SqlitePool;
+
+use crate::context::{self, Budget};
+use crate::corpus::Corpus;
+use crate::llama::{self, ChatRequest, Message, Options};
+use crate::microsoft;
+use crate::session::{GithubSession, OutlookSession};
+use crate::{clock, corpus, github, integrations, work_log};
+
+/// How long a brief may run to. Long enough for a handful of bullets and their
+/// context, short enough that a slow machine finishes it.
+const BRIEF_TOKENS: u32 = 500;
+
+/// How many of anything is gathered for one brief.
+const PER_SOURCE: u8 = 10;
+
+/// Where the corpus keeps files that are loaded whatever the question.
+///
+/// The blueprint's "knowledge agents", and the reason that folder is separate:
+/// everything under it is context Chief should have in hand before it is asked,
+/// rather than something to go and find.
+const AGENTS: &str = "context/agents/";
+
+/// What a recipe needs. Passed explicitly rather than reached for through the
+/// Tauri app, so a whole brief runs in a test against an in-memory database and
+/// stub servers — the pattern `daemon::run_once` already establishes.
+pub struct Context {
+    pub pool: SqlitePool,
+    pub github: github::Client,
+    pub microsoft: microsoft::Client,
+    pub engine: llama::Client,
+    pub corpus: Corpus,
+}
+
+/// What can go wrong making a brief.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("nothing is connected yet, so there is nothing to brief you on")]
+    NothingToSay,
+    #[error(
+        "today's brief has been edited since Chief wrote it, so it has been left alone. \
+         Delete or rename {path} to have a fresh one written."
+    )]
+    EditedByHand { path: String },
+    #[error(transparent)]
+    Budget(#[from] context::Error),
+    #[error(transparent)]
+    Engine(#[from] llama::Error),
+    #[error(transparent)]
+    Corpus(#[from] corpus::Error),
+    #[error(transparent)]
+    Storage(#[from] crate::db::Error),
+}
+
+impl serde::Serialize for Error {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+/// A brief, once it has been written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Brief {
+    /// The day it covers, `YYYY-MM-DD`.
+    pub date: String,
+    /// Where it was written in the corpus.
+    pub path: String,
+    /// The brief itself.
+    pub markdown: String,
+    /// Which sources had anything to say, for the screen and for diagnosis.
+    pub sources: Vec<String>,
+}
+
+/// Everything phase one found, before a model has seen any of it.
+#[derive(Debug, Default)]
+struct Gathered {
+    agenda: Vec<String>,
+    waiting: Vec<String>,
+    shipped: Vec<String>,
+    inbox: Vec<String>,
+    background: Vec<(String, String)>,
+}
+
+impl Gathered {
+    /// Which sources had anything at all.
+    fn sources(&self) -> Vec<String> {
+        let mut named = Vec::new();
+
+        for (name, empty) in [
+            ("calendar", self.agenda.is_empty()),
+            ("pull requests", self.waiting.is_empty()),
+            ("work log", self.shipped.is_empty()),
+            ("inbox", self.inbox.is_empty()),
+            ("corpus", self.background.is_empty()),
+        ] {
+            if !empty {
+                named.push(name.to_string());
+            }
+        }
+
+        named
+    }
+
+    fn is_empty(&self) -> bool {
+        self.sources().is_empty()
+    }
+}
+
+/// Phase one: read everything, decide nothing.
+///
+/// Every source is optional and a source that fails is skipped rather than
+/// fatal — a brief with a calendar and no mail is worth having, and an Outlook
+/// token that expired overnight should not cost the user their morning.
+async fn gather(context: &Context) -> Gathered {
+    let mut found = Gathered::default();
+
+    let (from, to) = today();
+
+    for account in outlook_accounts(context).await {
+        let session = OutlookSession::new(&context.pool, &context.microsoft, account);
+
+        if let Ok(events) = session.events(&from, &to, PER_SOURCE).await {
+            found.agenda.extend(events.iter().map(describe_event));
+        }
+
+        if let Ok(messages) = session.messages(PER_SOURCE).await {
+            found.inbox.extend(
+                messages
+                    .iter()
+                    .filter(|one| one.unread)
+                    .map(describe_message),
+            );
+        }
+    }
+
+    for account in github_accounts(context).await {
+        let session = GithubSession::new(&context.pool, &context.github, account);
+
+        if let Ok(open) = session.pull_requests(github::State::Open, PER_SOURCE).await {
+            found.waiting.extend(open.iter().map(describe_pull_request));
+        }
+    }
+
+    if let Ok(entries) = work_log::fetch(&context.pool, Some(i64::from(PER_SOURCE))).await {
+        found.shipped.extend(entries.iter().filter_map(|entry| {
+            entry
+                .summary
+                .clone()
+                .or_else(|| Some(entry.content.clone()))
+        }));
+    }
+
+    found.background = background(context).await;
+
+    found
+}
+
+/// The always-loaded corpus files, newest first.
+///
+/// Read in full and slimmed, because these are short files written for exactly
+/// this purpose. What keeps them from overrunning anything is the budget in
+/// phase two, not a limit here.
+async fn background(context: &Context) -> Vec<(String, String)> {
+    let Ok(entries) = corpus::indexed(&context.pool).await else {
+        return Vec::new();
+    };
+
+    let mut loaded = Vec::new();
+
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.path.starts_with(AGENTS))
+    {
+        if let Ok(text) = context.corpus.read(&entry.path).await {
+            let slimmed = context::slim(&text);
+
+            if !slimmed.is_empty() {
+                loaded.push((entry.path.clone(), slimmed));
+            }
+        }
+    }
+
+    loaded
+}
+
+/// Phase two: one prompt, and never more than the budget allows.
+///
+/// The order is load-bearing twice over. The instructions and the background go
+/// first because they change least, and llama.cpp reuses the cached prefix of a
+/// prompt it has already seen — a brief regenerated an hour later pays prefill
+/// only on what actually moved. And when the budget runs out it runs out at the
+/// bottom, which is where the least important material is.
+fn assemble(found: &Gathered, present: &str) -> Result<String, Error> {
+    let mut budget = Budget::new();
+    let mut prompt = String::new();
+
+    let mut push = |budget: &mut Budget, name: &str, block: &str| -> bool {
+        if budget.add(name, block).is_err() {
+            return false;
+        }
+        prompt.push_str(block);
+        prompt.push_str("\n\n");
+        true
+    };
+
+    push(&mut budget, "instructions", INSTRUCTIONS);
+    push(&mut budget, "clock", present);
+
+    for (path, text) in &found.background {
+        // A background file that does not fit is skipped rather than ending the
+        // brief: the calendar matters more than the writing-style notes.
+        push(&mut budget, path, &format!("## {path}\n{text}"));
+    }
+
+    for (heading, items) in [
+        ("Today's meetings", &found.agenda),
+        ("Pull requests waiting on you", &found.waiting),
+        ("Unread mail", &found.inbox),
+        ("Recently logged work", &found.shipped),
+    ] {
+        if items.is_empty() {
+            continue;
+        }
+
+        let block = format!(
+            "## {heading}\n{}",
+            items
+                .iter()
+                .map(|item| format!("- {item}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        push(&mut budget, heading, &block);
+    }
+
+    Ok(prompt.trim_end().to_string())
+}
+
+/// What the model is asked to do with all of it.
+///
+/// Rigidly shaped on purpose. A 3B model given "write a brief" writes an essay;
+/// given a fixed number of bullets and a named order it writes a brief.
+const INSTRUCTIONS: &str = "\
+You are Chief, an AI chief of staff. Write the user's brief for today from the \
+material below, and from nothing else.
+
+Rules:
+- At most five bullets. Fewer if there is less to say.
+- Lead with whatever is time-bound: a meeting happens whether or not it is read about.
+- Name people and pull requests exactly as they appear below.
+- State only what the material says. Do not guess, and do not invent numbers.
+- No preamble, no sign-off, no headings. Bullets only.";
+
+/// Phase three: exactly one call, no tools.
+async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
+    let request = ChatRequest::new(crate::agent::DEFAULT_MODEL, vec![Message::user(prompt)])
+        .with_options(Options::new().with_answer_length(BRIEF_TOKENS));
+
+    let reply = engine.chat(&request).await?;
+
+    Ok(reply.content.trim().to_string())
+}
+
+/// Make today's brief and write it into the corpus.
+///
+/// Regenerating replaces: a brief is what today looks like now, not a history
+/// of what it looked like at each point during it.
+pub async fn daily_brief(context: &Context) -> Result<Brief, Error> {
+    let found = gather(context).await;
+
+    // Nothing connected and nothing logged is not a brief with no bullets, it
+    // is a machine that has not been set up. Saying so beats asking a model to
+    // write about an empty page.
+    if found.is_empty() {
+        return Err(Error::NothingToSay);
+    }
+
+    let prompt = assemble(&found, &clock::present())?;
+    let markdown = render(&context.engine, &prompt).await?;
+
+    let date = today_date();
+    let path = format!("briefs/{date}.md");
+
+    // A brief the user has touched is theirs. The corpus is offered as a folder
+    // they can edit, and regenerating used to overwrite it without a word —
+    // measured, a hand-written section simply vanished. Checked here rather
+    // than in the corpus, because only a brief knows when Chief last wrote it.
+    if edited_by_hand(context, &date, &path).await {
+        return Err(Error::EditedByHand { path });
+    }
+
+    context.corpus.write(&path, &markdown).await?;
+    record(&context.pool, &date, &found.sources()).await?;
+
+    Ok(Brief {
+        date,
+        path,
+        markdown,
+        sources: found.sources(),
+    })
+}
+
+/// Has the file changed since Chief last wrote it?
+///
+/// Compared against the moment recorded in `briefs`, with a couple of seconds
+/// of slack: writing the file and recording the row are two operations, and
+/// their timestamps differ by a little even when nothing has touched it since.
+async fn edited_by_hand(context: &Context, date: &str, path: &str) -> bool {
+    let Ok(Some(written)) = written_at(&context.pool, date).await else {
+        // Never written, so nothing of the user's to lose.
+        return false;
+    };
+
+    let Some(modified) = context.corpus.modified_at(path).await else {
+        return false;
+    };
+
+    let (Ok(written), Ok(modified)) = (
+        chrono::DateTime::parse_from_rfc3339(&written),
+        chrono::DateTime::parse_from_rfc3339(&modified),
+    ) else {
+        // Unreadable timestamps are not evidence of an edit, and refusing to
+        // write on that basis would stop briefs entirely.
+        return false;
+    };
+
+    modified - written > chrono::Duration::seconds(2)
+}
+
+/// Note that a brief was written, and from what.
+async fn record(pool: &SqlitePool, date: &str, sources: &[String]) -> Result<(), Error> {
+    sqlx::query(
+        "INSERT INTO briefs (date, generated_at, sources)
+         VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?2)
+         ON CONFLICT (date) DO UPDATE
+            SET generated_at = excluded.generated_at, sources = excluded.sources",
+    )
+    .bind(date)
+    .bind(sources.join(", "))
+    .execute(pool)
+    .await
+    .map_err(|error| Error::Storage(crate::db::Error::Sqlx(error)))?;
+
+    Ok(())
+}
+
+/// When today's brief was last written, if it has been.
+pub async fn written_at(pool: &SqlitePool, date: &str) -> Result<Option<String>, crate::db::Error> {
+    sqlx::query_scalar("SELECT generated_at FROM briefs WHERE date = ?1")
+        .bind(date)
+        .fetch_optional(pool)
+        .await
+        .map_err(crate::db::Error::Sqlx)
+}
+
+/// Today, as the date a brief is filed under.
+fn today_date() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Midnight to midnight, in this machine's own time zone.
+fn today() -> (String, String) {
+    let midnight = chrono::Local::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or_default();
+
+    (
+        midnight.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        (midnight + chrono::Duration::days(1))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string(),
+    )
+}
+
+async fn github_accounts(context: &Context) -> Vec<i64> {
+    integrations::accounts(&context.pool, integrations::GITHUB)
+        .await
+        .map(|accounts| accounts.iter().map(|account| account.id).collect())
+        .unwrap_or_default()
+}
+
+async fn outlook_accounts(context: &Context) -> Vec<i64> {
+    integrations::accounts(&context.pool, integrations::MICROSOFT)
+        .await
+        .map(|accounts| accounts.iter().map(|account| account.id).collect())
+        .unwrap_or_default()
+}
+
+fn describe_event(event: &microsoft::Event) -> String {
+    let when = event
+        .start
+        .split('T')
+        .nth(1)
+        .unwrap_or("")
+        .get(0..5)
+        .unwrap_or("");
+    let who = if event.attendees.is_empty() {
+        String::new()
+    } else {
+        format!(" with {}", event.attendees.join(", "))
+    };
+
+    format!("{when} {}{who}", event.subject).trim().to_string()
+}
+
+fn describe_message(message: &microsoft::MailMessage) -> String {
+    let from = message.from.as_deref().unwrap_or("someone");
+
+    format!("{from}: {}", message.subject)
+}
+
+fn describe_pull_request(pull_request: &github::PullRequest) -> String {
+    format!(
+        "{} #{} — {}",
+        pull_request.repository, pull_request.number, pull_request.title
+    )
+}
+
+/// Assemble a recipe context from the running app.
+pub async fn context<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Context, Error> {
+    use tauri::Manager;
+
+    let pool = crate::db::pool(app).await?;
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|error| corpus::Error::Index(error.to_string()))?;
+
+    Ok(Context {
+        corpus: Corpus::at(corpus::root(&pool, &home).await?),
+        pool,
+        github: app.state::<github::Client>().inner().clone(),
+        microsoft: app.state::<microsoft::Client>().inner().clone(),
+        engine: app.state::<llama::Client>().inner().clone(),
+    })
+}
+
+/// Write today's brief now.
+///
+/// Wakes the engine first, and holds the door while it runs: a brief takes a
+/// model call, and the idle supervisor must not stop the engine underneath it.
+#[tauri::command]
+pub async fn generate_brief<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    engine: tauri::State<'_, crate::engine::Engine>,
+    client: tauri::State<'_, llama::Client>,
+    attention: tauri::State<'_, crate::agent::Attention>,
+) -> Result<Brief, Error> {
+    let _waiting = attention.begin();
+
+    engine
+        .start_and_wait(client.inner())
+        .await
+        .map_err(|error| Error::Engine(llama::Error::Transport(error.to_string())))?;
+
+    let context = context(&app).await?;
+
+    daily_brief(&context).await
+}
+
+/// Today's brief, if one has been written.
+///
+/// Reads the corpus rather than regenerating: opening the screen should not
+/// cost a model call, and a brief the user has edited by hand is the one they
+/// should see.
+#[tauri::command]
+pub async fn todays_brief<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Option<Brief>, Error> {
+    let context = context(&app).await?;
+    let date = today_date();
+    let path = format!("briefs/{date}.md");
+
+    match context.corpus.read(&path).await {
+        Ok(markdown) => Ok(Some(Brief {
+            date,
+            path,
+            markdown,
+            sources: Vec::new(),
+        })),
+        Err(corpus::Error::NoSuchFile(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PRESENT: &str = "The current date and time is 08:00 on Friday 28 August 2026.";
+
+    fn gathered() -> Gathered {
+        Gathered {
+            agenda: vec!["10:00 1:1 with Sam with Sam Patel".to_string()],
+            waiting: vec!["scottmallinson/chief.ai #12 — Add the corpus".to_string()],
+            shipped: vec!["Shipped the loopback listener".to_string()],
+            inbox: vec!["Dana Reid: Re: the migration".to_string()],
+            background: vec![(
+                "context/agents/org/team_structure.md".to_string(),
+                "# Team\nSam owns auth.".to_string(),
+            )],
+        }
+    }
+
+    #[test]
+    fn the_prompt_carries_every_source_that_had_something() {
+        let prompt = assemble(&gathered(), PRESENT).expect("should assemble");
+
+        assert!(prompt.contains("1:1 with Sam"), "{prompt}");
+        assert!(prompt.contains("#12"), "{prompt}");
+        assert!(prompt.contains("Dana Reid"), "{prompt}");
+        assert!(prompt.contains("Shipped the loopback listener"), "{prompt}");
+        assert!(prompt.contains("Sam owns auth."), "{prompt}");
+    }
+
+    #[test]
+    fn a_source_with_nothing_in_it_takes_no_room_at_all() {
+        let mut sparse = gathered();
+        sparse.inbox.clear();
+        sparse.waiting.clear();
+
+        let prompt = assemble(&sparse, PRESENT).expect("should assemble");
+
+        assert!(!prompt.contains("Unread mail"), "{prompt}");
+        assert!(!prompt.contains("Pull requests waiting"), "{prompt}");
+    }
+
+    #[test]
+    fn the_stable_material_comes_first_so_the_prefix_can_be_reused() {
+        // llama.cpp reuses the cached prefix of a prompt it has seen. The
+        // instructions never change and the agenda changes hourly, so this
+        // order is what makes a regenerated brief cheap.
+        let prompt = assemble(&gathered(), PRESENT).expect("should assemble");
+
+        let instructions = prompt.find("You are Chief").expect("instructions");
+        let background = prompt.find("Sam owns auth").expect("background");
+        let agenda = prompt.find("Today's meetings").expect("agenda");
+
+        assert!(instructions < background, "{prompt}");
+        assert!(background < agenda, "{prompt}");
+    }
+
+    #[test]
+    fn the_prompt_stays_inside_the_budget_however_much_was_gathered() {
+        let mut flood = gathered();
+        flood.agenda = (0..500).map(|n| format!("a meeting number {n}")).collect();
+        flood.inbox = (0..500).map(|n| format!("a message number {n}")).collect();
+
+        let prompt = assemble(&flood, PRESENT).expect("an over-full gather still assembles");
+
+        assert!(
+            context::estimate_tokens(&prompt) <= context::DEFAULT_CEILING,
+            "the prompt is {} tokens, over the {} ceiling",
+            context::estimate_tokens(&prompt),
+            context::DEFAULT_CEILING
+        );
+
+        // And it kept the part that matters rather than the part that arrived
+        // first alphabetically.
+        assert!(
+            prompt.contains("You are Chief"),
+            "instructions must survive"
+        );
+    }
+
+    #[test]
+    fn the_instructions_pin_the_shape_a_small_model_needs() {
+        // A 3B model given "write a brief" writes an essay.
+        assert!(INSTRUCTIONS.contains("At most five bullets"));
+        assert!(INSTRUCTIONS.contains("Do not guess"));
+    }
+
+    #[test]
+    fn sources_name_only_what_had_something_to_say() {
+        assert_eq!(
+            gathered().sources(),
+            ["calendar", "pull requests", "work log", "inbox", "corpus"]
+        );
+
+        let empty = Gathered::default();
+        assert!(empty.sources().is_empty());
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn a_meeting_reads_as_a_time_a_subject_and_who_is_in_it() {
+        let event = microsoft::Event {
+            subject: "1:1 with Sam".to_string(),
+            start: "2026-08-28T10:00:00.0000000".to_string(),
+            end: "2026-08-28T10:30:00.0000000".to_string(),
+            organiser: Some("Sam Patel".to_string()),
+            attendees: vec!["Sam Patel".to_string()],
+            online: true,
+        };
+
+        assert_eq!(describe_event(&event), "10:00 1:1 with Sam with Sam Patel");
+    }
+
+    // ---- end to end, against stub servers ----
+
+    use crate::db::test_support::migrated_pool;
+    use crate::llama::test_support::serve;
+
+    const ANSWER: &str = r#"{"choices":[{"message":{"role":"assistant","content":"- 10:00 with Sam\n- PR #12 is waiting"}}]}"#;
+
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A context with a work log entry, a corpus, and an engine that answers.
+    async fn ready(engine_host: &str, name: &str) -> (Context, Scratch) {
+        let pool = migrated_pool().await;
+        let root = std::env::temp_dir().join(format!("chief-recipe-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let corpus = Corpus::at(root.clone());
+        corpus.ensure_shape().await.expect("should create");
+        corpus::reindex(&pool, &corpus).await.expect("should index");
+
+        work_log::insert(
+            &pool,
+            work_log::NewWorkLogEntry {
+                source: "github".to_string(),
+                content: "Merged the loopback listener".to_string(),
+                summary: Some("Shipped the loopback listener".to_string()),
+                timestamp: None,
+                account_id: None,
+                external_id: None,
+            },
+        )
+        .await
+        .expect("should log");
+
+        (
+            Context {
+                pool,
+                github: github::Client::against("127.0.0.1:1").expect("client"),
+                microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
+                engine: llama::Client::with_base_url(engine_host).expect("client"),
+                corpus,
+            },
+            Scratch(root),
+        )
+    }
+
+    #[tokio::test]
+    async fn writes_the_brief_into_the_corpus_with_one_model_call() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let (context, _scratch) = ready(&host, "writes").await;
+
+        let brief = daily_brief(&context).await.expect("should write a brief");
+
+        assert!(brief.markdown.contains("10:00 with Sam"), "{brief:?}");
+        assert!(brief.path.starts_with("briefs/"), "{brief:?}");
+
+        // It is in the corpus, as a file the user can open.
+        assert_eq!(
+            context.corpus.read(&brief.path).await.expect("read"),
+            brief.markdown
+        );
+
+        // Exactly one call. A recipe that needs two is two recipes.
+        let requests = server.await.expect("the stub should finish");
+        assert_eq!(requests.len(), 1, "one model call per recipe");
+    }
+
+    #[tokio::test]
+    async fn regenerating_the_same_day_replaces_rather_than_stacking() {
+        let second =
+            r#"{"choices":[{"message":{"role":"assistant","content":"- a later brief"}}]}"#;
+        let (host, _server) = serve(vec![
+            ("HTTP/1.1 200 OK", ANSWER),
+            ("HTTP/1.1 200 OK", second),
+        ]);
+        let (context, _scratch) = ready(&host, "replaces").await;
+
+        let first = daily_brief(&context).await.expect("first");
+        let again = daily_brief(&context).await.expect("second");
+
+        assert_eq!(first.path, again.path, "the same day is the same file");
+        assert_eq!(
+            context.corpus.read(&again.path).await.expect("read"),
+            "- a later brief",
+            "a brief is what today looks like now, not a history of it"
+        );
+
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM briefs")
+            .fetch_one(&context.pool)
+            .await
+            .expect("count");
+        assert_eq!(rows, 1, "one row per day");
+    }
+
+    #[tokio::test]
+    async fn a_brief_the_user_has_edited_is_not_overwritten() {
+        // Measured in the product: a hand-written section was added to today's
+        // brief, the brief was regenerated, and the section was gone with
+        // nothing said. The corpus is offered as a folder you can edit.
+        let second =
+            r#"{"choices":[{"message":{"role":"assistant","content":"- a replacement"}}]}"#;
+        let (host, _server) = serve(vec![
+            ("HTTP/1.1 200 OK", ANSWER),
+            ("HTTP/1.1 200 OK", second),
+        ]);
+        let (context, _scratch) = ready(&host, "edited").await;
+
+        let first = daily_brief(&context).await.expect("first brief");
+
+        // The user opens it and types something. Two seconds on, so the change
+        // is distinguishable from Chief's own write.
+        tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+        let mine = format!("{}\n\nMy own note.\n", first.markdown);
+        context
+            .corpus
+            .write(&first.path, &mine)
+            .await
+            .expect("should write");
+
+        let refused = daily_brief(&context)
+            .await
+            .expect_err("an edited brief must not be overwritten");
+
+        assert!(matches!(refused, Error::EditedByHand { .. }), "{refused:?}");
+        assert!(
+            refused.to_string().contains("Delete or rename"),
+            "the message has to say how to get a fresh one: {refused}"
+        );
+
+        assert_eq!(
+            context.corpus.read(&first.path).await.expect("read"),
+            mine,
+            "the user's text must still be there"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_brief_chief_wrote_itself_is_replaced_as_before() {
+        // The guard must not stop the ordinary case: a brief nobody has touched
+        // is still regenerated.
+        let second =
+            r#"{"choices":[{"message":{"role":"assistant","content":"- a later brief"}}]}"#;
+        let (host, _server) = serve(vec![
+            ("HTTP/1.1 200 OK", ANSWER),
+            ("HTTP/1.1 200 OK", second),
+        ]);
+        let (context, _scratch) = ready(&host, "untouched").await;
+
+        daily_brief(&context).await.expect("first");
+        let again = daily_brief(&context).await.expect("should replace its own");
+
+        assert_eq!(
+            context.corpus.read(&again.path).await.expect("read"),
+            "- a later brief"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_model_that_will_not_answer_leaves_no_brief_behind() {
+        let (host, _server) = serve(vec![("HTTP/1.1 500 Internal Server Error", "{}")]);
+        let (context, _scratch) = ready(&host, "fails").await;
+
+        let error = daily_brief(&context).await.expect_err("the engine refused");
+
+        assert!(matches!(error, Error::Engine(_)), "{error:?}");
+
+        // Nothing half-written: a brief file that exists is one a model wrote.
+        let date = today_date();
+        assert!(
+            context
+                .corpus
+                .read(&format!("briefs/{date}.md"))
+                .await
+                .is_err(),
+            "a failed render must not leave a file"
+        );
+        assert_eq!(
+            written_at(&context.pool, &date).await.expect("read"),
+            None,
+            "and must not claim the day was briefed"
+        );
+    }
+
+    #[tokio::test]
+    async fn says_so_when_there_is_nothing_to_brief_on() {
+        let (host, _server) = serve(Vec::<(&str, &str)>::new());
+        let pool = migrated_pool().await;
+        let root = std::env::temp_dir().join(format!("chief-recipe-{}-empty", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _scratch = Scratch(root.clone());
+
+        let context = Context {
+            pool,
+            github: github::Client::against("127.0.0.1:1").expect("client"),
+            microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
+            engine: llama::Client::with_base_url(&host).expect("client"),
+            corpus: Corpus::at(root),
+        };
+
+        let error = daily_brief(&context)
+            .await
+            .expect_err("nothing is connected");
+
+        assert!(matches!(error, Error::NothingToSay), "{error:?}");
+    }
+
+    #[test]
+    fn today_runs_midnight_to_midnight() {
+        let (from, to) = today();
+
+        assert!(from.contains("T00:00:00"), "{from}");
+        assert!(to > from);
+    }
+}

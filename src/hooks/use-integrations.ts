@@ -8,7 +8,7 @@ import {
   labelAccount,
   startLogin,
   type Account,
-  type DeviceLogin,
+  type Login,
 } from '@/lib/integrations';
 
 /**
@@ -22,7 +22,7 @@ type Status = 'loading' | 'idle' | 'awaiting-user' | 'working';
 interface UseIntegrations {
   accounts: Account[];
   accountsFor: (service: string) => Account[];
-  login: DeviceLogin | null;
+  login: Login | null;
   /** Which service is being connected, so only that card shows the code. */
   connecting: string | null;
   status: Status;
@@ -44,7 +44,7 @@ function describe(cause: unknown): string {
 /** Drive sign-in and account management from the settings screen. */
 export function useIntegrations(): UseIntegrations {
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [login, setLogin] = useState<DeviceLogin | null>(null);
+  const [login, setLogin] = useState<Login | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const [disconnecting, setDisconnecting] = useState<readonly number[]>([]);
@@ -88,8 +88,12 @@ export function useIntegrations(): UseIntegrations {
         setLogin(started);
         setStatus('awaiting-user');
 
-        // Best effort: the code is on screen either way.
-        await openUrl(started.verificationUri).catch(() => undefined);
+        // Best effort for a device code, which is on screen either way. For a
+        // browser sign-in it is the whole flow — but the URL is also shown, so
+        // a blocked opener leaves the user something to click rather than a
+        // dead dialog.
+        const destination = started.kind === 'device' ? started.verificationUri : started.url;
+        await openUrl(destination).catch(() => undefined);
 
         const current = await finishLogin(service);
         if (attempt.current !== mine) return;

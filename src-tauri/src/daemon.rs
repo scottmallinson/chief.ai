@@ -18,6 +18,7 @@ use crate::db;
 use crate::github::{self, PullRequest, State};
 use crate::integrations;
 use crate::llama::{self, ChatRequest, Message, Options};
+use crate::recipe;
 use crate::session::GithubSession;
 use crate::work_log::{self, NewWorkLogEntry};
 
@@ -74,6 +75,23 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
         tokio::time::sleep(FIRST_PASS_DELAY).await;
 
         loop {
+            // The engine gives its memory back when nothing is using it, so a
+            // pass may have to start it. Failing to is not fatal and not worth
+            // reporting twice: the pass below will say so in its own terms.
+            //
+            // The guard is held for the whole pass, not just the start. A pass
+            // is one model call per merged pull request and then the brief,
+            // which on a small model runs well past the idle timeout — without
+            // this the supervisor stops the engine halfway through, and every
+            // pass from then on dies at the same place.
+            let working = {
+                let engine = app.state::<crate::engine::Engine>();
+                let client = app.state::<llama::Client>();
+                let _ = engine.ensure_running(client.inner()).await;
+
+                engine.working()
+            };
+
             match context(&app).await {
                 Ok(context) => {
                     // A pass failing is not fatal: GitHub may be unreachable or
@@ -85,9 +103,62 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
                 Err(error) => eprintln!("work log pass could not start: {error}"),
             }
 
+            brief_if_the_day_has_none(&app).await;
+
+            // The engine is free to go idle again from here.
+            drop(working);
+
             tokio::time::sleep(PASS_INTERVAL).await;
         }
     });
+}
+
+/// Write today's brief if today has not had one.
+///
+/// The whole of the schedule, and deliberately so. An interval would have to
+/// account for a laptop that was asleep at the hour it was due — and the
+/// accounting is the part that goes wrong, either skipping the day or writing
+/// four briefs at once when the lid opens. Asking "is there a brief for today"
+/// is naturally correct across sleep, time zones and a machine that was simply
+/// switched off: whenever it is next awake, the day gets exactly one.
+///
+/// Failing is never fatal. Nothing connected, an engine still loading, a model
+/// that would not answer — all of them mean no brief this pass and another
+/// attempt in half an hour.
+async fn brief_if_the_day_has_none<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(pool) = db::pool(app).await else {
+        return;
+    };
+
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    match recipe::written_at(&pool, &date).await {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("could not tell whether today has a brief: {error}");
+            return;
+        }
+    }
+
+    // A person waiting on an answer outranks a brief nobody asked for yet. The
+    // next pass will find the day still un-briefed and try again.
+    if app.state::<Attention>().is_engaged() {
+        return;
+    }
+
+    let Ok(context) = recipe::context(app).await else {
+        return;
+    };
+
+    match recipe::daily_brief(&context).await {
+        Ok(brief) => eprintln!(
+            "wrote the brief for {} from {}",
+            brief.date,
+            brief.sources.join(", ")
+        ),
+        Err(error) => eprintln!("no brief this pass: {error}"),
+    }
 }
 
 async fn context<R: Runtime>(app: &AppHandle<R>) -> Result<Context, db::Error> {

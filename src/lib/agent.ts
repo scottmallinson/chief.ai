@@ -36,7 +36,9 @@ export type AgentUpdate =
    *  has been shown so far; the real answer follows. */
   | { kind: 'restart' }
   /** A tool is running, so the wait has a reason to show. */
-  | { kind: 'tool'; name: string };
+  | { kind: 'tool'; name: string }
+  /** The engine was stopped to give its memory back and is starting again. */
+  | { kind: 'waking' };
 
 /** An update, tagged with the question it belongs to. */
 type StreamEvent = AgentUpdate & { requestId: string };

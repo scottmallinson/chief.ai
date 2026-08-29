@@ -15,7 +15,9 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::io::AsyncBufReadExt;
@@ -23,6 +25,7 @@ use tokio::process::{Child, ChildStderr, Command};
 use tokio::task::JoinHandle;
 
 use crate::llama::{self, Health};
+use crate::probe::{Machine, Tier};
 use crate::weights;
 
 /// The name the loaded model answers to.
@@ -32,11 +35,29 @@ use crate::weights;
 /// whatever GGUF is on disk.
 pub const MODEL_ALIAS: &str = "chief";
 
-/// The context window, in tokens, fixed for the life of the server.
+/// How far back the model can see. Tier-dependent rather than fixed: the window
+/// costs memory in the KV cache, and the machine that needs the smaller model
+/// needs the smaller window for the same reason. See [`crate::probe::Tier`].
 ///
-/// Room for a conversation plus a page of tool results. Larger costs memory for
-/// the key/value cache and buys nothing Chief asks for.
-const CONTEXT_SIZE: u32 = 8192;
+/// This is the engine's window, not Chief's prompt budget.
+///
+/// The smallest run of tokens worth reusing from a cached prompt via KV
+/// shifting. Too small and the engine spends more on bookkeeping than it saves;
+/// 256 is the value llama.cpp's own guidance settles on.
+const CACHE_REUSE_CHUNK: u32 = 256;
+
+/// How long the engine may sit unused before its memory is given back.
+///
+/// A resident model holds a couple of gigabytes on a machine written to have
+/// three or four spare, and an app left open all day is used for minutes of it.
+/// Deliberately shorter than the work-log daemon's interval, so an idle machine
+/// spends most of each half hour with the memory returned rather than none of
+/// it — the daemon's own pass wakes the engine and is the reason it is measured
+/// in minutes rather than seconds.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// How often idleness is looked at. Cheap, so the granularity costs nothing.
+const IDLE_CHECK: Duration = Duration::from_secs(60);
 
 /// Point Chief at a `llama-server` you are running yourself, instead of the one
 /// it ships. Must still be loopback; the client refuses anything else.
@@ -278,7 +299,7 @@ fn library_path(directories: &[PathBuf], inherited: Option<OsString>) -> OsStrin
 /// Kept separate from the spawning so the flags Chief actually relies on —
 /// loopback only, a fixed context window, and the Jinja chat templates that
 /// tool calling needs — are covered by a test rather than by hoping.
-fn arguments(weights: &Path, port: u16) -> Vec<OsString> {
+fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> {
     vec![
         OsString::from("--model"),
         weights.into(),
@@ -290,7 +311,22 @@ fn arguments(weights: &Path, port: u16) -> Vec<OsString> {
         OsString::from("--port"),
         OsString::from(port.to_string()),
         OsString::from("--ctx-size"),
-        OsString::from(CONTEXT_SIZE.to_string()),
+        OsString::from(tier.context_size().to_string()),
+        // llama.cpp caches the KV state of a prompt prefix already; what it does
+        // not do by default is reuse a cache entry whose prefix only partly
+        // matches. Chief assembles every prompt with the stable parts first and
+        // the volatile parts last precisely so that reuse can happen, and this
+        // is the flag that lets it: prefill on a repeated prefix is paid once
+        // rather than on every turn, which on a CPU is the difference between a
+        // pause and a wait.
+        OsString::from("--cache-reuse"),
+        OsString::from(CACHE_REUSE_CHUNK.to_string()),
+        // And a ceiling on what those caches may hold. The engine's own default
+        // is 8192 MiB — more than twice the headroom this app is written to live
+        // within, spent on top of a resident model. Left alone it would cause
+        // the swapping the cache exists to avoid.
+        OsString::from("--cache-ram"),
+        OsString::from(tier.cache_ram_mb().to_string()),
         // Tool calling goes through the model's own chat template, which
         // llama.cpp only applies in Jinja mode.
         OsString::from("--jinja"),
@@ -382,10 +418,34 @@ pub struct Engine {
     server: Option<PathBuf>,
     library_dirs: Vec<PathBuf>,
     weights: PathBuf,
+    /// The model this tier runs, so the setup screen can name it and the
+    /// download can fetch it without working the tier out a second time.
+    model: weights::Model,
+    /// What this machine qualifies for, measured once when the engine is
+    /// discovered. It decides the context window and the cache ceiling the
+    /// server is started with, so it is read here rather than at every launch.
+    tier: Tier,
     /// Whether this process is the one that starts and stops the server. False
     /// when the user pointed Chief at their own, which is not ours to kill.
     owned: bool,
     child: Mutex<Option<Child>>,
+    /// When the engine was last asked for anything. Read by the idle
+    /// supervisor, which gives the memory back when nothing has wanted it for
+    /// a while.
+    last_used: Mutex<Instant>,
+    /// How many pieces of background work are using the engine right now.
+    ///
+    /// `last_used` is a moment, and a moment is enough for a question, which is
+    /// over in seconds. It is not enough for a work-log pass: that starts the
+    /// engine once and then generates up to a summary per merged pull request,
+    /// which on a small model can outlast the idle timeout — and the supervisor
+    /// would then stop the engine halfway through its own daemon's work.
+    /// [`Attention`](crate::agent::Attention) cannot serve here because the
+    /// daemon *reads* it to stand aside for the user; raising it would make the
+    /// daemon yield to itself.
+    working: Arc<AtomicUsize>,
+    /// Whether the stray-engine warning has already been given.
+    warned_about_stray: AtomicBool,
     /// What the child has said for itself. Kept beside the handle rather than
     /// inside it because the handle is cleared the moment the process is found
     /// to have exited — which is exactly when its last words are wanted.
@@ -409,13 +469,21 @@ impl Engine {
 
         let server = owned.then(find_server).flatten();
 
+        let tier = Tier::for_machine(Machine::detect());
+        let model = weights::for_tier(tier);
+
         Ok(Self {
             base_url,
             library_dirs: library_dirs(app, server.as_deref()),
             server,
-            weights: weights::path(&data_dir),
+            weights: model.path(&data_dir),
+            tier,
+            model,
             owned,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         })
     }
@@ -426,6 +494,18 @@ impl Engine {
     }
 
     /// Where the model file belongs on this machine.
+    /// The model this machine runs, for naming it and for fetching it.
+    #[must_use]
+    pub fn model(&self) -> weights::Model {
+        self.model
+    }
+
+    /// What this machine qualified for.
+    #[must_use]
+    pub fn tier(&self) -> Tier {
+        self.tier
+    }
+
     pub fn weights(&self) -> &Path {
         &self.weights
     }
@@ -449,11 +529,30 @@ impl Engine {
     /// already started, and one the user is running themselves are all left
     /// alone.
     pub async fn ensure_running(&self, client: &llama::Client) -> Result<(), Error> {
+        // Anything that wants the engine counts as use, whether or not it ends
+        // up starting it — otherwise a busy hour of answered questions would
+        // look idle to the supervisor below.
+        self.touch();
+
         if !self.owned {
             return Ok(());
         }
 
         if client.health().await != Health::Down {
+            // Something is answering on our port that this process did not
+            // start. Almost always our own engine, orphaned by a crash or a
+            // force-quit: `RunEvent::Exit` never ran, so nothing killed it, and
+            // the health check above means we will now never start one either.
+            //
+            // It is not killed, because a server the user is running themselves
+            // looks identical from here and is not ours to take. But it is said
+            // once, because the consequence is otherwise invisible: the idle
+            // supervisor holds no handle for it, so its memory is never given
+            // back for as long as this installation runs.
+            if self.child_state() == ChildState::None {
+                self.warn_once_about_the_stray();
+            }
+
             return Ok(());
         }
 
@@ -471,7 +570,7 @@ impl Engine {
 
         let mut command = Command::new(server);
         command
-            .args(arguments(&self.weights, port))
+            .args(arguments(&self.weights, port, self.tier))
             .stdin(Stdio::null())
             // Read rather than inherited. A server that dies on the way up says
             // why on this stream, and inherited it goes to whatever terminal
@@ -541,6 +640,82 @@ impl Engine {
         }
     }
 
+    /// Whether a server this process started is up right now.
+    ///
+    /// Only a question about *our* child: a server the user runs themselves is
+    /// never stopped, so it is always considered up.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        !self.owned || self.child_state() == ChildState::Running
+    }
+
+    /// Say once that something else is serving our port.
+    ///
+    /// Once, rather than on every question and every daemon pass, which is what
+    /// makes it worth a flag rather than a bare `eprintln!`.
+    fn warn_once_about_the_stray(&self) {
+        if self.warned_about_stray.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        eprintln!(
+            "an inference engine is already answering at {} that Chief did not start. \
+             Chief will use it, but cannot stop it when it goes idle, so its memory \
+             stays held. Quit anything else serving that address and restart Chief to \
+             have it manage its own.",
+            self.base_url
+        );
+    }
+
+    /// Hold the engine open for as long as the guard lives.
+    ///
+    /// For background work that runs longer than the idle timeout. The engine
+    /// is not stopped while any guard is alive, whatever the clock says.
+    pub fn working(&self) -> Working {
+        self.working.fetch_add(1, Ordering::SeqCst);
+
+        Working(Arc::clone(&self.working))
+    }
+
+    /// Is anything holding the engine open?
+    fn is_working(&self) -> bool {
+        self.working.load(Ordering::SeqCst) > 0
+    }
+
+    /// Note that something wanted the engine just now.
+    pub fn touch(&self) {
+        if let Ok(mut last) = self.last_used.lock() {
+            *last = Instant::now();
+        }
+    }
+
+    /// How long the engine has gone unwanted.
+    fn idle_for(&self) -> Duration {
+        self.last_used
+            .lock()
+            .map_or(Duration::ZERO, |last| last.elapsed())
+    }
+
+    /// Give the memory back if nothing has wanted the engine for a while.
+    ///
+    /// Returns whether it stopped anything, which is what the test asserts on.
+    /// A server the user is running themselves is never stopped, and neither is
+    /// one that is still being waited on: `waiting` is the caller's answer to
+    /// "is somebody owed an answer right now", which the supervisor takes from
+    /// [`crate::agent::Attention`].
+    fn stop_if_idle(&self, waiting: bool, timeout: Duration) -> bool {
+        if !self.owned || waiting || self.is_working() || self.idle_for() < timeout {
+            return false;
+        }
+
+        if self.child_state() != ChildState::Running {
+            return false;
+        }
+
+        self.stop();
+        true
+    }
+
     /// Stop the server this process started. A server the user is running
     /// themselves is left alone.
     pub fn stop(&self) {
@@ -599,6 +774,41 @@ impl Drop for Engine {
 ///
 /// Failure is expected and reported rather than raised: on a fresh machine the
 /// model has not been downloaded yet, which is what the setup screen is for.
+/// Background work in flight. While one of these is alive the engine is not
+/// stopped for being idle, however long the work takes.
+pub struct Working(Arc<AtomicUsize>);
+
+impl Drop for Working {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Watch for the engine going unused, and give its memory back when it does.
+///
+/// Chief runs `llama-server` as a child process, which means stopping it
+/// returns every byte it held — the whole benefit of a separate process, and
+/// one the app was not using: the model stayed resident for the life of the
+/// window whether or not anybody asked it anything.
+///
+/// Nothing here has to wake it again. [`Engine::ensure_running`] is idempotent
+/// and is called on the way into a question and on the way into a work-log
+/// pass, so the next thing that wants the engine starts it.
+pub fn supervise<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(IDLE_CHECK).await;
+
+            let engine = app.state::<Engine>();
+            let waiting = app.state::<crate::agent::Attention>().is_engaged();
+
+            engine.stop_if_idle(waiting, IDLE_TIMEOUT);
+        }
+    });
+}
+
 pub fn start<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
 
@@ -618,7 +828,7 @@ mod tests {
 
     #[test]
     fn keeps_the_engine_on_loopback() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 11435);
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
         let rendered: Vec<String> = arguments
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -633,7 +843,7 @@ mod tests {
 
     #[test]
     fn fixes_the_context_window_when_the_server_starts() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 11435);
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
         let rendered: Vec<String> = arguments
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -643,12 +853,75 @@ mod tests {
             .iter()
             .position(|argument| argument == "--ctx-size")
             .expect("the context size should be set");
-        assert_eq!(rendered[size + 1], CONTEXT_SIZE.to_string());
+        assert_eq!(
+            rendered[size + 1],
+            Tier::Standard.context_size().to_string()
+        );
+    }
+
+    #[test]
+    fn the_window_follows_the_tier_rather_than_a_single_number() {
+        let render = |tier| {
+            arguments(Path::new("/models/model.gguf"), 11435, tier)
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let value_after = |rendered: &[String], flag: &str| {
+            let at = rendered
+                .iter()
+                .position(|argument| argument == flag)
+                .unwrap_or_else(|| panic!("{flag} should be set"));
+            rendered[at + 1].clone()
+        };
+
+        let standard = render(Tier::Standard);
+        let light = render(Tier::Light);
+
+        assert_eq!(value_after(&standard, "--ctx-size"), "8192");
+        assert_eq!(value_after(&light, "--ctx-size"), "4096");
+
+        // The machine that gets the smaller model gets the smaller cache for
+        // the same reason, and neither may reach the engine's own 8192 MiB
+        // default — which is more memory than this app is written to use in
+        // total, spent on top of a resident model.
+        let standard_cache: u32 = value_after(&standard, "--cache-ram")
+            .parse()
+            .expect("the cache ceiling should be a number");
+        let light_cache: u32 = value_after(&light, "--cache-ram")
+            .parse()
+            .expect("the cache ceiling should be a number");
+
+        assert!(standard_cache < 8192, "got {standard_cache} MiB");
+        assert!(light_cache < standard_cache);
+    }
+
+    #[test]
+    fn lets_a_repeated_prompt_prefix_be_reused_rather_than_recomputed() {
+        // Prefill is the dominant cost of a question on a CPU, and llama.cpp
+        // will not reuse a partly matching prefix unless asked. Without this
+        // flag every turn pays for the whole prompt again.
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
+        let rendered: Vec<String> = arguments
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+
+        let at = rendered
+            .iter()
+            .position(|argument| argument == "--cache-reuse")
+            .expect("prompt-prefix reuse should be enabled");
+
+        let chunk: u32 = rendered[at + 1]
+            .parse()
+            .expect("the reuse chunk should be a number");
+        assert!(chunk > 0, "a chunk of zero leaves reuse switched off");
     }
 
     #[test]
     fn asks_for_the_templates_that_tool_calling_needs() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 11435);
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
 
         assert!(
             arguments.iter().any(|argument| argument == "--jinja"),
@@ -658,7 +931,7 @@ mod tests {
 
     #[test]
     fn serves_the_model_under_the_name_requests_use() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 11435);
+        let arguments = arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard);
         let rendered: Vec<String> = arguments
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -679,7 +952,7 @@ mod tests {
 
     #[test]
     fn starts_the_server_on_the_port_the_client_will_use() {
-        let arguments = arguments(Path::new("/models/model.gguf"), 4242);
+        let arguments = arguments(Path::new("/models/model.gguf"), 4242, Tier::Standard);
         let rendered: Vec<String> = arguments
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -717,6 +990,130 @@ mod tests {
         assert_eq!(searched, [PathBuf::from("/opt/chief/lib")]);
     }
 
+    /// An engine with no child process, for the idle rules — which decide
+    /// whether to stop something, and can be asked that without one running.
+    fn stopped_engine() -> Engine {
+        Engine {
+            base_url: "http://127.0.0.1:11435".to_string(),
+            server: None,
+            library_dirs: Vec::new(),
+            weights: PathBuf::from("/models/model.gguf"),
+            tier: Tier::Standard,
+            model: weights::STANDARD,
+            owned: true,
+            child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
+            output: Output::default(),
+        }
+    }
+
+    #[test]
+    fn an_engine_nobody_has_used_is_not_stopped_before_its_time() {
+        let engine = stopped_engine();
+
+        assert!(
+            !engine.stop_if_idle(false, Duration::from_secs(600)),
+            "a fresh engine has not been idle for ten minutes"
+        );
+    }
+
+    #[test]
+    fn the_stray_engine_warning_is_given_once_and_not_on_every_question() {
+        // ensure_running is called on the way into every question and every
+        // daemon pass. A warning without this flag would be printed on all of
+        // them.
+        let engine = stopped_engine();
+
+        assert!(!engine.warned_about_stray.load(Ordering::SeqCst));
+
+        engine.warn_once_about_the_stray();
+        assert!(engine.warned_about_stray.load(Ordering::SeqCst));
+
+        // The second call is a no-op; what is asserted is that the flag latches
+        // rather than toggling.
+        engine.warn_once_about_the_stray();
+        assert!(engine.warned_about_stray.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn work_in_flight_holds_the_engine_open_however_long_it_takes() {
+        // The case this exists for: a work-log pass is one model call per
+        // merged pull request and then a brief. On a small model that runs
+        // past the idle timeout, and stopping the engine halfway through the
+        // daemon's own work makes every pass from then on die at the same
+        // place. Attention cannot serve here — the daemon reads it to stand
+        // aside for the user, so raising it would make the daemon yield to
+        // itself.
+        let engine = stopped_engine();
+        let working = engine.working();
+
+        assert!(
+            !engine.stop_if_idle(false, Duration::ZERO),
+            "the engine must stay up while background work holds it"
+        );
+
+        drop(working);
+
+        // And once the work is done it is idle again like anything else. There
+        // is no child here, so nothing is stopped — what is being asserted is
+        // that the guard no longer refuses on its own account.
+        assert!(!engine.is_working(), "the guard should have been released");
+    }
+
+    #[test]
+    fn two_pieces_of_work_both_have_to_finish() {
+        let engine = stopped_engine();
+
+        let first = engine.working();
+        let second = engine.working();
+
+        drop(first);
+        assert!(engine.is_working(), "the second is still holding it");
+
+        drop(second);
+        assert!(!engine.is_working());
+    }
+
+    #[test]
+    fn an_engine_still_being_waited_on_is_left_alone() {
+        let engine = stopped_engine();
+
+        // Idle by the clock, but somebody is owed an answer: a question that
+        // takes longer than the timeout must not have the engine pulled out
+        // from under it.
+        assert!(
+            !engine.stop_if_idle(true, Duration::ZERO),
+            "the engine must not be stopped while a question is in flight"
+        );
+    }
+
+    #[test]
+    fn a_server_the_user_runs_themselves_is_never_stopped() {
+        let mut engine = stopped_engine();
+        engine.owned = false;
+
+        assert!(
+            !engine.stop_if_idle(false, Duration::ZERO),
+            "an engine Chief did not start is not Chief's to stop"
+        );
+    }
+
+    #[test]
+    fn asking_for_the_engine_counts_as_using_it() {
+        let engine = stopped_engine();
+        std::thread::sleep(Duration::from_millis(20));
+
+        let before = engine.idle_for();
+        engine.touch();
+
+        assert!(
+            engine.idle_for() < before,
+            "touching should reset how long the engine has gone unwanted"
+        );
+    }
+
     #[test]
     fn nothing_was_started_before_anything_starts_it() {
         let engine = Engine {
@@ -724,8 +1121,13 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             weights: PathBuf::from("/models/model.gguf"),
+            tier: Tier::Standard,
+            model: weights::STANDARD,
             owned: true,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         };
 
@@ -739,8 +1141,13 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             weights: PathBuf::from("/models/model.gguf"),
+            tier: Tier::Standard,
+            model: weights::STANDARD,
             owned: false,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         };
 
@@ -754,8 +1161,13 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             weights: PathBuf::from("/models/model.gguf"),
+            tier: Tier::Standard,
+            model: weights::STANDARD,
             owned: false,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         };
 
@@ -914,8 +1326,13 @@ mod tests {
             server: Some(stand_in_server(dir, complaint)),
             library_dirs: Vec::new(),
             weights,
+            tier: Tier::Standard,
+            model: weights::STANDARD,
             owned: true,
             child: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
+            working: Arc::new(AtomicUsize::new(0)),
+            warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         }
     }

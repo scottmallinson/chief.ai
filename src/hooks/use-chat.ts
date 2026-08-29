@@ -77,6 +77,12 @@ export function useChat(): UseChat {
               sources.current.add(update.name);
               setActivity(describeTool(update.name));
               break;
+            case 'waking':
+              // Not a tool and not an answer: the model is being read back off
+              // disk because nothing had needed it for a while. Saying so is
+              // the difference between a slow answer and a broken one.
+              setActivity('Starting the model on this machine');
+              break;
           }
         },
       )

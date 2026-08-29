@@ -21,12 +21,12 @@ describe('Layout', () => {
 
   it('says where the data is on every screen', () => {
     render(
-      <Layout activeView="chat" onNavigate={vi.fn()} model="Gemma 3 1B Instruct (Q4_K_M)">
+      <Layout activeView="chat" onNavigate={vi.fn()} model="Llama 3.2 3B Instruct (Q4_K_M)">
         <p>chat</p>
       </Layout>,
     );
 
-    expect(screen.getByText('on-device · Gemma 3 1B Instruct (Q4_K_M)')).toBeInTheDocument();
+    expect(screen.getByText('on-device · Llama 3.2 3B Instruct (Q4_K_M)')).toBeInTheDocument();
   });
 
   it('still says on-device before the model is known', () => {

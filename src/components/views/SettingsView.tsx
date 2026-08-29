@@ -1,12 +1,15 @@
-import { useState, type ReactNode } from 'react';
-import { Github } from 'lucide-react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { FolderOpen, Github, Mail, RefreshCw } from 'lucide-react';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
+import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
+import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
 import { useIntegrations } from '@/hooks/use-integrations';
-import { accountName, GITHUB, type Account } from '@/lib/integrations';
+import { accountName, GITHUB, MICROSOFT, type Account } from '@/lib/integrations';
 
 interface SettingsSectionProps {
   title: string;
@@ -110,7 +113,33 @@ function ConnectedAccount({
   );
 }
 
-function GithubIntegration() {
+/** One provider's row: how it signs in, and which accounts are connected. */
+interface IntegrationProps {
+  /** The value stored in `integration_accounts.service`. */
+  service: string;
+  title: string;
+  description: string;
+  /** What the connect button says when nothing is connected yet. */
+  connectLabel: string;
+  /** What it says when adding a second account. */
+  addLabel: string;
+  icon: ReactNode;
+}
+
+/**
+ * A connected service.
+ *
+ * Written once for every provider rather than per service: the hook already
+ * takes the service by name, and the only thing that differed was the words.
+ */
+function Integration({
+  service,
+  title,
+  description,
+  connectLabel,
+  addLabel,
+  icon,
+}: IntegrationProps) {
   const {
     accountsFor,
     login,
@@ -124,23 +153,24 @@ function GithubIntegration() {
     rename,
   } = useIntegrations();
 
-  const accounts = accountsFor(GITHUB);
+  const accounts = accountsFor(service);
   // Only the sign-in flow blocks, and only the sign-in button: a browser tab
   // the user has not come back from is no reason another account cannot be
   // renamed or removed.
   const signingIn = status === 'working' || status === 'awaiting-user';
-  const showCode = login !== null && connecting === GITHUB;
+  const prompt = login !== null && connecting === service ? login : null;
 
-  // The user is the one being waited on here, and their code does not last
+  // The user is the one being waited on here, and a device code does not last
   // forever, so the wait is stated as what is left of it rather than as an
-  // indicator that could run all afternoon.
-  const waited = useElapsed(showCode);
-  const remaining = login === null ? 0 : Math.max(0, login.expiresIn - waited);
+  // indicator that could run all afternoon. A browser sign-in has no code and
+  // no countdown of its own, so it is simply waited on.
+  const waited = useElapsed(prompt !== null);
+  const remaining = prompt?.kind === 'device' ? Math.max(0, prompt.expiresIn - waited) : 0;
 
   return (
     <SettingsSection
-      title="GitHub"
-      description="Lets Chief read your pull requests. Sign-in happens in your browser and the token is stored only on this machine."
+      title={title}
+      description={description}
       state={
         status === 'loading' ? (
           <Chip tone="quiet">Checking</Chip>
@@ -167,16 +197,16 @@ function GithubIntegration() {
         </div>
       )}
 
-      {showCode && (
+      {prompt?.kind === 'device' && (
         <div className="mt-4 rounded-md border border-border p-4" role="status">
           <p className="text-sm">
             Enter this code at{' '}
             <span className="font-mono text-[13px]" data-selectable>
-              {login.verificationUri}
+              {prompt.verificationUri}
             </span>
           </p>
           <p className="mt-2 font-mono text-xl tracking-[0.2em]" data-selectable>
-            {login.userCode}
+            {prompt.userCode}
           </p>
           {remaining > 0 ? (
             <p className="mt-2.5 flex items-center gap-2 micro text-muted-foreground">
@@ -188,6 +218,29 @@ function GithubIntegration() {
               This code has expired. Start again to get another.
             </p>
           )}
+          <div className="mt-3">
+            <Button variant="outline" size="sm" onClick={cancel}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {prompt?.kind === 'browser' && (
+        <div className="mt-4 rounded-md border border-border p-4" role="status">
+          <p className="text-sm">
+            Finish signing in on the page that just opened. Chief is listening on this machine for
+            the browser to come back.
+          </p>
+          {/* Shown as well as opened: if the browser did not open, this is the
+              only way through, and it is a machine fact either way. */}
+          <p className="mt-2 font-mono text-[12px] break-all text-muted-foreground" data-selectable>
+            {prompt.url}
+          </p>
+          <p className="mt-2.5 flex items-center gap-2 micro text-muted-foreground">
+            <Dots />
+            Waiting for you to finish in the browser
+          </p>
           <div className="mt-3">
             <Button variant="outline" size="sm" onClick={cancel}>
               Cancel
@@ -209,11 +262,11 @@ function GithubIntegration() {
         <Button
           size="sm"
           variant={accounts.length > 0 ? 'outline' : 'default'}
-          onClick={() => connect(GITHUB)}
+          onClick={() => connect(service)}
           disabled={signingIn || status === 'loading'}
         >
-          <Github aria-hidden />
-          {accounts.length > 0 ? 'Add another GitHub account' : 'Connect GitHub'}
+          {icon}
+          {accounts.length > 0 ? addLabel : connectLabel}
         </Button>
       </div>
     </SettingsSection>
@@ -221,17 +274,222 @@ function GithubIntegration() {
 }
 
 /** Configuration surface for the model, integrations and local data. */
+/**
+ * The folder of markdown Chief reads and writes.
+ *
+ * Deliberately a folder the user can open, not a hidden one inside the app's
+ * data: these files are theirs, and every source document describes this layer
+ * as human-editable. So the most useful control here is the one that opens it.
+ */
+function Corpus() {
+  const [location, setLocation] = useState<CorpusLocation | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setLocation(await corpusLocation());
+      setProblem(null);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <SettingsSection
+      title="Your corpus"
+      description="Notes, briefs and drafts, as plain markdown you can open in any editor. Chief reads from here and writes back to it; nothing in it is synchronised anywhere."
+      state={
+        location ? (
+          <Chip tone="verified" dot>
+            {location.files === 1 ? '1 file' : `${location.files} files`}
+          </Chip>
+        ) : (
+          <Chip tone="quiet">Checking</Chip>
+        )
+      }
+    >
+      {location && (
+        <>
+          <p className="mt-3 font-mono text-[13px] break-all text-muted-foreground" data-selectable>
+            {location.root}
+          </p>
+          {!location.exists && (
+            <p className="mt-2 text-sm text-attention-text">
+              This folder is not there. Chief will create it the next time it starts.
+            </p>
+          )}
+        </>
+      )}
+
+      {problem && <p className="mt-3 text-sm text-attention-text">{problem}</p>}
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            // revealItemInDir rather than openPath: the renderer is granted
+            // `opener:default`, which covers revealing an item and not opening
+            // an arbitrary path, and widening a capability to save a click is
+            // not a trade worth making.
+            if (location) void revealItemInDir(location.root).catch(() => undefined);
+          }}
+          disabled={!location?.exists}
+        >
+          <FolderOpen aria-hidden />
+          Show folder
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => void load()}>
+          <RefreshCw aria-hidden />
+          Rescan
+        </Button>
+      </div>
+    </SettingsSection>
+  );
+}
+
+/**
+ * The engine, and the model it is actually serving.
+ *
+ * The name was written into this file, which made it wrong the moment there
+ * was more than one model to run.
+ */
+function LocalModel() {
+  const [model, setModel] = useState<string | null>(null);
+
+  useEffect(() => {
+    void runDoctor(false)
+      .then((report) => setModel(report.model))
+      .catch(() => setModel(null));
+  }, []);
+
+  return (
+    <SettingsSection
+      title="Local model"
+      description="Chief runs llama.cpp itself, on a loopback address only this machine can reach. The engine ships with the app and stops when nothing is using it; the client refuses any address that is not local."
+      state={model ? <Chip tone="machine">{model}</Chip> : <Chip tone="quiet">Checking</Chip>}
+    />
+  );
+}
+
+/** Machine facts read in the units a person thinks in. */
+function gigabytes(mebibytes: number): string {
+  return `${(mebibytes / 1024).toFixed(1)} GB`;
+}
+
+/** Seconds, to one decimal place, from milliseconds. */
+function seconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
+ * What Chief worked out about this machine, and what it measured.
+ *
+ * Opens with whatever was recorded last rather than spending a generation on
+ * every visit. "Measure again" is the only thing here that costs anything, and
+ * it says so.
+ */
+function ThisMachine() {
+  const [report, setReport] = useState<Report | null>(null);
+  const [measuring, setMeasuring] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const load = useCallback(async (remeasure: boolean) => {
+    setProblem(null);
+    if (remeasure) setMeasuring(true);
+
+    try {
+      setReport(await runDoctor(remeasure));
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      setMeasuring(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load(false);
+  }, [load]);
+
+  const measurement = report?.measurement ?? null;
+
+  return (
+    <SettingsSection
+      title="This machine"
+      description="Chief looked at the memory and cores here and chose a model that fits. Nothing about this leaves the machine."
+      state={
+        report ? <Chip tone="machine">{report.tier}</Chip> : <Chip tone="quiet">Checking</Chip>
+      }
+    >
+      {report && (
+        <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
+          <dt className="pt-1 micro text-muted-foreground">Memory</dt>
+          <dd className="font-mono text-[13px]">{gigabytes(report.memoryMb)}</dd>
+          <dt className="pt-1 micro text-muted-foreground">Cores</dt>
+          <dd className="font-mono text-[13px]">{report.cores}</dd>
+          <dt className="pt-1 micro text-muted-foreground">Window</dt>
+          <dd className="font-mono text-[13px]">{report.contextSize} tokens</dd>
+          {measurement && (
+            <>
+              <dt className="pt-1 micro text-muted-foreground">First reply</dt>
+              <dd className="font-mono text-[13px]">{seconds(measurement.firstTokenMs)}</dd>
+              <dt className="pt-1 micro text-muted-foreground">Writing</dt>
+              <dd className="font-mono text-[13px]">
+                {Math.round(report.charactersPerSecond ?? 0)} chars/s
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
+
+      {!measurement && report && (
+        <p className="mt-3 text-sm text-muted-foreground">This machine has not been timed yet.</p>
+      )}
+
+      {problem && <p className="mt-3 text-sm text-attention-text">{problem}</p>}
+
+      <Button
+        size="sm"
+        variant="secondary"
+        className="mt-3"
+        onClick={() => void load(true)}
+        disabled={measuring}
+      >
+        {measuring ? <Dots /> : null}
+        {measuring ? 'Measuring…' : 'Measure again'}
+      </Button>
+    </SettingsSection>
+  );
+}
+
 export function SettingsView() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="px-7 py-6">
         <div className="flex max-w-[680px] flex-col gap-3">
-          <SettingsSection
-            title="Local model"
-            description="Chief runs llama.cpp itself, on a loopback address only this machine can reach. The engine ships with the app and stops when you close it; the client refuses any address that is not local."
-            state={<Chip tone="machine">llama-3.2-3b-instruct</Chip>}
+          <LocalModel />
+          <Corpus />
+          <ThisMachine />
+          <Integration
+            service={GITHUB}
+            title="GitHub"
+            description="Lets Chief read your pull requests. Sign-in happens in your browser and the token is stored only on this machine."
+            connectLabel="Connect GitHub"
+            addLabel="Add another GitHub account"
+            icon={<Github aria-hidden />}
           />
-          <GithubIntegration />
+          <Integration
+            service={MICROSOFT}
+            title="Outlook"
+            description="Lets Chief read your mail and calendar. Sign-in opens your browser and comes back to a port on this machine; the token is stored only here."
+            connectLabel="Connect Outlook"
+            addLabel="Add another Outlook account"
+            icon={<Mail aria-hidden />}
+          />
           <SettingsSection
             title="Local data"
             description="Your work log and integration tokens live in a SQLite file inside this app's config directory. Nothing is synchronised anywhere."

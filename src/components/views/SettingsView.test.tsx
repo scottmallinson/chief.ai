@@ -31,6 +31,7 @@ const hubot = {
 };
 
 const deviceLogin = {
+  kind: 'device',
   userCode: 'WDJB-MJHT',
   verificationUri: 'https://github.com/login/device',
   expiresIn: 900,
@@ -51,14 +52,52 @@ describe('SettingsView', () => {
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
   });
 
+  const corpus = {
+    root: '/Users/someone/Chief',
+    exists: true,
+    files: 7,
+    estimatedTokens: 1840,
+  };
+
+  const report = {
+    tier: 'standard',
+    model: 'Llama 3.2 3B Instruct (Q4_K_M)',
+    modelSizeMb: 2400,
+    contextSize: 8192,
+    memoryMb: 16384,
+    cores: 8,
+    measurement: { firstTokenMs: 900, totalMs: 4900, characters: 400 },
+    charactersPerSecond: 100,
+  };
+
   it('carries the connection as state, not as an action', async () => {
-    invoke.mockResolvedValue([]);
+    invoke.mockImplementation((command: string) => {
+      if (command === 'run_doctor') return Promise.resolve(report);
+      if (command === 'corpus_location') return Promise.resolve(corpus);
+      return Promise.resolve([]);
+    });
 
     render(<SettingsView />);
 
-    expect(await screen.findByText('Not connected')).toBeInTheDocument();
+    // Two services now, each carrying its own state.
+    expect(await screen.findAllByText('Not connected')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Outlook' })).toBeInTheDocument();
     expect(screen.getByText('On this machine')).toBeInTheDocument();
-    expect(screen.getByText('llama-3.2-3b-instruct')).toBeInTheDocument();
+
+    // The model is whatever this machine was given, not a name written into
+    // the component — there is more than one now.
+    expect(await screen.findByText('Llama 3.2 3B Instruct (Q4_K_M)')).toBeInTheDocument();
+
+    // And what it worked out about the machine, in the units a person reads.
+    expect(screen.getByText('16.0 GB')).toBeInTheDocument();
+    expect(screen.getByText('8192 tokens')).toBeInTheDocument();
+    expect(screen.getByText('0.9s')).toBeInTheDocument();
+
+    // And where the corpus is, in words a person can act on: a folder they
+    // can open, not a path buried in the app's own data.
+    expect(screen.getByText('/Users/someone/Chief')).toBeInTheDocument();
+    expect(screen.getByText('7 files')).toBeInTheDocument();
   });
 
   it('says when a connected account was connected', async () => {
@@ -82,6 +121,49 @@ describe('SettingsView', () => {
 
     expect(await screen.findByText('WDJB-MJHT')).toBeInTheDocument();
     expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device');
+  });
+
+  it('says so when the corpus folder is not there yet', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'corpus_location') {
+        return Promise.resolve({ ...corpus, exists: false, files: 0 });
+      }
+      return Promise.resolve([]);
+    });
+
+    render(<SettingsView />);
+
+    expect(await screen.findByText(/This folder is not there/)).toBeInTheDocument();
+
+    // Nothing to show yet, so the control that would show it is not offered.
+    expect(screen.getByRole('button', { name: /Show folder/ })).toBeDisabled();
+  });
+
+  it('sends an Outlook sign-in to the browser rather than showing a code', async () => {
+    const browserLogin = {
+      kind: 'browser',
+      url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=abc',
+    };
+
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([]);
+      if (command === 'start_login') return Promise.resolve(browserLogin);
+      // Never settles, so the waiting state stays on screen.
+      return new Promise(() => {});
+    });
+
+    render(<SettingsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect Outlook' }));
+
+    expect(await screen.findByText(/Finish signing in on the page/)).toBeInTheDocument();
+    expect(openUrl).toHaveBeenCalledWith(browserLogin.url);
+
+    // There is no code in this flow, and offering one would be a lie.
+    expect(screen.queryByText(/Enter this code/)).not.toBeInTheDocument();
+
+    // The destination is shown as well as opened, so a browser that did not
+    // open leaves the user something to act on.
+    expect(screen.getByText(browserLogin.url)).toBeInTheDocument();
   });
 
   it('reports the connection once the user finishes', async () => {

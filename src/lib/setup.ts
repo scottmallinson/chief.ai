@@ -8,6 +8,10 @@ export type EngineStatus = 'ready' | 'loading' | 'down';
 export interface Readiness {
   /** The model Chief runs, named for a person to read. */
   model: string;
+  /** What this machine qualified for: `standard` or `light`. */
+  tier: string;
+  /** Roughly what the model holds once loaded, in mebibytes. */
+  modelSizeMb: number;
   /** Whether the weights have been downloaded to this machine. */
   modelInstalled: boolean;
   engine: EngineStatus;

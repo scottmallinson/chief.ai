@@ -8,15 +8,21 @@
 mod agent;
 mod clock;
 mod connect;
+mod context;
+mod corpus;
 mod daemon;
 mod db;
 mod engine;
 mod github;
 mod integrations;
+mod microsoft;
 // OAuth machinery shared by every provider. Part of the crate's library API,
 // the same as `llama` below.
 pub mod oauth;
+mod probe;
+mod recipe;
 mod session;
+mod settings;
 mod setup;
 mod tools;
 mod weights;
@@ -48,12 +54,22 @@ pub fn run() {
             app.manage(llama);
             // Pinned to GitHub, for the account the user connected.
             app.manage(github::Client::new()?);
+            // And Outlook, for the mailbox and calendar they connected.
+            app.manage(microsoft::Client::new()?);
             app.manage(connect::Pending::default());
             app.manage(agent::Attention::default());
 
             // Start the model server while the window is still opening, so the
             // first question does not wait for the weights to come off disk.
             engine::start(&app.handle().clone());
+
+            // And give its memory back when nothing is using it. A resident
+            // model holds a couple of gigabytes, which on the machines Chief
+            // is written for is most of the room there is.
+            engine::supervise(&app.handle().clone());
+
+            // The folder of markdown the user can edit themselves.
+            corpus::prepare(&app.handle().clone());
 
             // Keeps the work log up to date in the background.
             daemon::spawn(&app.handle().clone());
@@ -67,6 +83,14 @@ pub fn run() {
             connect::connections,
             connect::disconnect,
             connect::label_account,
+            corpus::corpus_location,
+            corpus::list_corpus,
+            corpus::read_corpus_file,
+            corpus::write_corpus_file,
+            corpus::set_corpus_root,
+            probe::run_doctor,
+            recipe::generate_brief,
+            recipe::todays_brief,
             setup::check_readiness,
             setup::download_model,
             setup::start_engine,
