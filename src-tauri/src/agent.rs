@@ -46,31 +46,18 @@ fn is_unusable_tool_output(error: &llama::Error) -> bool {
     body.contains("does not match the expected") || body.contains("peg")
 }
 
-/// Cut `text` down to roughly `tokens` worth, and say that it was cut.
-///
-/// Only ever reached by a message too big for the entire budget — a pasted
-/// document, usually. The beginning is kept rather than the end because that is
-/// where a person puts what they want done with the thing they are pasting, and
-/// the note is not decoration: a model reading half a document and told nothing
-/// will answer as though it read all of it.
-fn shorten(text: &str, tokens: u32) -> String {
-    const NOTE: &str = "\n\n[This message was too long to send in full. The rest was cut.]";
+/// What a message cut on the way in is marked with.
+const MESSAGE_CUT: &str = "\n\n[This message was too long to send in full. The rest was cut.]";
 
-    // Leave room for the note itself, and never fall to nothing.
-    let room = tokens
-        .saturating_sub(context::estimate_tokens(NOTE))
-        .max(64);
-    let mut cut = text.len().min(room as usize * 4);
+/// What a tool result cut on the way in is marked with.
+const RESULT_CUT: &str = "\n\n[Truncated: there was more than would fit in the prompt.]";
 
-    while cut > 0 && !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-
-    if cut >= text.len() {
-        return text.to_string();
-    }
-
-    format!("{}{NOTE}", &text[..cut])
+/// Roughly what a transcript costs to send.
+fn spent_on(messages: &[Message]) -> u32 {
+    messages
+        .iter()
+        .map(|message| context::estimate_tokens(&message.content))
+        .sum()
 }
 
 /// The event carrying an answer to the chat window as it is written.
@@ -221,7 +208,7 @@ fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
         if let Some(turn) = newest {
             kept.push(Message::new(
                 turn.role,
-                shorten(&turn.content, budget.remaining()),
+                context::fit(&turn.content, budget.remaining(), MESSAGE_CUT),
             ));
         }
     }
@@ -335,7 +322,19 @@ where
 
             let result = tools::dispatch(context, call).await;
 
-            messages.push(Message::tool_result(call, result.to_string()));
+            // Tool output is prompt, and it is the least bounded thing that
+            // becomes prompt: twenty-five pull requests of JSON took one
+            // measured question to 2,504 tokens on a 4,096 window, and two more
+            // rounds would have overflowed the context entirely. So a result is
+            // charged against the same ceiling as everything else, and cut to
+            // what is left rather than appended whole.
+            let spent = spent_on(&messages);
+            let room = context::DEFAULT_CEILING.saturating_sub(spent);
+
+            messages.push(Message::tool_result(
+                call,
+                context::fit(&result.to_string(), room, RESULT_CUT),
+            ));
         }
     }
 
@@ -892,6 +891,55 @@ mod orchestration_tests {
             .collect();
 
         assert_eq!(written, ANSWER);
+    }
+
+    #[tokio::test]
+    async fn a_large_tool_result_is_cut_to_the_budget_rather_than_appended_whole() {
+        // Measured in the product before this existed: a question answered from
+        // twenty-five pull requests took the second round trip to 2,504 tokens
+        // on a 4,096 window, and two more rounds would have overflowed the
+        // context. Tool output is prompt, and it was the only prompt nothing
+        // charged for.
+        let flood = format!(
+            r#"{{"total_count":1,"items":[{{"number":1,"title":"{}","repository_url":"https://api.github.com/repos/a/b","state":"open","draft":false,"html_url":"https://x","updated_at":"2026-08-29T00:00:00Z"}}]}}"#,
+            "long title ".repeat(4000)
+        );
+
+        let (base_url, server) = serve(vec![
+            ("HTTP/1.1 200 OK", asks_for_prs()),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", flood.as_str())]);
+        let context = context_connected_to(&github_host).await;
+
+        respond(&client, &context, MODEL, asked("What is waiting?"), |_| {})
+            .await
+            .expect("should still answer");
+
+        let requests = server.await.expect("the stub should finish");
+        github_server.await.expect("GitHub stub should finish");
+
+        // The second request carries the tool result. It must fit the budget.
+        let sent = body_of(&requests[1]);
+        let whole: String = sent["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .filter_map(|message| message["content"].as_str())
+            .collect();
+
+        assert!(
+            context::estimate_tokens(&whole) <= context::DEFAULT_CEILING,
+            "the prompt reached {} tokens, over the {} ceiling",
+            context::estimate_tokens(&whole),
+            context::DEFAULT_CEILING
+        );
+        assert!(
+            whole.contains("Truncated"),
+            "a cut result must say it was cut, or the model answers as though it read all of it"
+        );
     }
 
     #[tokio::test]

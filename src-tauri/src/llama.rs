@@ -323,9 +323,16 @@ impl ChatResponse {
     }
 }
 
+/// What an answer cut short by the token ceiling is marked with.
+const ANSWER_CUT: &str = "\n\n[Cut short — this answer reached its length limit.]";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Choice {
     pub message: Message,
+    /// Why the model stopped. `length` means it hit the ceiling rather than
+    /// finishing, which is the difference between an answer and half of one.
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 /// One server-sent event of a streamed reply.
@@ -344,6 +351,8 @@ struct ChatChunk {
 struct ChunkChoice {
     #[serde(default)]
     delta: Delta,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 /// The few more characters of an answer that one event carries.
@@ -548,6 +557,7 @@ impl Client {
         let response = self.ask(request, true).await?;
         let mut answer = Message::new(Role::Assistant, String::new());
         let mut calls = PartialToolCalls::default();
+        let mut ran_out = false;
 
         read_events(response, |data| {
             let chunk: ChatChunk = serde_json::from_str(data)
@@ -570,6 +580,12 @@ impl Client {
                 for fragment in choice.delta.tool_calls {
                     calls.absorb(fragment);
                 }
+
+                // "length" means the model stopped because it reached the
+                // ceiling, not because it had finished.
+                if choice.finish_reason.as_deref() == Some("length") {
+                    ran_out = true;
+                }
             }
 
             Ok(())
@@ -577,6 +593,16 @@ impl Client {
         .await?;
 
         answer.tool_calls = calls.finish();
+
+        // An answer that stopped mid-sentence because it hit the ceiling used
+        // to just stop — measured in the product, a list of pull requests ended
+        // halfway through a URL with nothing to say why. The reader cannot tell
+        // that from a model that finished, so it is said, and said in the
+        // stream so it arrives where the answer stopped.
+        if ran_out && answer.tool_calls.is_empty() {
+            on_token(ANSWER_CUT);
+            answer.content.push_str(ANSWER_CUT);
+        }
 
         Ok(answer)
     }
@@ -1300,6 +1326,61 @@ mod http_tests {
             .expect("the stub should stream to the end");
 
         assert_eq!(reply.content, "Done.");
+        server.await.expect("the stub should finish");
+    }
+
+    #[tokio::test]
+    async fn says_when_an_answer_was_cut_short_by_the_length_limit() {
+        // Measured in the product: a list of pull requests stopped halfway
+        // through a URL at exactly max_tokens, and nothing said why. A reader
+        // cannot tell that from a model that finished.
+        let stream = events(&[
+            delta("A very long answer that runs"),
+            serde_json::json!({
+                "choices": [{ "index": 0, "delta": {}, "finish_reason": "length" }],
+            }),
+        ]);
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", stream)]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let mut streamed = String::new();
+        let reply = client
+            .chat_stream(
+                &ChatRequest::new("chief", vec![Message::user("hi")]),
+                |token| streamed.push_str(token),
+            )
+            .await
+            .expect("the stub should stream");
+
+        assert!(reply.content.contains("Cut short"), "{}", reply.content);
+        assert!(
+            streamed.contains("Cut short"),
+            "the note has to arrive in the stream too, where the answer stopped"
+        );
+
+        server.await.expect("the stub should finish");
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_finished_is_not_marked() {
+        let stream = events(&[
+            delta("All done."),
+            serde_json::json!({
+                "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }],
+            }),
+        ]);
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", stream)]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let reply = client
+            .chat_stream(
+                &ChatRequest::new("chief", vec![Message::user("hi")]),
+                |_| {},
+            )
+            .await
+            .expect("the stub should stream");
+
+        assert_eq!(reply.content, "All done.");
         server.await.expect("the stub should finish");
     }
 

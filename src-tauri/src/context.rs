@@ -125,6 +125,29 @@ impl Default for Budget {
     }
 }
 
+/// Cut `text` down to roughly `tokens` worth, and say that it was cut.
+///
+/// The beginning is what survives. For a pasted message that is where a person
+/// puts what they want done with the thing they pasted; for a tool result it is
+/// the first and most relevant rows. `note` is not decoration: a model reading
+/// part of something and told nothing will answer as though it read all of it.
+#[must_use]
+pub fn fit(text: &str, tokens: u32, note: &str) -> String {
+    // Leave room for the note itself, and never fall to nothing.
+    let room = tokens.saturating_sub(estimate_tokens(note)).max(32);
+    let mut cut = text.len().min(room as usize * BYTES_PER_TOKEN as usize);
+
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+
+    if cut >= text.len() {
+        return text.to_string();
+    }
+
+    format!("{}{note}", &text[..cut])
+}
+
 /// Strip what costs tokens and carries nothing.
 ///
 /// The blueprint calls this `slimtoken`. Markdown written by people is full of
