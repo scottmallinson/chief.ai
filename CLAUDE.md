@@ -281,6 +281,33 @@ the user to install a runtime, which is the whole reason the engine is a module 
   alternative was hundreds of words the reader had already watched arrive being replaced by a red
   box.
 
+## Routing without a model
+
+`src-tauri/src/intent.rs` is the blueprint's "Overseer", as code rather than a second model. On a
+machine where prefill runs at 18–34 tokens a second, the largest optimisation available is not
+calling the model at all.
+
+- `route` is pure and total: a question in, an `Intent` or `None` out. `/brief`, `/prep` and `/log`
+  match on the first word; everything else matches the **whole normalised question** against a
+  written list of phrases, never a keyword found somewhere inside one. That is what keeps "how do I
+  brief a client?" and "a brief history of Rust" out of the brief, and it is why the list is long
+  and dull rather than clever.
+- **A false positive is the failure mode to design against**, because it silently replaces the
+  user's question with a canned answer and never says it did. A miss only costs what the question
+  cost before this module existed. `refuses_everything_that_merely_mentions_a_trigger_word` is the
+  test that keeps this honest; add to it before adding a phrase.
+- **A routed intent that finds nothing steps aside.** An answer of "you have nothing logged" is
+  indistinguishable, to the reader, from Chief having misunderstood them — so `answer` returns
+  `None` and the tool loop takes the question after all.
+- `/brief` **reads** today's brief and never regenerates it, on the same principle as
+  `todays_brief`: writing one is a model call, and this is meant to be the free way to read it.
+- Routing happens in `ask_agent` **before the engine is started**, so a question answerable from
+  this machine's own disk does not first wait for a couple of gigabytes of weights to be read.
+- The tool catalogue's cap lives beside it, in `agent::tests::keeps_the_tool_catalogue_within_its_budget`:
+  6 tools and 600 tokens. The tokens are the ceiling that bites — three tools already cost 477 — so
+  the fourth tool is where it starts having an opinion. Raising either number is a decision about
+  how much of every prompt is spent describing tools before the question is read.
+
 ## Telling the model what day it is
 
 `src-tauri/src/clock.rs` prefixes every question with the current local date and time.
