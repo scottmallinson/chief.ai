@@ -235,6 +235,14 @@ impl Corpus {
             })
     }
 
+    /// When one file last changed, as an ISO-8601 instant, if it is there.
+    pub async fn modified_at(&self, relative: &str) -> Option<String> {
+        let absolute = self.resolve(relative).ok()?;
+        let metadata = tokio::fs::metadata(&absolute).await.ok()?;
+
+        Some(modified_at(&metadata)).filter(|at| !at.is_empty())
+    }
+
     /// Every markdown file in the corpus, deepest folders included.
     ///
     /// Markdown only: the corpus is a folder in the user's own directory and

@@ -61,6 +61,11 @@ pub struct Context {
 pub enum Error {
     #[error("nothing is connected yet, so there is nothing to brief you on")]
     NothingToSay,
+    #[error(
+        "today's brief has been edited since Chief wrote it, so it has been left alone. \
+         Delete or rename {path} to have a fresh one written."
+    )]
+    EditedByHand { path: String },
     #[error(transparent)]
     Budget(#[from] context::Error),
     #[error(transparent)]
@@ -302,6 +307,14 @@ pub async fn daily_brief(context: &Context) -> Result<Brief, Error> {
     let date = today_date();
     let path = format!("briefs/{date}.md");
 
+    // A brief the user has touched is theirs. The corpus is offered as a folder
+    // they can edit, and regenerating used to overwrite it without a word —
+    // measured, a hand-written section simply vanished. Checked here rather
+    // than in the corpus, because only a brief knows when Chief last wrote it.
+    if edited_by_hand(context, &date, &path).await {
+        return Err(Error::EditedByHand { path });
+    }
+
     context.corpus.write(&path, &markdown).await?;
     record(&context.pool, &date, &found.sources()).await?;
 
@@ -311,6 +324,33 @@ pub async fn daily_brief(context: &Context) -> Result<Brief, Error> {
         markdown,
         sources: found.sources(),
     })
+}
+
+/// Has the file changed since Chief last wrote it?
+///
+/// Compared against the moment recorded in `briefs`, with a couple of seconds
+/// of slack: writing the file and recording the row are two operations, and
+/// their timestamps differ by a little even when nothing has touched it since.
+async fn edited_by_hand(context: &Context, date: &str, path: &str) -> bool {
+    let Ok(Some(written)) = written_at(&context.pool, date).await else {
+        // Never written, so nothing of the user's to lose.
+        return false;
+    };
+
+    let Some(modified) = context.corpus.modified_at(path).await else {
+        return false;
+    };
+
+    let (Ok(written), Ok(modified)) = (
+        chrono::DateTime::parse_from_rfc3339(&written),
+        chrono::DateTime::parse_from_rfc3339(&modified),
+    ) else {
+        // Unreadable timestamps are not evidence of an edit, and refusing to
+        // write on that basis would stop briefs entirely.
+        return false;
+    };
+
+    modified - written > chrono::Duration::seconds(2)
 }
 
 /// Note that a brief was written, and from what.
@@ -680,6 +720,69 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(rows, 1, "one row per day");
+    }
+
+    #[tokio::test]
+    async fn a_brief_the_user_has_edited_is_not_overwritten() {
+        // Measured in the product: a hand-written section was added to today's
+        // brief, the brief was regenerated, and the section was gone with
+        // nothing said. The corpus is offered as a folder you can edit.
+        let second =
+            r#"{"choices":[{"message":{"role":"assistant","content":"- a replacement"}}]}"#;
+        let (host, _server) = serve(vec![
+            ("HTTP/1.1 200 OK", ANSWER),
+            ("HTTP/1.1 200 OK", second),
+        ]);
+        let (context, _scratch) = ready(&host, "edited").await;
+
+        let first = daily_brief(&context).await.expect("first brief");
+
+        // The user opens it and types something. Two seconds on, so the change
+        // is distinguishable from Chief's own write.
+        tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+        let mine = format!("{}\n\nMy own note.\n", first.markdown);
+        context
+            .corpus
+            .write(&first.path, &mine)
+            .await
+            .expect("should write");
+
+        let refused = daily_brief(&context)
+            .await
+            .expect_err("an edited brief must not be overwritten");
+
+        assert!(matches!(refused, Error::EditedByHand { .. }), "{refused:?}");
+        assert!(
+            refused.to_string().contains("Delete or rename"),
+            "the message has to say how to get a fresh one: {refused}"
+        );
+
+        assert_eq!(
+            context.corpus.read(&first.path).await.expect("read"),
+            mine,
+            "the user's text must still be there"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_brief_chief_wrote_itself_is_replaced_as_before() {
+        // The guard must not stop the ordinary case: a brief nobody has touched
+        // is still regenerated.
+        let second =
+            r#"{"choices":[{"message":{"role":"assistant","content":"- a later brief"}}]}"#;
+        let (host, _server) = serve(vec![
+            ("HTTP/1.1 200 OK", ANSWER),
+            ("HTTP/1.1 200 OK", second),
+        ]);
+        let (context, _scratch) = ready(&host, "untouched").await;
+
+        daily_brief(&context).await.expect("first");
+        let again = daily_brief(&context).await.expect("should replace its own");
+
+        assert_eq!(
+            context.corpus.read(&again.path).await.expect("read"),
+            "- a later brief"
+        );
     }
 
     #[tokio::test]
