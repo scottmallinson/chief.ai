@@ -30,7 +30,16 @@ const shipped: WorkLogEntry = {
 /** The view as `App` renders it, with the parts a test does not care about set. */
 function show(props: Partial<Parameters<typeof TodayView>[0]> = {}) {
   return render(
-    <TodayView brief={brief} status="ready" error={null} onWrite={vi.fn()} {...props} />,
+    <TodayView
+      brief={brief}
+      status="ready"
+      error={null}
+      onWrite={vi.fn()}
+      proposals={[]}
+      onEditProposal={vi.fn()}
+      onProposalDismissed={vi.fn()}
+      {...props}
+    />,
   );
 }
 
@@ -83,6 +92,26 @@ describe('TodayView', () => {
     show();
 
     expect(await screen.findByText('Merged pull request #44')).toBeInTheDocument();
+  });
+
+  it('shows the drafts Chief prepared, and says none were sent', () => {
+    show({
+      proposals: [
+        {
+          id: 1,
+          source: 'github',
+          title: 'Ask for a review on scottmallinson/chief.ai #44',
+          context: 'scottmallinson/chief.ai #44',
+          path: 'proposed/2026-08-29-scottmallinson-chief-ai-44.md',
+          status: 'drafted',
+          createdAt: '2026-08-29T09:00:00Z',
+          body: 'Could you take a look at #44?',
+        },
+      ],
+    });
+
+    expect(screen.getByText('Drafted for you · nothing sent')).toBeInTheDocument();
+    expect(screen.getByText('Could you take a look at #44?')).toBeInTheDocument();
   });
 
   it('offers to write one when today has no brief yet', () => {

@@ -9,7 +9,7 @@
  * either answer.
  */
 
-import { expect, test, type Brief } from './fixtures';
+import { expect, test, type Brief, type Proposal } from './fixtures';
 
 const today: Brief = {
   date: '2026-08-29',
@@ -143,5 +143,53 @@ test.describe('reduced motion', () => {
       .evaluate((node) => getComputedStyle(node).animationName);
 
     expect(name).toBe('chief-drawer');
+  });
+});
+
+const drafted: Proposal = {
+  id: 1,
+  source: 'github',
+  title: 'Ask for a review on scottmallinson/chief.ai #44',
+  context: 'scottmallinson/chief.ai #44',
+  path: 'proposed/2026-08-29-scottmallinson-chief-ai-44.md',
+  status: 'drafted',
+  createdAt: '2026-08-29T09:00:00.000Z',
+  body: '# Ask for a review\n\nCould you take a look at #44 when you get a moment?',
+};
+
+test.describe('a drafted action', () => {
+  test('appears in the feed saying nothing was sent', async ({ chief, page }) => {
+    await chief.open({ brief: today, corpus: week, proposals: [drafted] });
+
+    await expect(page.getByText('Drafted for you · nothing sent')).toBeVisible();
+    await expect(
+      page.getByText('Could you take a look at #44 when you get a moment?'),
+    ).toBeVisible();
+    await expect(page.getByText('Not sent')).toBeVisible();
+  });
+
+  test('opens in the drawer without reflowing the feed behind it', async ({ chief, page }) => {
+    await chief.open({ brief: today, corpus: week, proposals: [drafted] });
+
+    const closed = await chief.detailWidth();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.getByRole('dialog', { name: 'Edit draft' }).waitFor();
+
+    // The same guarantee the chat drawer gives, on the path that actually
+    // replaces the drawer's contents rather than just opening it.
+    expect(await chief.detailWidth()).toBe(closed);
+    await expect(page.getByRole('textbox', { name: 'Draft' })).toHaveValue(drafted.body);
+  });
+
+  test('goes back to chat once the draft is closed', async ({ chief, page }) => {
+    await chief.open({ brief: today, corpus: week, proposals: [drafted] });
+
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.getByRole('dialog', { name: 'Edit draft' }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.getByRole('dialog').waitFor({ state: 'detached' });
+
+    await chief.openChat();
+    await expect(page.getByRole('dialog', { name: 'Ask Chief' })).toBeVisible();
   });
 });
