@@ -34,6 +34,7 @@ The current state of every step. **Update this table in the pull request that ch
 | 15    | The send path                        | **Not started — deliberately** | REC-18           | —         |
 | 16–21 | Integration fan-out                  | Not started                    | —                | —         |
 | 22    | Bootstrapping the corpus             | Shipped                        | REC-16           | #54       |
+| —     | Calendar by .ics subscription        | Shipped                        | REC-39           | #60       |
 
 **Step 22 was built before step 14**, out of the numbered order and on the plan's own advice: an
 empty corpus is step 14's failure mode, and a draft written against seven empty starter files is
@@ -729,6 +730,10 @@ removes from it.**
   because to the reader those are indistinguishable from a misunderstanding.
 - **`/brief` reads today's brief and never regenerates it.** Writing one is a model call.
 - **A dismissed proposal keeps its dedupe slot**, or the next pass drafts it again.
+- **A calendar subscription address is a credential, not a setting.** It grants read access to a
+  whole calendar to anyone holding it, so it is stored like a token and never displayed.
+- **A new integration does not get a new tool.** The catalogue is at 477 of D2's 600-token cap, so
+  the fourth breaks it. New sources feed the recipes and the router, which cost nothing per turn.
 - **The corpus watcher needs no way to tell Chief's writes from a person's.** Reindexing writes only
   to SQLite, so a self-triggered loop has no closing edge. The debounce is the whole mechanism.
 - **The watcher is an optimisation, not a dependency.** Reindex-on-command still runs, so a machine

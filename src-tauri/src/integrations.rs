@@ -18,10 +18,16 @@ pub const GITHUB: &str = "github";
 
 /// Outlook mail and calendar, through Microsoft Graph.
 pub const MICROSOFT: &str = "microsoft";
+/// A calendar the user subscribed to by URL rather than signed in to.
+pub const CALENDAR: &str = "calendar";
 
 /// How a credential was obtained, so routing is explicit rather than inferred
 /// from which columns happen to be NULL.
 pub const OAUTH: &str = "oauth";
+/// A bearer credential that happens to look like a link. See `calendar.rs`:
+/// a subscription address grants read access to a whole calendar, so it is
+/// stored beside the OAuth tokens rather than in settings, and never shown.
+pub const SUBSCRIPTION: &str = "subscription";
 
 /// A connected account, as the settings screen sees it. Carries no secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

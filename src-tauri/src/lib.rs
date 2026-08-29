@@ -6,6 +6,7 @@
 //! service on its own.
 
 mod agent;
+mod calendar;
 mod clock;
 mod connect;
 mod context;
@@ -14,6 +15,7 @@ mod daemon;
 mod db;
 mod engine;
 mod github;
+mod ical;
 mod integrations;
 mod intent;
 mod microsoft;
@@ -61,6 +63,7 @@ pub fn run() {
             app.manage(github::Client::new()?);
             // And Outlook, for the mailbox and calendar they connected.
             app.manage(microsoft::Client::new()?);
+            app.manage(calendar::Client::new()?);
             app.manage(connect::Pending::default());
             app.manage(agent::Attention::default());
 
@@ -84,6 +87,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             agent::ask_agent,
+            connect::add_calendar,
             connect::start_login,
             connect::finish_login,
             connect::connections,

@@ -430,6 +430,34 @@ Three rules, all about not taking something that is the user's:
 so it cannot leak into `as_tool_entries` — a list of pull request bodies would swamp the prompt
 budget, and the model does not need one to say what is waiting.
 
+## Calendars without a sign-in
+
+`src-tauri/src/ical.rs` parses iCalendar; `src-tauri/src/calendar.rs` fetches it. Together they are
+a calendar that needs no OAuth application, no registration and no administrator consent — the user
+pastes the address their provider already publishes.
+
+- **The address is a credential.** A subscription link grants read access to somebody's whole
+  calendar to anyone holding it. It is stored in `integrations` beside the OAuth tokens, and
+  **never logged, never put in an error, never shown once saved** — `calendar::Error` has four
+  variants and not one of them carries the URL, which a test asserts.
+- **The first outbound host the user chooses.** Everywhere else Chief talks to a constant. Here a
+  person types it, so it takes the care `weights.rs` takes: HTTPS only, every redirect required to
+  stay HTTPS, no other service's credential attached, no proxy. `webcal://` is rewritten rather
+  than refused, because that is the scheme providers actually hand out.
+- **No new tool.** Subscriptions merge into the same `microsoft::Event` the Outlook path produces,
+  so a brief never knows which kind of calendar an entry came from. The catalogue stays at 3 tools:
+  it is at 477 of D2's 600-token cap, so a fourth would break it.
+- **`ical.rs` is pure**, which is where the mistakes are. Line folding, escaped text, `TZID` against
+  the file's own `VTIMEZONE`, all-day dates, cancellations and `RRULE` expansion are all tested
+  without a server.
+- **What it does not support is written down at the top of the module** and should stay that way:
+  `BYSETPOS`, `BYMONTHDAY`/`BYMONTH` selectors, and `RECURRENCE-ID` overrides. A rule it cannot
+  read is treated as the one-off the event was defined as — showing a meeting on a day it does not
+  happen is worse than missing a series.
+- **A malformed fixture is a folded line.** A stray leading space in a test calendar is a
+  continuation to RFC 5545, so it silently glues `SUMMARY` onto the line above and the parser gets
+  blamed. `calendar_file()` is built from a list of lines for exactly this reason.
+
 ## Background daemon
 
 `src-tauri/src/daemon.rs` keeps the work log current: ask GitHub what the user merged, ask the local

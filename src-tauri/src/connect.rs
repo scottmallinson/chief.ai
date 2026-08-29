@@ -11,9 +11,12 @@
 use tauri::{AppHandle, Runtime, State};
 use tokio::sync::Mutex;
 
+use crate::calendar;
 use crate::db;
 use crate::github::{self, Client, DeviceLogin};
-use crate::integrations::{self, Account, NewAccount, GITHUB, MICROSOFT, OAUTH};
+use crate::integrations::{
+    self, Account, NewAccount, CALENDAR, GITHUB, MICROSOFT, OAUTH, SUBSCRIPTION,
+};
 use crate::microsoft;
 use crate::oauth::Provider;
 
@@ -65,6 +68,8 @@ pub enum Error {
     WrongFlow,
     #[error(transparent)]
     Storage(#[from] db::Error),
+    #[error(transparent)]
+    Calendar(#[from] calendar::Error),
 }
 
 impl serde::Serialize for Error {
@@ -76,11 +81,53 @@ impl serde::Serialize for Error {
 /// Reject a service Chief does not know, rather than failing later and less
 /// clearly.
 fn known(service: &str) -> Result<(), Error> {
-    if service == GITHUB || service == MICROSOFT {
+    if service == GITHUB || service == MICROSOFT || service == CALENDAR {
         return Ok(());
     }
 
     Err(Error::NoSuchService(service.to_string()))
+}
+
+/// Subscribe to a calendar by its published address.
+///
+/// Validated by reading it once, before anything is stored: a mistyped address
+/// should fail while the user is looking at the field, not produce an empty
+/// brief tomorrow morning. The URL is a bearer credential — see `calendar.rs` —
+/// so it is stored as one and never returned to the frontend.
+#[tauri::command]
+pub async fn add_calendar<R: Runtime>(
+    app: AppHandle<R>,
+    calendar: State<'_, calendar::Client>,
+    url: String,
+    label: Option<String>,
+) -> Result<Account, Error> {
+    let address = calendar::normalise(&url)?;
+
+    // Prove it is reachable and really is a calendar before it is kept.
+    calendar.read(&address).await?;
+
+    let pool = db::pool(&app).await?;
+
+    // Keyed on the address, so re-adding the same calendar updates the row it
+    // already has rather than making a second one.
+    let stored = integrations::save(
+        &pool,
+        NewAccount {
+            service: CALENDAR,
+            account_key: &address,
+            identity: label.as_deref().filter(|it| !it.trim().is_empty()),
+            credential_kind: SUBSCRIPTION,
+            access_token: &address,
+            refresh_token: None,
+            expires_at: None,
+            scopes: None,
+            client_id: None,
+            client_secret: None,
+        },
+    )
+    .await?;
+
+    Ok(stored)
 }
 
 /// Begin signing in and return what the user must do next.
@@ -92,6 +139,12 @@ pub async fn start_login(
     pending: State<'_, Pending>,
 ) -> Result<Login, Error> {
     known(&service)?;
+
+    if service == CALENDAR {
+        return Err(Error::NoSuchService(
+            "a calendar subscription is added with its address, not by signing in".to_string(),
+        ));
+    }
 
     let (flow, login) = if service == MICROSOFT {
         let client_id = microsoft::client_id()?;

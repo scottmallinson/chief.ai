@@ -6,6 +6,9 @@ export const GITHUB = 'github';
 /** Outlook mail and calendar, through Microsoft Graph. */
 export const MICROSOFT = 'microsoft';
 
+/** A calendar subscribed to by URL rather than signed in to. */
+export const CALENDAR = 'calendar';
+
 /** One connected account, as the backend reports it. Carries no secret. */
 export interface Account {
   id: number;
@@ -68,6 +71,16 @@ export function finishLogin(service: string): Promise<Account[]> {
 }
 
 /** Forget one account's credential. */
+/**
+ * Subscribe to a calendar by its published address.
+ *
+ * The address is a bearer credential — anyone holding it can read the whole
+ * calendar — so it goes straight to Rust and is never returned or displayed.
+ */
+export function addCalendar(url: string, label: string | null): Promise<Account> {
+  return invoke<Account>('add_calendar', { url, label });
+}
+
 export function disconnect(accountId: number): Promise<Account[]> {
   return invoke<Account[]>('disconnect', { accountId });
 }
