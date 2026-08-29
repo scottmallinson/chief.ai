@@ -543,4 +543,77 @@ mod tests {
             .await
             .expect("should clean up");
     }
+
+    /// X2: a part file that is not the model must never be renamed into place.
+    ///
+    /// This is the failure the magic check exists for — a login wall, an error
+    /// page or a truncated transfer saved under the model's name, and handed to
+    /// the engine, which fails in a much less obvious way. Like the test above
+    /// it needs the real host, because the resume is the path being proved; but
+    /// it seeds the part file to a kilobyte short of the whole thing, so the
+    /// request it makes is a kilobyte rather than a gigabyte:
+    ///
+    /// ```text
+    /// cargo test --manifest-path src-tauri/Cargo.toml \
+    ///   weights::tests::a_poisoned_part_file -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "reaches huggingface.co"]
+    async fn a_poisoned_part_file_is_rejected_rather_than_handed_to_the_engine() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = std::env::temp_dir().join(format!("chief-poison-{}", std::process::id()));
+        let model = LIGHT;
+        let destination = model.path(&dir);
+        let partial = part_path(&destination);
+        tokio::fs::create_dir_all(destination.parent().expect("has a parent"))
+            .await
+            .expect("should create");
+
+        let total = reqwest::Client::new()
+            .head(model.source)
+            .send()
+            .await
+            .expect("should reach the model host")
+            .content_length()
+            .expect("the host should say how big the file is");
+
+        // A download that went almost all the way — but what arrived was a
+        // login page, not a model. Sparse beyond the first bytes, so proving
+        // this costs a kilobyte of transfer and nothing on disk.
+        const LEFT: u64 = 1024;
+        let mut seeded = tokio::fs::File::create(&partial)
+            .await
+            .expect("should create");
+        seeded
+            .write_all(b"<html><body>Sign in to continue</body></html>")
+            .await
+            .expect("should write");
+        seeded
+            .set_len(total - LEFT)
+            .await
+            .expect("should size the part file");
+        seeded.flush().await.expect("should flush");
+        drop(seeded);
+
+        let outcome = download(&model, &destination, |_| {}).await;
+
+        assert!(
+            matches!(outcome, Err(Error::NotAModel)),
+            "a part file that is not a model should be refused, got {outcome:?}"
+        );
+        assert!(
+            !destination.exists(),
+            "nothing that failed the check should be renamed into place"
+        );
+        assert!(
+            !partial.exists(),
+            "the poisoned part file should be removed, or the next attempt \
+             would append to it instead of fetching the model"
+        );
+
+        tokio::fs::remove_dir_all(&dir)
+            .await
+            .expect("should clean up");
+    }
 }
