@@ -7,3 +7,4 @@ for node_bin in "$HOME"/.nvm/versions/node/*/bin; do
 done
 
 pnpm commitlint --edit "$1"
+sh scripts/check-attribution.sh "$1"

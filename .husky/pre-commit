@@ -12,3 +12,4 @@ if [ -d "$HOME/.cargo/bin" ]; then
 fi
 
 pnpm lint-staged
+node scripts/check-migrations.mjs
