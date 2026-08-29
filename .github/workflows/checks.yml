@@ -1,0 +1,203 @@
+name: Checks
+
+# The checks themselves, in one place, so that "the release depends on CI being
+# green" is true by construction rather than by cross-referencing two runs: CI
+# and Release call this same file, and a release runs the same jobs against the
+# very commit it is about to bundle.
+
+on:
+  workflow_call:
+    inputs:
+      build-app:
+        description: >-
+          Build the desktop app on macOS and Windows. True for a pull request,
+          where compiling the platform-conditional code is the question. False
+          for a release, whose bundle jobs compile both platforms anyway, in the
+          profile that ships.
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The app build is most of what CI costs, so it is worth a Linux minute to
+  # find out whether this change could possibly affect it. A change to the
+  # frontend cannot: `pnpm build` in the Frontend job already proves the bundle
+  # compiles, and nothing under `src/` reaches the platform-conditional Rust
+  # that is the whole reason the app build runs on two paid platforms.
+  changes:
+    name: What changed
+    if: inputs.build-app
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      app: ${{ steps.decide.outputs.app }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the app has to be built
+        id: decide
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # A run that is not a pull request has no base to diff against, so it
+          # builds unconditionally. Those are the runs whose job is to be
+          # thorough.
+          if [ "$EVENT" != 'pull_request' ]; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$EVENT: building the app."
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          echo "Changed files:"
+          echo "$changed" | sed 's/^/  /'
+
+          # src-tauri carries the Rust, Cargo.lock and the Tauri config;
+          # scripts fetches the engine the build needs on disk; package.json
+          # pins the Tauri CLI that runs the build, and the lockfile moves with
+          # it; and a change to CI itself has to be proved by running it.
+          if echo "$changed" | grep -qE '^(src-tauri/|scripts/|package\.json$|pnpm-lock\.yaml$|\.github/(workflows|actions)/)'; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Building the app: the change reaches it."
+          else
+            echo "app=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping the app build: nothing outside the frontend changed."
+          fi
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-node
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test:coverage
+
+      - name: Build
+        run: pnpm build
+
+  layout:
+    name: Layout
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-node
+
+      # Chromium is ~150 MB and the pinned version only changes when the
+      # Playwright dependency does, so the lockfile is the cache key.
+      - name: Restore the browser
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      # The system libraries are apt packages rather than part of the cache,
+      # so they are installed either way.
+      - name: Install Chromium's system libraries
+        run: pnpm exec playwright install-deps chromium
+
+      # Only Chromium: these tests measure Chief's own layout, not how it
+      # renders across engines, and the shipped webviews are not available
+      # here. A restored cache makes this a no-op rather than a download.
+      - name: Install Chromium
+        run: pnpm exec playwright install chromium
+
+      - name: Test
+        run: pnpm test:e2e
+
+      # The one action still on Node 20, and deliberately: its v5 is a Node 20
+      # action too, so bumping it would buy nothing. It also only runs when the
+      # job has already failed. Revisit when upload-artifact ships Node 24.
+      - name: Upload the report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-tauri
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+
+  app:
+    name: App build (${{ matrix.platform }})
+    needs: changes
+    # Only where it answers something. A pull request builds the app to prove
+    # the platform-conditional code compiles; a release skips it, because the
+    # bundle jobs compile the same two platforms straight afterwards, in the
+    # profile that actually ships.
+    if: inputs.build-app && needs.changes.outputs.app == 'true'
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS and Windows are the platforms Chief ships for, and the two
+        # nothing else compiles: the Rust job already builds the whole crate on
+        # Linux, but `#[cfg(windows)]` code — `engine.rs:325`, which is where
+        # the last two fixes on main went — is compiled on Windows and nowhere
+        # else.
+        #
+        # Linux used to be added on main, to link a release profile against
+        # WebKitGTK. It is not built at all now: Chief does not ship a Linux
+        # bundle, so that link was proving something nobody installs.
+        platform: ['macos-latest', 'windows-latest']
+    steps:
+      - uses: actions/checkout@v5
+
+      # `tauri-dev-<platform>` and nothing else: a debug build shares nothing
+      # with a release one, and this job only ever builds debug now. Release
+      # keeps its own `tauri-<target>` caches, which a branch can no longer
+      # evict.
+      - uses: ./.github/actions/setup-tauri
+        with:
+          shared-key: tauri-dev-${{ matrix.platform }}
+
+      # One question to answer: does the platform-conditional code compile and
+      # link on a platform nothing else compiles it on. The debug profile
+      # answers it without paying for optimisation on a runner that bills at
+      # ten times Linux. The release profile is proved when a release is cut.
+      - name: Build the desktop app
+        run: pnpm tauri build --no-bundle --debug
