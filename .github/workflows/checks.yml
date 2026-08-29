@@ -201,3 +201,45 @@ jobs:
       # ten times Linux. The release profile is proved when a release is cut.
       - name: Build the desktop app
         run: pnpm tauri build --no-bundle --debug
+
+  # One context for a branch protection rule to require.
+  #
+  # The app build is conditional, and a skipped matrix job is recorded by
+  # GitHub under its unexpanded name — `App build (${{ matrix.platform }})` —
+  # so requiring `App build (macos-latest)` would wait for a context that never
+  # arrives and block the pull request for ever. This job always runs, so it is
+  # always there to require, and it fails if anything above it failed.
+  complete:
+    name: Complete
+    if: always()
+    needs: [frontend, layout, rust, app]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Report whether every check passed
+        shell: bash
+        env:
+          RESULTS: >-
+            frontend=${{ needs.frontend.result }}
+            layout=${{ needs.layout.result }}
+            rust=${{ needs.rust.result }}
+            app=${{ needs.app.result }}
+        run: |
+          echo "$RESULTS" | tr ' ' '\n'
+
+          failed=0
+          for pair in $RESULTS; do
+            case "${pair#*=}" in
+              # A skipped job is a deliberate answer — the app build is left
+              # out when the change cannot reach it, and when a release runs
+              # these checks before bundling.
+              success | skipped) ;;
+              *)
+                echo "::error::${pair%%=*} reported ${pair#*=}"
+                failed=1
+                ;;
+            esac
+          done
+
+          [ "$failed" -eq 0 ] || exit 1
+          echo 'Every check passed.'
