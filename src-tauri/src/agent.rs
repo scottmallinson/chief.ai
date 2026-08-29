@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::clock;
@@ -49,8 +50,78 @@ fn is_unusable_tool_output(error: &llama::Error) -> bool {
 /// What a message cut on the way in is marked with.
 const MESSAGE_CUT: &str = "\n\n[This message was too long to send in full. The rest was cut.]";
 
-/// What a tool result cut on the way in is marked with.
-const RESULT_CUT: &str = "\n\n[Truncated: there was more than would fit in the prompt.]";
+/// Cut a tool result down to `tokens` without breaking it.
+///
+/// Structurally, by dropping whole entries from the longest list it contains —
+/// **not** by cutting the text. Slicing JSON at a byte boundary leaves the model
+/// something like `{"number":41,"tit`, which it cannot read: measured, a
+/// question answered from a string-truncated list came back as the single word
+/// "None" while twenty-odd pull requests were sitting in the reply. A shorter
+/// valid list is worth having; half a malformed one is worse than nothing.
+///
+/// What was dropped is said in the result itself, so the model can tell the
+/// user it is looking at part of a list rather than all of it.
+fn trim_result(mut result: Value, tokens: u32) -> String {
+    if context::estimate_tokens(&result.to_string()) <= tokens {
+        return result.to_string();
+    }
+
+    // The longest array is the one worth shortening; everything else in a tool
+    // result is a handful of scalars.
+    let Some(field) = longest_array(&result) else {
+        // Nothing to drop entries from, so the whole thing has to go rather
+        // than go out malformed.
+        return json!({ "error": "the result was too large to send to the model" }).to_string();
+    };
+
+    // Said before trimming, not after: the note is itself part of what has to
+    // fit, and adding it afterwards put the result back over the budget.
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "truncated".to_string(),
+            json!("There was more than would fit. Say so if you list these."),
+        );
+    }
+
+    while context::estimate_tokens(&result.to_string()) > tokens {
+        let left = result
+            .get_mut(&field)
+            .and_then(Value::as_array_mut)
+            .map(|items| {
+                items.pop();
+                items.len()
+            });
+
+        match left {
+            Some(0) | None => break,
+            Some(_) => {}
+        }
+    }
+
+    result.to_string()
+}
+
+/// The field holding the longest array, if there is one.
+fn longest_array(result: &Value) -> Option<String> {
+    result
+        .as_object()?
+        .iter()
+        .filter_map(|(name, value)| value.as_array().map(|items| (name.clone(), items.len())))
+        .max_by_key(|(_, length)| *length)
+        .map(|(name, _)| name)
+}
+
+/// Roughly what the tool catalogue costs.
+///
+/// It is sent as its own field and rendered into the prompt by the chat
+/// template, so it never appears in any message — and it is several hundred
+/// tokens on every single turn. A budget that ignores it is short by that much
+/// before it starts.
+fn catalog_cost(catalog: &[llama::Tool]) -> u32 {
+    serde_json::to_string(catalog)
+        .map(|rendered| context::estimate_tokens(&rendered))
+        .unwrap_or(0)
+}
 
 /// Roughly what a transcript costs to send.
 fn spent_on(messages: &[Message]) -> u32 {
@@ -328,13 +399,10 @@ where
             // rounds would have overflowed the context entirely. So a result is
             // charged against the same ceiling as everything else, and cut to
             // what is left rather than appended whole.
-            let spent = spent_on(&messages);
+            let spent = spent_on(&messages) + catalog_cost(&catalog);
             let room = context::DEFAULT_CEILING.saturating_sub(spent);
 
-            messages.push(Message::tool_result(
-                call,
-                context::fit(&result.to_string(), room, RESULT_CUT),
-            ));
+            messages.push(Message::tool_result(call, trim_result(result, room)));
         }
     }
 
@@ -893,6 +961,70 @@ mod orchestration_tests {
         assert_eq!(written, ANSWER);
     }
 
+    #[test]
+    fn a_trimmed_tool_result_is_still_valid_json() {
+        // The failure this replaced: cutting the text at a byte boundary left
+        // the model something like `{"number":41,"tit`, which it could not
+        // read. Asked what needed review with twenty-odd pull requests in the
+        // reply, it answered the single word "None".
+        let items: Vec<Value> = (0..40)
+            .map(|n| json!({ "number": n, "title": "a fairly long pull request title here" }))
+            .collect();
+        let result = json!({ "pull_requests": items, "count": 40 });
+
+        let trimmed = trim_result(result, 200);
+
+        let parsed: Value =
+            serde_json::from_str(&trimmed).expect("a trimmed result must still parse");
+
+        let left = parsed["pull_requests"].as_array().expect("still a list");
+        assert!(!left.is_empty(), "something should survive");
+        assert!(left.len() < 40, "it should actually have dropped some");
+
+        // Every surviving entry is whole, not half of one.
+        for item in left {
+            assert!(item["number"].is_number(), "{item}");
+            assert!(item["title"].is_string(), "{item}");
+        }
+
+        assert!(
+            parsed.get("truncated").is_some(),
+            "the model has to know it is seeing part of a list"
+        );
+        assert!(context::estimate_tokens(&trimmed) <= 200);
+    }
+
+    #[test]
+    fn a_result_that_fits_is_passed_through_untouched() {
+        let result = json!({ "pull_requests": [{ "number": 1 }], "count": 1 });
+        let same = result.clone();
+
+        assert_eq!(trim_result(result, 2_000), same.to_string());
+    }
+
+    #[test]
+    fn a_result_with_no_list_to_shorten_is_refused_rather_than_mangled() {
+        let result = json!({ "error": "x".repeat(10_000) });
+        let trimmed = trim_result(result, 50);
+
+        let parsed: Value = serde_json::from_str(&trimmed).expect("must still parse");
+        assert!(parsed["error"].is_string());
+    }
+
+    #[test]
+    fn the_tool_catalogue_is_counted_against_the_budget() {
+        // It never appears in a message — llama.cpp renders it into the prompt
+        // from its own field — so a budget reading only messages is short by
+        // several hundred tokens on every turn.
+        let cost = catalog_cost(&tools::catalog());
+
+        assert!(cost > 100, "the catalogue is not free: got {cost}");
+        assert!(
+            cost < context::DEFAULT_CEILING,
+            "nor is it the whole budget"
+        );
+    }
+
     #[tokio::test]
     async fn a_large_tool_result_is_cut_to_the_budget_rather_than_appended_whole() {
         // Measured in the product before this existed: a question answered from
@@ -937,7 +1069,7 @@ mod orchestration_tests {
             context::DEFAULT_CEILING
         );
         assert!(
-            whole.contains("Truncated"),
+            whole.contains("truncated"),
             "a cut result must say it was cut, or the model answers as though it read all of it"
         );
     }
