@@ -4,10 +4,10 @@ A synthesis of the **Enterprise Blueprint**, the **PRD** and **The Hybrid Model 
 Chat")**, reconciled against the code in this repository — including the work on
 `feature/integration-roadmap-priority-5cb1bc` — and written to be executed autonomously.
 
-**Revision 4.** Revision 1 was written against `main` and did not account for the integration
-branch. Revision 2 reconciled with it. Revision 3 took all eight decisions. **Revision 4 is the
-first revision to live on `main`**, and reconciles the plan with what was actually built — see §0
-for the ledger and §6 for what changed.
+**Revision 5.** Revision 1 was written against `main` and did not account for the integration
+branch. Revision 2 reconciled with it. Revision 3 took all eight decisions. Revision 4 was the first to
+live on `main`. **Revision 5 is the first written in the same pull request as the code it
+describes** — see §0 for the ledger and §6 for what changed.
 
 > **This is a living document.** It is updated in the same pull request as the work it describes,
 > not afterwards. §8 says how. A plan that records what was intended, and never what happened, is
@@ -20,20 +20,20 @@ for the ledger and §6 for what changed.
 
 The current state of every step. **Update this table in the pull request that changes it.**
 
-| Step  | What                                 | State                          | Issue                    | Landed as |
-| ----- | ------------------------------------ | ------------------------------ | ------------------------ | --------- |
-| 1–6   | Scaffolding through work log         | Shipped                        | —                        | pre-plan  |
-| 7     | Generic integration layer            | Shipped                        | —                        | pre-plan  |
-| 8     | Model revert, probe, tiering, thrift | Shipped                        | —                        | —         |
-| 9     | Outlook Mail and Calendar            | Shipped                        | —                        | —         |
-| 10    | Corpus layer and context budget      | **Partial**                    | REC-10 (watcher missing) | —         |
-| 11    | Recipe engine and the first brief    | Shipped                        | —                        | —         |
-| 12    | Executive Feed and the chat drawer   | Shipped                        | REC-14                   | #52       |
-| 13    | Deterministic intent routing         | Shipped                        | REC-15                   | #53       |
-| 14    | Proposed Actions, drafted            | Shipped                        | REC-17                   | #55       |
-| 15    | The send path                        | **Not started — deliberately** | REC-18                   | —         |
-| 16–21 | Integration fan-out                  | Not started                    | —                        | —         |
-| 22    | Bootstrapping the corpus             | Shipped                        | REC-16                   | #54       |
+| Step  | What                                 | State                          | Issue            | Landed as |
+| ----- | ------------------------------------ | ------------------------------ | ---------------- | --------- |
+| 1–6   | Scaffolding through work log         | Shipped                        | —                | pre-plan  |
+| 7     | Generic integration layer            | Shipped                        | —                | pre-plan  |
+| 8     | Model revert, probe, tiering, thrift | Shipped                        | —                | —         |
+| 9     | Outlook Mail and Calendar            | Shipped                        | —                | —         |
+| 10    | Corpus layer and context budget      | Shipped                        | REC-10 (watcher) | #57       |
+| 11    | Recipe engine and the first brief    | Shipped                        | —                | —         |
+| 12    | Executive Feed and the chat drawer   | Shipped                        | REC-14           | #52       |
+| 13    | Deterministic intent routing         | Shipped                        | REC-15           | #53       |
+| 14    | Proposed Actions, drafted            | Shipped                        | REC-17           | #55       |
+| 15    | The send path                        | **Not started — deliberately** | REC-18           | —         |
+| 16–21 | Integration fan-out                  | Not started                    | —                | —         |
+| 22    | Bootstrapping the corpus             | Shipped                        | REC-16           | #54       |
 
 **Step 22 was built before step 14**, out of the numbered order and on the plan's own advice: an
 empty corpus is step 14's failure mode, and a draft written against seven empty starter files is
@@ -417,7 +417,22 @@ refuses an oversized assembly, minifier idempotent, estimator within 10% on both
 
 **Risk.** Low-medium.
 
-**Built, except the watcher — revision 4.** `corpus.rs`, migration v5's `corpus_files`, `context.rs`
+**Complete — revision 5.** The watcher landed as REC-10. `watcher.rs` holds a pure `Debounce`
+driven by an injected `Instant`, so a burst collapsing into one reindex is tested without sleeping
+through it, and `notify` supplies the events.
+
+One thing this step's warning got slightly wrong, and it is worth recording rather than quietly
+building around. The plan says a watcher "must not react to itself" because Chief writes here too,
+implying a mechanism for telling Chief's writes from a person's. **No such mechanism is needed.**
+The storm it fears is a cycle, and a cycle needs an edge from reindexing back to the filesystem —
+reindexing writes to SQLite and leaves the folder byte-identical, so there is nothing to close the
+loop however many events arrive. `reindexing_does_not_touch_the_corpus_at_all` asserts exactly that.
+What Chief's own writes cost is one reindex per burst, the same as anybody else's, and the debounce
+is what makes it one rather than several.
+
+The estimator is still 3 bytes per token and still uncalibrated. See §9.
+
+**Previously, revision 4 said:** `corpus.rs`, migration v5's `corpus_files`, `context.rs`
 with its budget and minifier all shipped. **The debounced watcher was not built**, and there is no
 `notify` dependency in `Cargo.toml`.
 
@@ -623,6 +638,13 @@ has edited — `mtime` against the step-10 index.
 | Step 14 after step 22 in number order        | Step 22 built **first**                       | An empty corpus is step 14's failure mode. The plan said so; the order followed the advice        |
 | The catalogue costs ~882 tokens              | 477 across 3 tools, measured                  | Measured on `main` at step 13. The 6-tool/600-token cap still binds, at the fourth tool           |
 
+### Revision 4 → revision 5
+
+| Revision 4 said                            | Revision 5 says                                    | Why                                                                                    |
+| ------------------------------------------ | -------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Step 10 partial; watcher tracked as REC-10 | Step 10 complete                                   | The watcher landed. `watcher.rs`, `notify`, a pure debounce                            |
+| A watcher must not react to Chief's writes | It cannot loop, and needs no mechanism to avoid it | Reindexing writes only to SQLite, so the cycle has no closing edge. Asserted by a test |
+
 ---
 
 ## 7. Notes for the executing agent
@@ -694,7 +716,6 @@ removes from it.**
 
 | What                                 | Note                                                                    | Where       |
 | ------------------------------------ | ----------------------------------------------------------------------- | ----------- |
-| **Debounced corpus watcher**         | Step 10's gap. Reindex-on-command covers correctness                    | REC-10      |
 | **Tokens in the OS keychain**        | Stored as plain text, protected by the OS user account                  | —           |
 | **Reviewers in `team_structure.md`** | GitHub's search response carries none, so it is a call per pull request | REC-16      |
 | **`glib` GHSA-wrw7-89jp-8q8g**       | Accepted, not fixed. Linux-only and unreachable from a shipped build    | SECURITY.md |
@@ -707,3 +728,7 @@ removes from it.**
   because to the reader those are indistinguishable from a misunderstanding.
 - **`/brief` reads today's brief and never regenerates it.** Writing one is a model call.
 - **A dismissed proposal keeps its dedupe slot**, or the next pass drafts it again.
+- **The corpus watcher needs no way to tell Chief's writes from a person's.** Reindexing writes only
+  to SQLite, so a self-triggered loop has no closing edge. The debounce is the whole mechanism.
+- **The watcher is an optimisation, not a dependency.** Reindex-on-command still runs, so a machine
+  where the watch could not be established is exactly as correct as one from before it existed.

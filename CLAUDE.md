@@ -229,6 +229,27 @@ the user to install a runtime, which is the whole reason the engine is a module 
 - `--jinja` is not optional: tool calling goes through the model's own chat template, which
   llama.cpp only applies in Jinja mode.
 
+## Watching the corpus
+
+`src-tauri/src/watcher.rs` keeps `corpus_files` in step with a folder the user edits themselves.
+
+- Every command that touches the corpus already reindexes, so the index is correct **whenever Chief
+  looks**. The watcher closes the gap between somebody saving a file and something else happening to
+  trigger a scan. It is an optimisation, not a dependency: a machine where the watch could not be
+  established is exactly as correct as one from before it existed.
+- **`Debounce` is pure and takes an `Instant`**, so "a burst collapses into one reindex" is tested
+  without sleeping through it. Saving one file produces several events — a write, a rename from a
+  temporary file, an attribute change — and reindexing on each is a folder walk apiece.
+- **A self-triggered loop is impossible, and needs no mechanism to prevent it.** The plan warned
+  that Chief writes here too and a watcher might react to itself. A loop needs an edge from
+  reindexing back to the filesystem; reindexing writes only to SQLite, and
+  `reindexing_does_not_touch_the_corpus_at_all` asserts the folder is byte-identical afterwards.
+- Only `.md` is watched, matching `Corpus::list`. An editor's swap files, `.DS_Store` and the
+  numbered temporaries vim leaves behind would each otherwise be a reindex.
+- `notify` is pulled with `default-features = false` and `macos_fsevent`. The backend is chosen per
+  platform regardless — inotify on Linux, `ReadDirectoryChangesW` on Windows — so the feature only
+  settles which of the two macOS backends is used.
+
 ## Agent layer
 
 `src-tauri/src/llama.rs` is the only place that speaks HTTP to a model.
