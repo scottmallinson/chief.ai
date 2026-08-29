@@ -1,7 +1,18 @@
 name: Release
 
 on:
-  push:
+  # After CI, not beside it. Releasing on `push` meant the bundles were built
+  # and attached while the tests were still running, so a commit whose Rust job
+  # failed could still produce a release — and both workflows compiled the same
+  # crate at the same time, each racing the other's cargo cache.
+  #
+  # `branches: [main]` filters on the branch CI itself ran on, so pull request
+  # runs never reach this. The release commit is pushed with GITHUB_TOKEN,
+  # which by design raises no workflow runs, so it starts no CI run and this
+  # cannot loop.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   # Re-runs the same flow by hand. With nothing releasable since the last tag
   # it is one Linux job that decides so and stops.
@@ -30,6 +41,11 @@ jobs:
   # bundles to attach to.
   version:
     name: Work out the release
+    # Nothing publishes from a red commit. A hand-started run has no CI run
+    # behind it, so it is allowed through on its own.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     outputs:
@@ -41,9 +57,13 @@ jobs:
     steps:
       # Full history and tags: the script releases what has landed since the
       # last `v*` tag, and cannot see that in a shallow clone.
+      # The commit CI actually tested, not whatever main has reached since. The
+      # push below is `HEAD:main`, so if main has moved on it is refused rather
+      # than rewinding anything.
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       # No `pnpm install`: the script has no dependencies, so the runner's own
       # Node runs it and a release does not wait on a package manager.
@@ -114,7 +134,7 @@ jobs:
           echo "::notice::Drafted $TAG as release $id."
 
   bundle:
-    name: Bundle (${{ matrix.platform }})
+    name: Bundle (${{ matrix.label }})
     needs: version
     if: needs.version.outputs.releasing == 'true'
     runs-on: ${{ matrix.platform }}
@@ -122,15 +142,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Linux is not a platform Chief ships for, so it is not built here.
+        #
+        # macOS builds both architectures, and both run on the same arm64
+        # runner — so each names the engine it needs. `engine-target` is not
+        # decoration: the Intel bundle links an Intel `llama-server`, and
+        # fetching the runner's own would leave Tauri looking for a sidecar
+        # that is not there.
         include:
           - platform: macos-latest
+            label: macOS Apple silicon
             args: --target aarch64-apple-darwin
+            engine: aarch64-apple-darwin
           - platform: macos-latest
+            label: macOS Intel
             args: --target x86_64-apple-darwin
-          - platform: ubuntu-22.04
-            args: ''
+            engine: x86_64-apple-darwin
           - platform: windows-latest
+            label: Windows
             args: ''
+            engine: ''
     steps:
       # The release commit, not whatever main has reached since: another pull
       # request merging mid-release must not change what ships.
@@ -157,10 +188,15 @@ jobs:
       # with Chief's dependencies already compiled instead of building the
       # whole tree from nothing. Only dependencies: rust-cache leaves the
       # workspace's own crates out, so Chief itself is always compiled here.
+      # Keyed on the target rather than the runner, because the two macOS jobs
+      # run on the same runner and compile different architectures into
+      # different target directories. Sharing one key had them overwriting each
+      # other's cache with artifacts the other cannot use.
       - uses: ./.github/actions/setup-tauri
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-          shared-key: tauri-${{ matrix.platform }}
+          engine-target: ${{ matrix.engine }}
+          shared-key: tauri-${{ matrix.engine || matrix.platform }}
 
       - uses: tauri-apps/tauri-action@v0
         env:

@@ -42,13 +42,37 @@ const ASSETS = {
   'win32-arm64': `llama-${BUILD}-bin-win-cpu-arm64.zip`,
 };
 
+/**
+ * The Rust triples we can fetch an engine for, and the asset key each one
+ * wants.
+ *
+ * A build that cross-compiles asks for a triple that is not this machine's:
+ * macOS builds both Apple architectures on one arm64 runner, and the Intel
+ * half needs the Intel server beside it. Without this the sidecar is named
+ * after the host and Tauri stops with `resource path
+ * binaries/llama-server-x86_64-apple-darwin doesn't exist` — which is exactly
+ * how the first release of this app failed.
+ */
+const TRIPLES = {
+  'x86_64-apple-darwin': 'darwin-x64',
+  'aarch64-apple-darwin': 'darwin-arm64',
+  'x86_64-unknown-linux-gnu': 'linux-x64',
+  'aarch64-unknown-linux-gnu': 'linux-arm64',
+  'x86_64-pc-windows-msvc': 'win32-x64',
+  'aarch64-pc-windows-msvc': 'win32-arm64',
+};
+
 /** What counts as a shared library the server needs beside it. */
 const LIBRARY_PATTERN = /(\.so(\.\d+)*|\.dylib|\.dll|\.metal)$/i;
 
-const serverName = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
-
-/** macOS 12's Accelerate framework lacks the ILP64 symbol in the prebuilt. */
-function needsMacos12Fallback() {
+/**
+ * macOS 12's Accelerate framework lacks the ILP64 symbol in the prebuilt.
+ *
+ * Only ever true for the machine doing the building: the fallback compiles
+ * llama.cpp here, so it cannot produce a server for a platform this is not.
+ */
+function needsMacos12Fallback(target, host) {
+  if (target !== host) return false;
   if (process.platform !== 'darwin' || process.arch !== 'x64') return false;
 
   const version = execFileSync('sw_vers', ['-productVersion'], { encoding: 'utf8' });
@@ -168,18 +192,25 @@ async function walk(directory) {
 }
 
 async function main() {
-  const platform = `${process.platform}-${process.arch}`;
-  const fallback = needsMacos12Fallback();
-  const stamp = fallback ? `${BUILD}-macos12-no-blas` : BUILD;
-  const asset = ASSETS[platform];
+  const host = hostTriple();
+  // `CHIEF_ENGINE_TARGET` is how a cross-compiling build asks for the engine
+  // that matches what it is about to link, rather than the one that matches
+  // the runner it is standing on.
+  const target = process.env.CHIEF_ENGINE_TARGET?.trim() || host;
+  const platform = TRIPLES[target];
 
-  if (asset === undefined) {
+  if (platform === undefined) {
     throw new Error(
-      `there is no llama.cpp CPU build for ${platform}. Chief bundles: ${Object.keys(ASSETS).join(', ')}.`,
+      `Chief has no llama.cpp CPU build for ${target}. It bundles: ${Object.keys(TRIPLES).join(', ')}.`,
     );
   }
 
-  const sidecar = path.join(BINARIES, `llama-server-${hostTriple()}${path.extname(serverName)}`);
+  const serverName = target.includes('windows') ? 'llama-server.exe' : 'llama-server';
+  const fallback = needsMacos12Fallback(target, host);
+  const stamp = fallback ? `${BUILD}-macos12-no-blas-${target}` : `${BUILD}-${target}`;
+  const asset = ASSETS[platform];
+
+  const sidecar = path.join(BINARIES, `llama-server-${target}${path.extname(serverName)}`);
 
   if (await alreadyHere(sidecar, stamp)) {
     console.log(`llama.cpp ${BUILD} is already here.`);

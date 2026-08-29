@@ -157,40 +157,41 @@ jobs:
   app:
     name: App build (${{ matrix.platform }})
     needs: changes
-    if: needs.changes.outputs.app == 'true'
+    # Pull requests only. On main the Release workflow compiles the same two
+    # platforms in the same profile and then bundles them, so building here as
+    # well was paying twice for one answer on the runners that bill the most.
+    # A push to main that is not releasable gets no app build at all: it was
+    # already built on both platforms by the pull request it came from.
+    if: github.event_name == 'pull_request' && needs.changes.outputs.app == 'true'
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        # macOS and Windows are the platforms nothing else compiles: the Rust
-        # job already builds the whole crate on Linux, but `#[cfg(windows)]`
-        # code — `engine.rs:325`, which is where the last two fixes on main
-        # went — is compiled on Windows and nowhere else. So a pull request
-        # builds those two, and main adds Linux, where the app build is the
-        # only job that links a release profile against WebKitGTK.
-        platform:
-          ${{ fromJSON(github.event_name == 'pull_request' && '["macos-latest", "windows-latest"]' ||
-          '["ubuntu-22.04", "macos-latest", "windows-latest"]') }}
+        # macOS and Windows are the platforms Chief ships for, and the two
+        # nothing else compiles: the Rust job already builds the whole crate on
+        # Linux, but `#[cfg(windows)]` code — `engine.rs:325`, which is where
+        # the last two fixes on main went — is compiled on Windows and nowhere
+        # else.
+        #
+        # Linux used to be added on main, to link a release profile against
+        # WebKitGTK. It is not built at all now: Chief does not ship a Linux
+        # bundle, so that link was proving something nobody installs.
+        platform: ['macos-latest', 'windows-latest']
     steps:
       - uses: actions/checkout@v5
 
-      # Two caches, because a debug build shares nothing with a release one:
-      # `tauri-<platform>` is the release-profile cache main writes and Release
-      # restores, and `tauri-dev-<platform>` is the debug one a branch warms for
-      # its own later pushes. Keeping them apart is what stops a branch from
-      # evicting the cache a release depends on — and the gate above is what
-      # keeps the number of branches writing one small.
+      # `tauri-dev-<platform>` and nothing else: a debug build shares nothing
+      # with a release one, and this job only ever builds debug now. Release
+      # keeps its own `tauri-<target>` caches, which a branch can no longer
+      # evict.
       - uses: ./.github/actions/setup-tauri
         with:
-          shared-key:
-            ${{ github.event_name == 'pull_request' && format('tauri-dev-{0}', matrix.platform) ||
-            format('tauri-{0}', matrix.platform) }}
+          shared-key: tauri-dev-${{ matrix.platform }}
 
-      # A pull request has one question to answer: does the platform-conditional
-      # code compile and link on a platform nothing else compiles it on. The
-      # debug profile answers it without paying for optimisation on a runner
-      # that bills at ten times Linux. Release profile still runs on main, and
-      # again when a release is cut.
+      # One question to answer: does the platform-conditional code compile and
+      # link on a platform nothing else compiles it on. The debug profile
+      # answers it without paying for optimisation on a runner that bills at
+      # ten times Linux. The release profile is proved when a release is cut.
       - name: Build the desktop app
-        run: pnpm tauri build --no-bundle ${{ github.event_name == 'pull_request' && '--debug' || '' }}
+        run: pnpm tauri build --no-bundle --debug
