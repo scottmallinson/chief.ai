@@ -35,6 +35,8 @@ interface UseIntegrations {
   disconnect: (accountId: number) => void;
   /** Resolves false when the write was refused, so the field can go back. */
   rename: (accountId: number, label: string | null) => Promise<boolean>;
+  /** Read the connections again — after something added one outside this hook. */
+  reload: () => void;
 }
 
 function describe(cause: unknown): string {
@@ -54,6 +56,12 @@ export function useIntegrations(): UseIntegrations {
   // still running in Rust answers a number nobody is waiting for and is
   // dropped rather than connecting an account behind the user.
   const attempt = useRef(0);
+
+  const reload = useCallback(() => {
+    connections()
+      .then(setAccounts)
+      .catch((cause: unknown) => setError(describe(cause)));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -160,6 +168,7 @@ export function useIntegrations(): UseIntegrations {
   return {
     accounts,
     accountsFor,
+    reload,
     login,
     connecting,
     status,

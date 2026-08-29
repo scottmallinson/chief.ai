@@ -52,6 +52,8 @@ pub struct Context {
     pub pool: SqlitePool,
     pub github: github::Client,
     pub microsoft: microsoft::Client,
+    /// Calendars subscribed to by URL, which need no sign-in at all.
+    pub calendar: crate::calendar::Client,
     pub engine: llama::Client,
     pub corpus: Corpus,
 }
@@ -141,6 +143,13 @@ async fn gather(context: &Context) -> Gathered {
 
     let (from, to) = today();
 
+    // Subscriptions first: they need no sign-in, so on most machines this is
+    // the only calendar there is. Merged into the same agenda as Outlook, so
+    // the brief never has to know which kind an entry came from.
+    found
+        .agenda
+        .extend(subscribed_events(context).await.iter().map(describe_event));
+
     for account in outlook_accounts(context).await {
         let session = OutlookSession::new(&context.pool, &context.microsoft, account);
 
@@ -176,6 +185,46 @@ async fn gather(context: &Context) -> Gathered {
     }
 
     found.background = background(context).await;
+
+    found
+}
+
+/// Today's events from every calendar the user subscribed to.
+///
+/// A subscription that will not load fails that one calendar and nothing else,
+/// the same rule every other source in `gather` follows: a brief with the
+/// calendar and no mail is worth having.
+pub(crate) async fn subscribed_events(context: &Context) -> Vec<microsoft::Event> {
+    let Ok(accounts) =
+        crate::integrations::accounts(&context.pool, crate::integrations::CALENDAR).await
+    else {
+        return Vec::new();
+    };
+
+    let now = chrono::Local::now();
+    let offset = now.offset().local_minus_utc();
+    let midnight = now.date_naive().and_time(chrono::NaiveTime::MIN);
+    let end = midnight + chrono::Duration::days(1);
+
+    let mut found = Vec::new();
+
+    for account in accounts {
+        let Ok(Some(credentials)) =
+            crate::integrations::credentials(&context.pool, account.id).await
+        else {
+            continue;
+        };
+
+        match context
+            .calendar
+            .events(&credentials.access_token, midnight, end, offset)
+            .await
+        {
+            Ok(events) => found.extend(events),
+            // Reported without the address, which is a credential.
+            Err(error) => eprintln!("a calendar subscription could not be read: {error}"),
+        }
+    }
 
     found
 }
@@ -458,6 +507,7 @@ pub async fn context<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Con
         pool,
         github: app.state::<github::Client>().inner().clone(),
         microsoft: app.state::<microsoft::Client>().inner().clone(),
+        calendar: app.state::<crate::calendar::Client>().inner().clone(),
         engine: app.state::<llama::Client>().inner().clone(),
     })
 }
@@ -667,6 +717,7 @@ mod tests {
                 pool,
                 github: github::Client::against("127.0.0.1:1").expect("client"),
                 microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
+                calendar: crate::calendar::Client::new().expect("client"),
                 engine: llama::Client::with_base_url(engine_host).expect("client"),
                 corpus,
             },
@@ -823,6 +874,7 @@ mod tests {
             pool,
             github: github::Client::against("127.0.0.1:1").expect("client"),
             microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
+            calendar: crate::calendar::Client::new().expect("client"),
             engine: llama::Client::with_base_url(&host).expect("client"),
             corpus: Corpus::at(root),
         };

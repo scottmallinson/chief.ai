@@ -6,11 +6,12 @@ import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
 import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
 import { ProfileBootstrap } from '@/components/ProfileBootstrap';
+import { CalendarSubscriptions } from '@/components/CalendarSubscriptions';
 import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
 import { useIntegrations } from '@/hooks/use-integrations';
-import { accountName, GITHUB, MICROSOFT, type Account } from '@/lib/integrations';
+import { accountName, CALENDAR, GITHUB, MICROSOFT, type Account } from '@/lib/integrations';
 
 interface SettingsSectionProps {
   title: string;
@@ -467,6 +468,36 @@ function ThisMachine() {
   );
 }
 
+/**
+ * Calendars subscribed to by address.
+ *
+ * Its own card rather than a third `Integration`: there is no sign-in, no
+ * account to name at the provider and nothing to disconnect from — which is
+ * the entire reason it works where Outlook does not.
+ */
+function Calendars() {
+  const { accountsFor, reload } = useIntegrations();
+  const subscriptions = accountsFor(CALENDAR);
+
+  return (
+    <SettingsSection
+      title="Calendar subscriptions"
+      description="Any calendar that publishes an address — Google, Outlook, iCloud, Fastmail. Nothing to register and nobody to ask, and Chief reads it straight from the provider."
+      state={
+        subscriptions.length > 0 ? (
+          <Chip tone="verified" dot>
+            {subscriptions.length === 1 ? '1 calendar' : `${subscriptions.length} calendars`}
+          </Chip>
+        ) : (
+          <Chip tone="quiet">None</Chip>
+        )
+      }
+    >
+      <CalendarSubscriptions accounts={subscriptions} onChanged={reload} />
+    </SettingsSection>
+  );
+}
+
 export function SettingsView() {
   return (
     <div className="h-full overflow-y-auto">
@@ -482,6 +513,7 @@ export function SettingsView() {
             <ProfileBootstrap />
           </SettingsSection>
           <ThisMachine />
+          <Calendars />
           <Integration
             service={GITHUB}
             title="GitHub"
