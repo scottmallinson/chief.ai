@@ -12,13 +12,25 @@
 //! confidently wrong answer, and a refused one fails as an error somebody can
 //! fix.
 
-/// How many bytes of ordinary English one token is worth.
+/// How many bytes of text one token is worth.
 ///
-/// Byte-pair encodings land near four for prose and lower for punctuation-heavy
-/// text, so this is deliberately the pessimistic end of the usual range: a
-/// budget that under-counts spends more than it thinks it does, which is the
-/// failure this type exists to prevent.
-const BYTES_PER_TOKEN: u64 = 4;
+/// Three, not four, and the difference matters. Four is the familiar figure for
+/// English prose and it is wrong for the material this budget actually has to
+/// hold back. Measured against this model's own tokenizer:
+///
+/// | sample                      | bytes/token |
+/// |-----------------------------|-------------|
+/// | a GitHub tool result (JSON) | 3.09        |
+/// | corpus markdown             | 3.83        |
+/// | English prose               | 4.93        |
+///
+/// URLs, punctuation and repeated JSON keys fragment far worse than prose, so a
+/// four-byte assumption under-counted a tool result by 23% — and a tool result
+/// is the largest, least bounded thing that becomes prompt. Under-counting is
+/// the one direction this type must never err in: it spends more than it thinks
+/// it has, which is the failure the budget exists to prevent. Three over-counts
+/// prose, which wastes a little room and is safe.
+const BYTES_PER_TOKEN: u64 = 3;
 
 /// Roughly what a file of `bytes` costs to put in a prompt.
 ///
@@ -189,36 +201,44 @@ mod tests {
 
     #[test]
     fn estimates_tokens_pessimistically_rather_than_optimistically() {
-        // Four bytes to a token, rounded up: a budget that under-counts spends
-        // more than it thinks it does.
+        // Expressed against the estimator rather than against a byte count, so
+        // recalibrating the ratio does not require rewriting the test.
         assert_eq!(estimate_tokens(""), 0);
-        assert_eq!(estimate_tokens("abcd"), 1);
-        assert_eq!(estimate_tokens("abcde"), 2);
+        assert!(estimate_tokens("a") >= 1, "anything at all costs something");
+
+        // Rounded up, never down: a partial token is a token.
+        let one = estimate_tokens_in_bytes(BYTES_PER_TOKEN);
+        assert_eq!(estimate_tokens_in_bytes(BYTES_PER_TOKEN + 1), one + 1);
+
+        // Monotonic — more text never estimates as less.
+        assert!(estimate_tokens("aa") >= estimate_tokens("a"));
     }
 
     #[test]
-    fn the_estimate_is_within_ten_per_cent_of_a_real_count_for_prose() {
-        // Calibration: ordinary English at roughly four bytes a token. The
-        // estimator only has to be right to within a few per cent of a budget
-        // with hundreds of tokens of slack in it, and this pins that it is.
-        let prose = "The chief of staff prepares the principal for the day ahead, \
-                     reads what has come in overnight, and decides what is worth \
-                     their attention and what is not.";
+    fn the_estimate_never_under_counts_the_material_the_budget_has_to_hold_back() {
+        // Measured against this model's own tokenizer, not assumed. The numbers
+        // are what a real GitHub tool result and a real corpus file cost, and
+        // the estimate has to be at or above them — under-counting is the one
+        // direction that overflows a context window.
+        for (name, bytes, real) in [
+            ("GitHub tool result", 7457_u64, 2411_u32),
+            ("corpus markdown", 352, 92),
+            ("prose", 616, 125),
+        ] {
+            let estimated = estimate_tokens_in_bytes(bytes);
 
-        // A byte-pair encoder puts this at about one token per four bytes for
-        // text of this shape; the check is that the estimate is not wildly off,
-        // in the direction of over-counting.
-        let estimated = estimate_tokens(prose);
-        let words = prose.split_whitespace().count() as u32;
+            assert!(
+                estimated >= real,
+                "{name}: estimated {estimated} for {real} real tokens — under-counting overflows"
+            );
+        }
+    }
 
-        assert!(
-            estimated >= words,
-            "an estimate below one token per word would under-spend: {estimated} vs {words}"
-        );
-        assert!(
-            estimated < words * 2,
-            "an estimate above two tokens per word wastes the budget: {estimated} vs {words}"
-        );
+    #[test]
+    fn the_estimate_is_not_so_cautious_that_it_wastes_the_budget() {
+        // Over-counting is safe but not free: doubling the estimate would halve
+        // what fits. Prose is the worst case, and it must stay within reason.
+        assert!(estimate_tokens_in_bytes(616) < 125 * 2);
     }
 
     #[test]
@@ -241,26 +261,32 @@ mod tests {
 
     #[test]
     fn a_refused_block_costs_nothing_so_a_smaller_one_can_still_fit() {
-        let mut budget = Budget::with_ceiling(10);
-        budget.add("kept", "abcd").expect("should fit");
+        let mut budget = Budget::with_ceiling(100);
+        budget.add("kept", "a short block").expect("should fit");
+        let after_first = budget.remaining();
 
-        let _ = budget.add("refused", &"x".repeat(200));
+        let _ = budget.add("refused", &"x".repeat(10_000));
 
-        assert_eq!(budget.remaining(), 9, "a refused block should cost nothing");
+        assert_eq!(
+            budget.remaining(),
+            after_first,
+            "a refused block should cost nothing"
+        );
 
         // Which is what lets a transcript drop an old turn and keep a new one.
         budget
-            .add("also kept", "efgh")
+            .add("also kept", "another block")
             .expect("there is still room");
-        assert_eq!(budget.remaining(), 8);
+        assert!(budget.remaining() < after_first);
     }
 
     #[test]
     fn what_is_left_is_what_has_not_been_spent() {
-        let mut budget = Budget::with_ceiling(10);
-        budget.add("block", "abcdefgh").expect("two tokens");
+        let mut budget = Budget::with_ceiling(100);
+        let block = "some text of a known size";
+        budget.add("block", block).expect("should fit");
 
-        assert_eq!(budget.remaining(), 8);
+        assert_eq!(budget.remaining(), 100 - estimate_tokens(block));
     }
 
     #[test]
