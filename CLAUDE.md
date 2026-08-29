@@ -108,9 +108,19 @@ Runner time is the one cost this project has, so the workflows are written to sp
   still fetched there, because Tauri's build script wants the sidecar on disk even for
   `cargo test`.
 - **Don't build it at all when the change can't reach it.** The `changes` job spends a Linux
-  minute working out whether a pull request touches `src-tauri/`, `scripts/`, the manifests or CI
-  itself, and the app build is skipped when it does not. A change under `src/` is proved by the
-  Frontend job's `pnpm build`; it cannot break platform-conditional Rust.
+  minute working out whether a pull request touches `src-tauri/`, `scripts/`, the manifests,
+  `.github/actions/` or `checks.yml`, and the app build is skipped when it does not. A change
+  under `src/` is proved by the Frontend job's `pnpm build`; it cannot break platform-conditional
+  Rust. Deliberately not all of `.github/workflows/`: `App build (macos-latest)` is the largest
+  single line in this repository's bill, and rebuilding the app on two paid platforms says nothing
+  about a change to `release.yml`, which bundles what is already built, or to `ci.yml`, which only
+  decides who calls `checks.yml`.
+- **Fail in seconds, not in minutes.** `setup-tauri` checks the engine is on disk under the name
+  the target expects, immediately after fetching it. Tauri only notices a missing sidecar part-way
+  through its build script, so the first release to reach bundling spent six macOS minutes
+  compiling before saying the file was not there — on a runner billed at 10×, the most expensive
+  possible way to learn that. A quarter of the runner time this repository spent in its first two
+  weeks went on jobs that failed, most of it compiling before the failure.
 - **The app build only runs where it answers something.** On a pull request it builds `--debug`,
   because the question is whether the platform-conditional code compiles and links, and
   optimisation is not part of that. A release skips it entirely: the bundle jobs compile the same

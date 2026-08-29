@@ -66,8 +66,16 @@ jobs:
           # src-tauri carries the Rust, Cargo.lock and the Tauri config;
           # scripts fetches the engine the build needs on disk; package.json
           # pins the Tauri CLI that runs the build, and the lockfile moves with
-          # it; and a change to CI itself has to be proved by running it.
-          if echo "$changed" | grep -qE '^(src-tauri/|scripts/|package\.json$|pnpm-lock\.yaml$|\.github/(workflows|actions)/)'; then
+          # it; `.github/actions/` sets the build up; and `checks.yml` is the
+          # file the build is defined in.
+          #
+          # Deliberately not all of `.github/workflows/`. `App build
+          # (macos-latest)` is the largest single line in this repository's
+          # bill, and rebuilding the app on two paid platforms cannot say
+          # anything about a change to `release.yml`, which only bundles what is
+          # already built, or to `ci.yml`, which only decides who calls this
+          # file.
+          if echo "$changed" | grep -qE '^(src-tauri/|scripts/|package\.json$|pnpm-lock\.yaml$|\.github/actions/|\.github/workflows/checks\.yml$)'; then
             echo "app=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Building the app: the change reaches it."
           else
