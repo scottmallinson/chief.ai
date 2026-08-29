@@ -61,7 +61,26 @@ export type BriefBlock =
 /** `- item`, or the asterisk a model sometimes reaches for instead. */
 const BULLET = /^[-*]\s+(.*)$/;
 const HEADING = /^#{1,6}\s+(.*)$/;
-const EMPHASIS = /\*\*(.+?)\*\*|__(.+?)__|(?<![*\w])\*(?!\s)(.+?)(?<!\s)\*|`(.+?)`/g;
+/**
+ * The emphasis markers, stripped in four passes rather than one alternation.
+ *
+ * **No lookbehind.** The single-asterisk pass has to know it is not standing in
+ * the middle of `**bold**`, and the obvious way to write that is `(?<![*\w])` —
+ * which is a *parse* error in the WebViews Chief ships in, and took the whole
+ * app down to a white screen when it was one. Running the passes in order is
+ * what replaces it: bold is gone by the time italics are looked for, so there
+ * is nothing left for the guard to guard against. The leading character is
+ * captured and put back rather than asserted.
+ */
+const EMPHASIS: readonly [RegExp, string][] = [
+  [/\*\*(.+?)\*\*/g, '$1'],
+  [/__(.+?)__/g, '$1'],
+  [/`(.+?)`/g, '$1'],
+  // `$1` is the character before the opening asterisk, re-emitted. The content
+  // may not start or end with a space, so `2 * 3 * 4` is arithmetic and not
+  // emphasis.
+  [/(^|[^*\w])\*([^\s*](?:[^*]*[^\s*])?)\*/g, '$1$2'],
+];
 
 /**
  * Read a brief into the handful of shapes one can be.
@@ -127,11 +146,7 @@ export function readBrief(markdown: string): BriefBlock[] {
 
 /** Drop the emphasis markers. Showing them is worse than losing the emphasis. */
 function plain(text: string): string {
-  return text
-    .replace(
-      EMPHASIS,
-      (_match: string, bold?: string, underscored?: string, italic?: string, code?: string) =>
-        bold ?? underscored ?? italic ?? code ?? '',
-    )
-    .trim();
+  return EMPHASIS.reduce((stripped, [pattern, replacement]) => {
+    return stripped.replace(pattern, replacement);
+  }, text).trim();
 }

@@ -571,6 +571,22 @@ shell rather than changes to it.
 - What this cannot cover is the webview Chief ships in. Chromium is close to WebView2 and WKWebView
   but is neither, so a rendering difference peculiar to one of those still gets through; catching
   those means driving the packaged binary with `tauri-driver`.
+- **It is not only rendering.** On 2026-08-29 a regex lookbehind — `(?<!…)` — reached `main` past
+  162 jsdom tests, 93 Chromium layout tests and a green CI, and opened as a white screen with
+  nothing but `SyntaxError: Invalid regular expression: invalid group specifier name` in a console
+  the user had to think to open. jsdom runs on V8 and Playwright runs on Chromium; both have
+  supported lookbehind for years, and the WKWebView on the machine did not. A module-level `const`
+  makes it fatal: the parse fails while the module graph evaluates, so React never mounts and one
+  cosmetic helper takes the whole app down.
+- **esbuild does not catch this, and setting `build.target` would not have.** Below its
+  `safari16.4` target esbuild rewrites the literal to `new RegExp("…")`, which moves the same
+  failure from parse time to module-evaluation time — the shipped bundle contained exactly that.
+  The guard is therefore a lint rule (`no-restricted-syntax` in `eslint.config.js`), because this
+  has to be caught in the editor rather than by a runtime nobody has.
+- **The general rule: syntax the tests accept is not syntax the product accepts.** Prefer the
+  boring construction. A feature that landed in Safari in the last few years — regex lookbehind and
+  the `d`/`v` flags, `Object.hasOwn`, `structuredClone`, `Array.prototype.at`, `findLast`,
+  `toSorted` — is worth avoiding for the same reason, and none of them are in the tree today.
 - These are kept out of `pnpm check` because they need a build and a browser. CI runs them as the
   **Layout** job.
 

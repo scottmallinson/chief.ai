@@ -706,11 +706,12 @@ removes from it.**
 
 ### Measurements nobody has taken
 
-| What                            | Blocked on                                                      | Where   |
-| ------------------------------- | --------------------------------------------------------------- | ------- |
-| **D8 — hardware verification**  | Real target hardware. `chief doctor` exists; the numbers do not | D8      |
-| **Token estimator calibration** | The real tokenizer. Currently 3 bytes per token, uncalibrated   | Step 10 |
-| **Windows build validation**    | A Windows machine. CI compiles it; nobody has run it            | —       |
+| What                                | Blocked on                                                                                                                                    | Where   |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| **D8 — hardware verification**      | Real target hardware. `chief doctor` exists; the numbers do not                                                                               | D8      |
+| **Token estimator calibration**     | The real tokenizer. Currently 3 bytes per token, uncalibrated                                                                                 | Step 10 |
+| **Windows build validation**        | A Windows machine. CI compiles it; nobody has run it                                                                                          | —       |
+| **Nothing ever opens the real app** | `tauri-driver` against the packaged binary. Every test runs in V8 or Chromium, so syntax the shipped WebView rejects reaches `main` — one did | REC-34  |
 
 ### Unclaimed engineering
 

@@ -37,6 +37,30 @@ export default tseslint.config(
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
+      // Chief ships in WKWebView and WebView2, not in the Chromium the tests
+      // run in. A regex lookbehind is a *parse* error on an older
+      // JavaScriptCore, so one in a module-level `const` takes the whole bundle
+      // down before React mounts — a white screen with no clue but
+      // "invalid group specifier name" in a console the user has to go and
+      // open. It happened on `main` on 2026-08-29.
+      //
+      // esbuild does not save us: below its safari16.4 target it rewrites the
+      // literal to `new RegExp("...")`, which moves the same failure from parse
+      // time to module-evaluation time and changes nothing a user can see. This
+      // has to be caught in the editor, so it is a lint rule.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'Literal[regex.pattern=/\\(\\?<[=!]/]',
+          message:
+            'Regex lookbehind is a parse error in the WebViews Chief ships in. Capture the preceding characters and re-emit them instead.',
+        },
+        {
+          selector: "NewExpression[callee.name='RegExp'] > Literal[value=/\\(\\?<[=!]/]",
+          message:
+            'Regex lookbehind is unsupported in the WebViews Chief ships in, in a string as much as in a literal.',
+        },
+      ],
       // The privacy mandate: the renderer never talks to the network directly.
       // Inference goes to the local llama.cpp server and integrations are
       // fetched from Rust, both behind Tauri commands.

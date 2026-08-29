@@ -76,6 +76,26 @@ describe('readBrief', () => {
     ]);
   });
 
+  it('strips every kind of emphasis a hand-edit might add', () => {
+    expect(readBrief('- __Ana__ has *the* `release` branch')).toEqual([
+      { kind: 'bullets', items: ['Ana has the release branch'] },
+    ]);
+  });
+
+  it('leaves arithmetic alone', () => {
+    // What the lookbehind used to guard, and the reason the passes are
+    // ordered: an asterisk with a space beside it is not emphasis.
+    expect(readBrief('- The budget is 2 * 3 * 4 tokens')).toEqual([
+      { kind: 'bullets', items: ['The budget is 2 * 3 * 4 tokens'] },
+    ]);
+  });
+
+  it('does not mistake the inside of a bold run for an italic one', () => {
+    expect(readBrief('- **Ship it** and *then* rest')).toEqual([
+      { kind: 'bullets', items: ['Ship it and then rest'] },
+    ]);
+  });
+
   it('has nothing to show for an empty brief', () => {
     expect(readBrief('   \n\n  ')).toEqual([]);
   });
