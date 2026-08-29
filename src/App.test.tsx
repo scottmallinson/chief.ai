@@ -29,6 +29,25 @@ const notReady = {
   problem: 'the model has not been downloaded yet.',
 };
 
+/**
+ * What each command answers, in the shape the Rust side actually returns.
+ *
+ * `todays_brief` gives a brief or null and never a list. A stub that answered
+ * `[]` to everything handed `TodayView` an object with no `markdown` and took
+ * the whole screen down — which is the shape of bug a realistic stub prevents
+ * and a lazy one creates.
+ */
+function answer(command: string, readiness: unknown): unknown {
+  switch (command) {
+    case 'check_readiness':
+      return readiness;
+    case 'todays_brief':
+      return null;
+    default:
+      return [];
+  }
+}
+
 describe('App', () => {
   beforeEach(() => {
     invoke.mockReset();
@@ -36,20 +55,38 @@ describe('App', () => {
     listen.mockResolvedValue(() => undefined);
   });
 
-  it('opens on the chat view once the machine is ready', async () => {
-    invoke.mockImplementation((command: string) =>
-      Promise.resolve(command === 'check_readiness' ? ready : []),
-    );
+  it('opens on today once the machine is ready', async () => {
+    invoke.mockImplementation((command: string) => Promise.resolve(answer(command, ready)));
 
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Ask about your work' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Today' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'No brief for today' })).toBeInTheDocument();
+  });
+
+  it('keeps chat out of the rail, and opens it as a drawer instead', async () => {
+    invoke.mockImplementation((command: string) => Promise.resolve(answer(command, ready)));
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Ask Chief' }));
+
+    expect(screen.getByRole('dialog', { name: 'Ask Chief' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Ask about your work' })).toBeInTheDocument();
+  });
+
+  it('leaves the destination where it was when the drawer closes', async () => {
+    invoke.mockImplementation((command: string) => Promise.resolve(answer(command, ready)));
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Ask Chief' }));
+    await userEvent.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Today' })).toBeInTheDocument();
   });
 
   it('switches views from the sidebar', async () => {
-    invoke.mockImplementation((command: string) =>
-      Promise.resolve(command === 'check_readiness' ? ready : []),
-    );
+    invoke.mockImplementation((command: string) => Promise.resolve(answer(command, ready)));
 
     render(<App />);
     await userEvent.click(await screen.findByRole('button', { name: 'Work Log' }));
@@ -59,7 +96,7 @@ describe('App', () => {
   });
 
   it('shows setup first when the machine is not ready', async () => {
-    invoke.mockResolvedValue(notReady);
+    invoke.mockImplementation((command: string) => Promise.resolve(answer(command, notReady)));
 
     render(<App />);
 
@@ -68,11 +105,11 @@ describe('App', () => {
   });
 
   it('lets the user in anyway', async () => {
-    invoke.mockResolvedValue(notReady);
+    invoke.mockImplementation((command: string) => Promise.resolve(answer(command, notReady)));
 
     render(<App />);
     await userEvent.click(await screen.findByRole('button', { name: 'Skip for now' }));
 
-    expect(screen.getByRole('heading', { name: 'Ask about your work' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Today' })).toBeInTheDocument();
   });
 });

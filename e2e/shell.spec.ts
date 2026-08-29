@@ -34,7 +34,11 @@ test.describe('shell metrics', () => {
   });
 
   test('keeps the rail full height and the header beside it', async ({ chief, page }) => {
+    // Settings has no list pane, so this is the rail against the detail with
+    // nothing in between. Where the header starts once a pane *is* there is
+    // measured in `feed.spec.ts`.
     await chief.open();
+    await chief.goTo('Settings');
 
     const rail = await page.locator('aside').boundingBox();
     const header = await page.locator('header').boundingBox();
@@ -47,7 +51,7 @@ test.describe('shell metrics', () => {
     await chief.open({ answer: longAnswer(4) });
     await chief.ask('What did I ship?');
 
-    const measure = await page.locator('main ul').boundingBox();
+    const measure = await page.locator('[role="dialog"] ul').boundingBox();
 
     expect(measure?.width ?? 0).toBeLessThanOrEqual(680);
   });
@@ -88,9 +92,11 @@ test.describe('the focus ring', () => {
     // the composer rather than against a literal: the rule is that they match.
     await chief.open({ accounts: [octocat] });
 
+    await chief.openChat();
     await chief.composer.focus();
     const composer = await chief.composer.evaluate((node) => getComputedStyle(node).boxShadow);
 
+    await chief.closeChat();
     await chief.goTo('Settings');
     const name = page.getByLabel('Name for octocat');
     await name.focus();

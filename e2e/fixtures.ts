@@ -28,6 +28,14 @@ export interface WorkLogEntry {
   externalId: string | null;
 }
 
+/** A brief, as `todays_brief` and `generate_brief` return it. */
+export interface Brief {
+  date: string;
+  path: string;
+  markdown: string;
+  sources: string[];
+}
+
 /** One connected account, as `connections` returns it. */
 export interface Account {
   id: number;
@@ -50,6 +58,10 @@ export interface Backend {
   workLog?: WorkLogEntry[];
   /** Which accounts the settings screen finds connected. */
   accounts?: Account[];
+  /** Today's brief, or null when none has been written. */
+  brief?: Brief | null;
+  /** What `list_corpus` finds, which is where the day list comes from. */
+  corpus?: string[];
   /**
    * Leave questions unanswered until {@link Chief.finish} is called, so the
    * streaming states can be held still and measured.
@@ -115,7 +127,13 @@ export interface Chief {
   stream(update: AgentUpdate): Promise<void>;
   /** Answer the question in flight, ending the stream. */
   finish(answer: string): Promise<void>;
-  goTo(view: 'Chat' | 'Work Log' | 'Settings'): Promise<void>;
+  goTo(view: 'Today' | 'Work Log' | 'Settings'): Promise<void>;
+  /** Open the chat drawer from the rail, the way a user does. */
+  openChat(): Promise<void>;
+  /** Close it with Escape, the way the design system says it closes. */
+  closeChat(): Promise<void>;
+  /** How wide the detail column is right now, to the pixel. */
+  detailWidth(): Promise<number>;
   /** Move the scrolling part of the view, the way a reader would. */
   scrollTo(position: 'top' | 'bottom'): Promise<void>;
   measure(): Promise<Measurements>;
@@ -128,6 +146,8 @@ interface Setup {
   answer: string;
   workLog: WorkLogEntry[];
   accounts: Account[];
+  brief: Brief | null;
+  corpus: string[];
   holdAnswers: boolean;
 }
 
@@ -145,6 +165,10 @@ interface Bridge {
    * The part of the current view that scrolls, found by looking rather than by
    * selector — so it holds for whichever view is showing, and a test notices if
    * the region turns up somewhere unexpected.
+   *
+   * The drawer wins while it is open: it is over the view, it is what the wheel
+   * moves, and it is deliberately *outside* `main` so that opening it cannot
+   * change the width of the column behind.
    */
   scroller: () => HTMLElement | null;
   /**
@@ -182,12 +206,17 @@ function installBackend(setup: Setup) {
       answerInFlight?.(answer);
       answerInFlight = null;
     },
-    scroller: () =>
-      [...document.querySelectorAll<HTMLElement>('main *')].find((element) => {
-        const overflow = getComputedStyle(element).overflowY;
+    scroller: () => {
+      const within = document.querySelector('[role="dialog"]') ?? document.querySelector('main');
 
-        return overflow === 'auto' || overflow === 'scroll';
-      }) ?? null,
+      return (
+        [...(within?.querySelectorAll<HTMLElement>('*') ?? [])].find((element) => {
+          const overflow = getComputedStyle(element).overflowY;
+
+          return overflow === 'auto' || overflow === 'scroll';
+        }) ?? null
+      );
+    },
 
     settle: async () => {
       const frame = () => new Promise<void>((painted) => requestAnimationFrame(() => painted()));
@@ -241,6 +270,22 @@ function installBackend(setup: Setup) {
 
         case 'connections':
           return Promise.resolve(setup.accounts);
+
+        case 'todays_brief':
+          return Promise.resolve(setup.brief);
+
+        case 'generate_brief':
+          return Promise.resolve(setup.brief);
+
+        case 'list_corpus':
+          return Promise.resolve(
+            setup.corpus.map((path) => ({
+              path,
+              size: 200,
+              modifiedAt: '2026-08-29T08:00:00.000Z',
+              estimatedTokens: 50,
+            })),
+          );
 
         case 'plugin:event|listen': {
           const event = args?.event as string;
@@ -343,18 +388,53 @@ function handleFor(page: Page, classicScrollbars: boolean): Chief {
         answer: backend.answer ?? 'Two pull requests are waiting on review.',
         workLog: backend.workLog ?? [],
         accounts: backend.accounts ?? [],
+        brief: backend.brief ?? null,
+        corpus: backend.corpus ?? [],
         holdAnswers: backend.holdAnswers ?? false,
       });
 
       await page.goto('/');
       if (classicScrollbars) await page.addStyleTag({ content: CLASSIC_SCROLLBARS });
-      await composer.waitFor();
+      // The shell, not the composer: chat is a drawer now and is not on screen
+      // until somebody opens it.
+      await page.getByRole('navigation', { name: 'Main' }).waitFor();
+    },
+
+    async openChat() {
+      const drawer = page.getByRole('dialog', { name: 'Ask Chief' });
+
+      await page.getByRole('button', { name: 'Ask Chief' }).click();
+      await drawer.waitFor();
+      // The drawer arrives 8px to the right of where it lands. Measuring before
+      // that has finished reads the offset, not the layout.
+      await drawer.evaluate((node) =>
+        Promise.all(node.getAnimations().map((animation) => animation.finished)),
+      );
+      await settle(page);
+    },
+
+    async closeChat() {
+      await page.keyboard.press('Escape');
+      await page.getByRole('dialog', { name: 'Ask Chief' }).waitFor({ state: 'detached' });
+      await settle(page);
+    },
+
+    async detailWidth() {
+      const box = await page.locator('main').boundingBox();
+
+      return Math.round(box?.width ?? 0);
     },
 
     async ask(question: string) {
+      // Chat is a drawer now, so asking opens it first. Idempotent: a test that
+      // opened it itself, to measure the shell around it, is left alone.
+      if (!(await composer.isVisible())) await this.openChat();
+
       await composer.fill(question);
       await composer.press('Enter');
-      await page.waitForFunction(() => document.querySelectorAll('main li').length > 0);
+      await page.waitForFunction(
+        () => (document.querySelector('[role="dialog"]')?.querySelectorAll('li').length ?? 0) > 0,
+      );
       await settle(page);
     },
 

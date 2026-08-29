@@ -1,7 +1,13 @@
-import { MessageSquare, NotebookText, Settings, type LucideIcon } from 'lucide-react';
+import { NotebookText, Settings, Sunrise, type LucideIcon } from 'lucide-react';
 
-/** The top-level destinations of the app shell. */
-export const VIEWS = ['chat', 'work-log', 'settings'] as const;
+/**
+ * The top-level destinations of the app shell.
+ *
+ * Chat is deliberately not among them. It is an overlay drawer reachable from
+ * every destination, because a question about your work is something you ask
+ * *while* looking at it, not somewhere you navigate to instead.
+ */
+export const VIEWS = ['today', 'work-log', 'settings'] as const;
 
 export type View = (typeof VIEWS)[number];
 
@@ -14,10 +20,10 @@ export interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   {
-    id: 'chat',
-    label: 'Chat',
-    description: 'Ask your chief of staff about your work',
-    icon: MessageSquare,
+    id: 'today',
+    label: 'Today',
+    description: 'Your brief, and what you shipped lately',
+    icon: Sunrise,
   },
   {
     id: 'work-log',

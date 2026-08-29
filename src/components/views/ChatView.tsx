@@ -12,7 +12,7 @@ import { Send } from 'lucide-react';
 import { ChiefMark } from '@/components/ChiefMark';
 import { Button } from '@/components/ui/button';
 import { Caret, Sweep } from '@/components/ui/activity';
-import { useChat } from '@/hooks/use-chat';
+import type { UseChat } from '@/hooks/use-chat';
 import { useElapsed } from '@/hooks/use-elapsed';
 import type { ChatMessage } from '@/lib/agent';
 
@@ -79,9 +79,16 @@ function EmptyState() {
   );
 }
 
-/** Chat surface for the agent, backed by the local model. */
-export function ChatView() {
-  const { messages, status, partial, activity, error, send } = useChat();
+/**
+ * Chat surface for the agent, backed by the local model.
+ *
+ * The conversation is owned above this component, not in it. Chat lives in a
+ * drawer now, and a drawer unmounts when it closes — holding the transcript
+ * here meant closing the panel silently threw away everything the model had
+ * said, which is the same mistake as discarding an interrupted answer.
+ */
+export function ChatView({ chat }: { chat: UseChat }) {
+  const { messages, status, partial, activity, error, send } = chat;
   const [draft, setDraft] = useState('');
   const transcript = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);

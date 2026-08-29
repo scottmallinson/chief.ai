@@ -4,6 +4,12 @@ import { act } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatView } from '@/components/views/ChatView';
+import { useChat } from '@/hooks/use-chat';
+
+/** The view as `App` composes it: the conversation is owned outside it. */
+function Chat() {
+  return <ChatView chat={useChat()} />;
+}
 
 const invoke = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn());
@@ -71,7 +77,7 @@ describe('ChatView', () => {
   }
 
   it('invites a question before anything is asked', () => {
-    render(<ChatView />);
+    render(<Chat />);
 
     expect(screen.getByRole('heading', { name: 'Ask about your work' })).toBeInTheDocument();
   });
@@ -79,7 +85,7 @@ describe('ChatView', () => {
   it('sends the question to the local model and shows the reply', async () => {
     invoke.mockResolvedValue('You merged two pull requests.');
 
-    render(<ChatView />);
+    render(<Chat />);
     await userEvent.type(
       screen.getByRole('textbox', { name: 'Message your chief of staff' }),
       'What did I ship?',
@@ -97,7 +103,7 @@ describe('ChatView', () => {
   it('shows the answer as it is written rather than waiting for all of it', async () => {
     holdTheAnswer();
 
-    render(<ChatView />);
+    render(<Chat />);
     await ask('What did I ship?');
 
     stream({ requestId: requestId(), kind: 'delta', text: 'You merged ' });
@@ -110,7 +116,7 @@ describe('ChatView', () => {
   it('ignores updates belonging to another question', async () => {
     holdTheAnswer();
 
-    render(<ChatView />);
+    render(<Chat />);
     await ask('What did I ship?');
 
     stream({ requestId: 'a-different-question', kind: 'delta', text: 'Not for you.' });
@@ -122,7 +128,7 @@ describe('ChatView', () => {
   it('says which tool it is waiting on', async () => {
     holdTheAnswer();
 
-    render(<ChatView />);
+    render(<Chat />);
     await ask('What is waiting on me?');
 
     stream({ requestId: requestId(), kind: 'tool', name: 'fetch_github_prs' });
@@ -135,7 +141,7 @@ describe('ChatView', () => {
   it('takes back thinking out loud that turned into a tool call', async () => {
     holdTheAnswer();
 
-    render(<ChatView />);
+    render(<Chat />);
     await ask('What is waiting on me?');
 
     stream({ requestId: requestId(), kind: 'delta', text: 'Let me look.' });
@@ -148,7 +154,7 @@ describe('ChatView', () => {
   it('shows the finished answer once, not alongside the streamed one', async () => {
     holdTheAnswer();
 
-    render(<ChatView />);
+    render(<Chat />);
     await ask('What did I ship?');
 
     stream({ requestId: requestId(), kind: 'delta', text: 'You merged two pull requests.' });
@@ -164,7 +170,7 @@ describe('ChatView', () => {
   it('sends the whole transcript so the model keeps context', async () => {
     invoke.mockResolvedValueOnce('Two.').mockResolvedValueOnce('Both were merged.');
 
-    render(<ChatView />);
+    render(<Chat />);
     const composer = screen.getByRole('textbox', { name: 'Message your chief of staff' });
 
     await userEvent.type(composer, 'How many?{Enter}');
@@ -186,7 +192,7 @@ describe('ChatView', () => {
   it('clears the composer once a question is sent', async () => {
     invoke.mockResolvedValue('Answered.');
 
-    render(<ChatView />);
+    render(<Chat />);
     const composer = screen.getByRole('textbox', { name: 'Message your chief of staff' });
 
     await userEvent.type(composer, 'What is next?{Enter}');
@@ -200,7 +206,7 @@ describe('ChatView', () => {
       new Error("Chief's local model engine is not running at http://127.0.0.1:11435/."),
     );
 
-    render(<ChatView />);
+    render(<Chat />);
     await userEvent.type(
       screen.getByRole('textbox', { name: 'Message your chief of staff' }),
       'Anything there?{Enter}',
@@ -212,7 +218,7 @@ describe('ChatView', () => {
   it('stops listening once a question is answered', async () => {
     invoke.mockResolvedValue('Answered.');
 
-    render(<ChatView />);
+    render(<Chat />);
     await userEvent.type(
       screen.getByRole('textbox', { name: 'Message your chief of staff' }),
       'What is next?{Enter}',
@@ -225,7 +231,7 @@ describe('ChatView', () => {
   it('says how many sources an answer drew on, so it is not taken on trust', async () => {
     holdTheAnswer();
 
-    render(<ChatView />);
+    render(<Chat />);
     await ask('What is waiting on me?');
 
     stream({ requestId: requestId(), kind: 'tool', name: 'fetch_github_prs' });
@@ -239,7 +245,7 @@ describe('ChatView', () => {
   it('claims no sources for an answer the model wrote unaided', async () => {
     invoke.mockResolvedValue('Nothing is waiting on you.');
 
-    render(<ChatView />);
+    render(<Chat />);
     await ask('What is waiting on me?');
 
     expect(await screen.findByText('chief · local')).toBeInTheDocument();
@@ -263,7 +269,7 @@ describe('ChatView', () => {
 
     try {
       holdTheAnswer();
-      render(<ChatView />);
+      render(<Chat />);
       askOnAMockedClock('What did I ship?');
 
       expect(screen.getByRole('status')).toHaveTextContent('local · Sent to model');
@@ -283,7 +289,7 @@ describe('ChatView', () => {
 
     try {
       holdTheAnswer();
-      render(<ChatView />);
+      render(<Chat />);
       askOnAMockedClock('What did I ship?');
 
       await act(async () => {
@@ -301,7 +307,7 @@ describe('ChatView', () => {
   });
 
   it('offers an opening question and puts it in the composer', async () => {
-    render(<ChatView />);
+    render(<Chat />);
 
     await userEvent.click(screen.getByRole('button', { name: 'Draft my standup' }));
 
@@ -311,7 +317,7 @@ describe('ChatView', () => {
   });
 
   it('will not send an empty question', async () => {
-    render(<ChatView />);
+    render(<Chat />);
 
     await userEvent.type(
       screen.getByRole('textbox', { name: 'Message your chief of staff' }),

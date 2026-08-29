@@ -170,6 +170,13 @@
   --animate-caret: chief-pulse 2s ease-in-out infinite;
   --animate-breathe: chief-breathe 2.4s cubic-bezier(0.2, 0, 0, 1) infinite;
 
+  /*
+   * The one transition that is not a loop: the drawer arriving. It runs once
+   * and stops, which is why it is not one of the four things allowed to move —
+   * those mean work is in flight, and a panel opening does not.
+   */
+  --animate-drawer: chief-drawer 160ms cubic-bezier(0.2, 0, 0, 1) 1;
+
   @keyframes chief-dot {
     0%,
     100% {
@@ -198,6 +205,17 @@
     }
     50% {
       opacity: 0.3;
+    }
+  }
+
+  @keyframes chief-drawer {
+    from {
+      transform: translateX(8px);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
     }
   }
 
