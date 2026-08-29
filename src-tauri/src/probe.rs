@@ -11,6 +11,7 @@
 //! is written to this machine's own database and shown to the person using it.
 
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,14 @@ pub struct Machine {
     /// is free right now says more about the browser than about the machine,
     /// and the tier is recorded once rather than recomputed per launch.
     pub memory_mb: u64,
-    /// Logical cores usable by this process.
+    /// Physical cores, not logical ones.
+    ///
+    /// Hyper-threading does not help inference — the work is dense arithmetic
+    /// over memory the two siblings share — which is why llama.cpp itself
+    /// defaults its thread count to the physical count. Counting logical cores
+    /// would tell Chief this machine is twice the machine it is: the 2014 Mac
+    /// mini this was measured on reports four, has two, and ran the engine on
+    /// two threads throughout while the tier believed it had four.
     pub cores: usize,
 }
 
@@ -134,9 +142,17 @@ impl Machine {
         let mut system = sysinfo::System::new();
         system.refresh_memory();
 
+        // `available_parallelism` counts logical cores, which on anything with
+        // hyper-threading is twice the number that decides how fast a prompt is
+        // read. Fall back to it only when the physical count is unavailable —
+        // over-counting is better than assuming a single core.
+        let cores = system
+            .physical_core_count()
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, NonZeroUsize::get));
+
         Self {
             memory_mb: system.total_memory() / (1024 * 1024),
-            cores: std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
+            cores,
         }
     }
 }

@@ -216,6 +216,12 @@ the user to install a runtime, which is the whole reason the engine is a module 
   LAPACK symbol that arrived in 13.3 — the real answer was on that stream the whole time, going to a
   terminal nobody installing the app ever sees. Every line read is written straight back out, so
   `tauri dev` still shows the model loading.
+- **One slot, and an inactivity timeout rather than a deadline.** `--parallel 1` because Chief
+  asks one question at a time: llama.cpp defaults to four slots and hands each request the least
+  recently used one, so consecutive questions meet a cache belonging to some other conversation
+  and `--cache-reuse` never pays. And the HTTP client uses `read_timeout`, not `timeout` — the
+  latter bounds the whole exchange including the body, which on a streamed answer is a limit on
+  how much the model may say rather than on how long it may stall.
 - Two things llama.cpp makes unnecessary that Ollama needed. The **context window** is a launch flag
   (`--ctx-size`), not a per-request option, so no request can evict the weights and there is no
   keep-alive to negotiate — the server owns one model for its lifetime. And it **warms itself** as
@@ -266,7 +272,14 @@ the user to install a runtime, which is the whole reason the engine is a module 
 - Add a tool by writing its schema in `catalog()` and its arm in `dispatch()`. Keep the two in step
   via a shared name constant.
 - Errors are user-facing: an engine that is not running, or one still reading the weights, says so
-  in those words rather than surfacing a transport error.
+  in those words rather than surfacing a transport error. A body that stops arriving is classified
+  rather than stringified — it used to reach the screen as `error decoding response body`.
+- **An interrupted answer is kept, not discarded.** If the stream stops part-way, whatever arrived
+  is returned with a marker saying so, on the same principle as the length ceiling. Only prose
+  survives: a half-delivered tool call is truncated JSON, and an error the engine itself reported
+  in the stream is it saying the answer is void, so both still raise. Measured in the product, the
+  alternative was hundreds of words the reader had already watched arrive being replaced by a red
+  box.
 
 ## Telling the model what day it is
 

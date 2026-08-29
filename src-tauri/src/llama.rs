@@ -26,8 +26,16 @@ pub const DEFAULT_PORT: u16 = 11435;
 /// refused connection means it is not running and we want to say so quickly.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// A small model on modest hardware can think for a while before it answers.
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long the engine may go **silent** before we give up on it.
+///
+/// Deliberately an inactivity timeout rather than a deadline for the whole
+/// answer. A total timeout cannot tell a hung engine from a slow one, so it
+/// caps how *long* an answer may be: measured on a 2014 Mac mini, decode fell
+/// to 1.76 tokens a second once the context passed 2,900 tokens, and a
+/// five-minute ceiling cut a good answer off at 494 tokens with a transport
+/// error where the text had been. An engine that has produced nothing for this
+/// long is stuck; one still writing is left alone however long it takes.
+const SILENCE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Who authored a message in a conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,6 +334,9 @@ impl ChatResponse {
 /// What an answer cut short by the token ceiling is marked with.
 const ANSWER_CUT: &str = "\n\n[Cut short — this answer reached its length limit.]";
 
+/// What an answer the engine stopped delivering is marked with.
+const ANSWER_INTERRUPTED: &str = "\n\n[Cut short — the model engine stopped responding.]";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Choice {
     pub message: Message,
@@ -451,8 +462,14 @@ pub enum Error {
     Unreachable { base_url: String },
     #[error("the model is still loading. Give it a few seconds and ask again.")]
     Loading,
-    #[error("the model took too long to answer")]
+    #[error("the model engine stopped responding part-way through the answer.")]
     Timeout,
+    /// The answer stopped arriving, but not because the engine went quiet: the
+    /// connection itself went away. Its own variant because the two want
+    /// different words, and because what had already been written is worth
+    /// keeping either way.
+    #[error("the answer was cut short: the connection to the model engine ended.")]
+    Interrupted,
     #[error("the model engine returned HTTP {status}: {body}")]
     Status { status: u16, body: String },
     #[error("could not read the model engine's response: {0}")]
@@ -506,7 +523,11 @@ impl Client {
 
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(RESPONSE_TIMEOUT)
+            // `read_timeout` and not `timeout`: the latter is a deadline for
+            // the whole exchange, body included, so on a streamed answer it is
+            // a limit on how much the model may say rather than on how long it
+            // may stall. This one restarts with every byte that arrives.
+            .read_timeout(SILENCE_TIMEOUT)
             // Nothing here should ever leave the machine, so a proxy would be
             // both useless and a way for data to escape.
             .no_proxy()
@@ -559,7 +580,7 @@ impl Client {
         let mut calls = PartialToolCalls::default();
         let mut ran_out = false;
 
-        read_events(response, |data| {
+        let delivered = read_events(response, |data| {
             let chunk: ChatChunk = serde_json::from_str(data)
                 .map_err(|error| Error::Decode(format!("{error}; event data: {data}")))?;
 
@@ -590,9 +611,36 @@ impl Client {
 
             Ok(())
         })
-        .await?;
+        .await;
 
         answer.tool_calls = calls.finish();
+
+        // An answer that stopped arriving is not the same as no answer.
+        //
+        // Measured in the product: a five-minute deadline killed a reply the
+        // reader had already watched arrive, and the whole thing was replaced
+        // by `error decoding response body` — hundreds of words of real answer
+        // discarded in favour of a transport error. Whatever did arrive is kept
+        // and marked, on the same principle as the length ceiling above.
+        //
+        // Only prose is salvageable, and only when the delivery failed rather
+        // than the request. A tool call that stopped mid-way is a truncated
+        // JSON argument list, and running it would be worse than failing; an
+        // error the engine itself reported in the stream is it telling us the
+        // answer is void, so passing off what arrived before it as an answer
+        // would be inventing one. Both still raise.
+        if let Err(interrupted) = delivered {
+            let delivery_failed = matches!(interrupted, Error::Interrupted | Error::Timeout);
+
+            if !delivery_failed || answer.content.is_empty() || !answer.tool_calls.is_empty() {
+                return Err(interrupted);
+            }
+
+            on_token(ANSWER_INTERRUPTED);
+            answer.content.push_str(ANSWER_INTERRUPTED);
+
+            return Ok(answer);
+        }
 
         // An answer that stopped mid-sentence because it hit the ceiling used
         // to just stop — measured in the product, a list of pull requests ended
@@ -705,7 +753,17 @@ where
     let mut pending: Vec<u8> = Vec::new();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| Error::Transport(error.to_string()))?;
+        // Not `Transport(error.to_string())`. A body that stops arriving used
+        // to reach the user as the raw string `error decoding response body`,
+        // which says nothing about what happened and is exactly the sort of
+        // transport wording this module exists to keep off the screen.
+        let chunk = chunk.map_err(|error| {
+            if error.is_timeout() {
+                Error::Timeout
+            } else {
+                Error::Interrupted
+            }
+        })?;
         pending.extend_from_slice(&chunk);
 
         while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
@@ -1215,6 +1273,63 @@ pub(crate) mod test_support {
         (format!("http://127.0.0.1:{port}"), handle)
     }
 
+    /// A server that promises more body than it sends, and then hangs up.
+    ///
+    /// This is what an answer interrupted part-way through looks like from the
+    /// client: some of it arrived, the rest never will, and the connection is
+    /// gone. Real causes are the engine being killed, the machine sleeping, or
+    /// a read timeout firing mid-stream.
+    pub fn serve_truncated(body: &'static str, short_by: usize) -> (String, JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind loopback");
+        listener
+            .set_nonblocking(true)
+            .expect("should be non-blocking");
+        let port = listener
+            .local_addr()
+            .expect("socket should have an address")
+            .port();
+
+        let handle = tokio::spawn(async move {
+            let listener = TcpListener::from_std(listener).expect("should adopt the listener");
+            let (mut socket, _) = listener.accept().await.expect("should accept a connection");
+
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+
+            loop {
+                let read = socket
+                    .read(&mut chunk)
+                    .await
+                    .expect("should read a request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+
+                if let Some(end) = headers_end(&request) {
+                    let headers = String::from_utf8_lossy(&request[..end]).to_string();
+                    if request.len() >= end + content_length(&headers) {
+                        break;
+                    }
+                }
+            }
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len() + short_by
+            );
+
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("should write a response");
+            socket.flush().await.expect("should flush the response");
+            drop(socket);
+        });
+
+        (format!("http://127.0.0.1:{port}"), handle)
+    }
+
     /// Bind and immediately release a port, so nothing is listening on it.
     pub fn closed_port() -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind loopback");
@@ -1231,7 +1346,7 @@ pub(crate) mod test_support {
 /// Tests that exercise [`Client`] against the stub server in [`test_support`].
 #[cfg(test)]
 mod http_tests {
-    use super::test_support::{answer, closed_port, delta, events, serve, split};
+    use super::test_support::{answer, closed_port, delta, events, serve, serve_truncated, split};
     use super::*;
     use serde_json::json;
 
@@ -1266,6 +1381,67 @@ mod http_tests {
         assert_eq!(sent["stream"], json!(false));
         assert_eq!(sent["messages"][0]["role"], json!("system"));
         assert_eq!(sent["messages"][1]["content"], json!("What did I ship?"));
+    }
+
+    /// The failure this was written for: a five-minute deadline killed a reply
+    /// the reader had already watched arrive, and the screen replaced hundreds
+    /// of words of real answer with `error decoding response body`.
+    #[tokio::test]
+    async fn keeps_an_answer_the_engine_stopped_delivering() {
+        const STREAM: &str = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Two \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"pull requests\"}}]}\n\n",
+        );
+
+        let (base_url, server) = serve_truncated(STREAM, 512);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let mut shown = String::new();
+        let reply = client
+            .chat_stream(
+                &ChatRequest::new("chief", vec![Message::user("What is waiting on me?")]),
+                |token| shown.push_str(token),
+            )
+            .await
+            .expect("what did arrive should be kept, not thrown away");
+
+        assert!(
+            reply.content.starts_with("Two pull requests"),
+            "the words that arrived should survive: {:?}",
+            reply.content
+        );
+        assert!(
+            reply.content.contains("stopped responding"),
+            "and the reader should be told it stopped early: {:?}",
+            reply.content
+        );
+        assert_eq!(
+            shown, reply.content,
+            "the note belongs in the stream too, where the answer stopped"
+        );
+
+        server.await.expect("the stub should finish");
+    }
+
+    /// Salvage is for an answer, not for nothing at all.
+    #[tokio::test]
+    async fn still_fails_when_the_engine_delivered_nothing_before_it_stopped() {
+        let (base_url, server) = serve_truncated("", 512);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let outcome = client
+            .chat_stream(
+                &ChatRequest::new("chief", vec![Message::user("What is waiting on me?")]),
+                |_| {},
+            )
+            .await;
+
+        assert!(
+            matches!(outcome, Err(Error::Interrupted | Error::Timeout)),
+            "an empty interrupted stream is a failure, got {outcome:?}"
+        );
+
+        server.await.expect("the stub should finish");
     }
 
     #[tokio::test]
