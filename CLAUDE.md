@@ -351,6 +351,32 @@ from here to GitHub.
 - `tools::Context` carries the pool and the GitHub client, so tools are testable against an
   in-memory database and a stub server rather than a live Tauri app.
 
+## Seeding the profile
+
+`src-tauri/src/profile.rs` fills in `writing_style.md` and `team_structure.md` from the user's own
+work. COSTA's finding is the reason it exists: an empty corpus produces generic drafts, so the
+profile has to be seeded from something real before Proposed Actions is worth building.
+
+Three rules, all about not taking something that is the user's:
+
+- **Nothing runs without being asked.** `plan` says what would be read and what would be written, in
+  those words, and returns having touched nothing; the Settings card shows it and waits. This is the
+  first feature that reads the user's own writing in bulk to build a profile of it, and a profile
+  assembled quietly would be the wrong way to do that however local it stays.
+- **A file the user has touched is theirs.** `is_untouched` compares the file against the starter
+  `ensure_shape` wrote — content, not mtime. mtime says _when_ a file was written and content says
+  _what is in it_, and a git checkout, a Dropbox sync or a restored backup all move mtime without
+  changing a byte. Judged on mtime Chief would refuse to seed a file nobody had opened.
+- **One call over a sample.** Only the writing style needs a model. The team is _counted_ from
+  recurring meeting attendees, because who somebody meets and how often is arithmetic, and asking a
+  3B model to do it would be slower, less accurate, and would spend the one call this step is
+  allowed. Reviewers and repository collaborators belong there too and are deliberately absent:
+  GitHub's search response carries neither, so gathering them is one API call per pull request.
+
+`github::PullRequest` carries `body` for this and nothing else. It is `#[serde(skip_serializing)]`
+so it cannot leak into `as_tool_entries` — a list of pull request bodies would swamp the prompt
+budget, and the model does not need one to say what is waiting.
+
 ## Background daemon
 
 `src-tauri/src/daemon.rs` keeps the work log current: ask GitHub what the user merged, ask the local

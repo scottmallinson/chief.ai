@@ -399,7 +399,7 @@ pub(crate) fn today() -> (String, String) {
     )
 }
 
-async fn github_accounts(context: &Context) -> Vec<i64> {
+pub(crate) async fn github_accounts(context: &Context) -> Vec<i64> {
     integrations::accounts(&context.pool, integrations::GITHUB)
         .await
         .map(|accounts| accounts.iter().map(|account| account.id).collect())

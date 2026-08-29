@@ -67,6 +67,18 @@ const SHAPE: &[(&str, &str)] = &[
     ),
 ];
 
+/// The starter Chief writes at `path`, if that is a file it creates.
+///
+/// Exposed so `profile.rs` can tell an untouched starter from a file the user
+/// has made theirs, without keeping a second copy of these strings.
+#[must_use]
+pub fn starter(path: &str) -> Option<&'static str> {
+    SHAPE
+        .iter()
+        .find(|(name, _)| *name == path)
+        .map(|(_, contents)| *contents)
+}
+
 /// What can go wrong reading or writing the corpus.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

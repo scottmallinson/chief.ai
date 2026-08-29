@@ -712,6 +712,7 @@ mod tests {
             url: "https://github.com/scottmallinson/chief.ai/pull/12".to_string(),
             updated_at: "2026-08-19T14:00:00Z".to_string(),
             merged_at: Some("2026-08-19T13:58:00Z".to_string()),
+            body: None,
         };
 
         assert_eq!(
