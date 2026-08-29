@@ -321,6 +321,18 @@ fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> {
         // pause and a wait.
         OsString::from("--cache-reuse"),
         OsString::from(CACHE_REUSE_CHUNK.to_string()),
+        // One slot, because Chief asks one question at a time.
+        //
+        // llama.cpp defaults to four, and hands each request whichever slot is
+        // least recently used — so consecutive questions land on different
+        // slots, each with its own KV cache, and the prefix reuse the flag
+        // above exists for never happens. Observed on a 2014 Mac mini: a
+        // question landed on a slot that had never been used and paid 39.6 s to
+        // prefill 881 tokens; the next matched only 38% of its slot's prefix
+        // and paid 77.5 s for 1,430. One slot means every question meets the
+        // cache the last one left.
+        OsString::from("--parallel"),
+        OsString::from("1"),
         // And a ceiling on what those caches may hold. The engine's own default
         // is 8192 MiB — more than twice the headroom this app is written to live
         // within, spent on top of a resident model. Left alone it would cause
@@ -917,6 +929,28 @@ mod tests {
             .parse()
             .expect("the reuse chunk should be a number");
         assert!(chunk > 0, "a chunk of zero leaves reuse switched off");
+    }
+
+    #[test]
+    fn keeps_every_question_on_one_slot_so_the_reuse_is_reachable() {
+        // `--cache-reuse` is worth nothing if consecutive questions land on
+        // different slots: llama.cpp defaults to four and picks the least
+        // recently used, so each question meets a cache belonging to some
+        // other conversation. Chief asks one question at a time, so one slot
+        // is both the truth and what makes the flag above pay.
+        for tier in [Tier::Standard, Tier::Light] {
+            let rendered: Vec<String> = arguments(Path::new("/models/model.gguf"), 11435, tier)
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect();
+
+            let at = rendered
+                .iter()
+                .position(|argument| argument == "--parallel")
+                .expect("the slot count should be stated rather than defaulted");
+
+            assert_eq!(rendered[at + 1], "1", "{tier:?} should run one slot");
+        }
     }
 
     #[test]
