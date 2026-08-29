@@ -11,6 +11,7 @@ export default {
       [
         'agent', // llama.cpp client, prompt + tool-calling orchestration
         'auth', // Local PKCE OAuth flows
+        'corpus', // The markdown corpus, its index, recipes and drafts
         'db', // SQLite schema, migrations, queries
         'daemon', // Background work-log daemon
         'integrations', // GitHub, Calendar and other data sources

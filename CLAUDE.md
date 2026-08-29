@@ -43,6 +43,7 @@ pnpm install              # install (pnpm is the package manager — do not use 
 pnpm engine:fetch         # download the bundled llama.cpp server for this machine
 pnpm tauri:dev            # run the desktop app with hot reload
 pnpm dev                  # run the frontend alone in a browser
+pnpm fix                  # format + lint --fix + rustfmt — run this before `check`, not after it
 pnpm check                # format:check + lint + typecheck + test — run before every commit
 pnpm test:watch           # vitest in watch mode
 pnpm test:e2e             # layout tests in a real browser (builds first; not part of `check`)
@@ -573,6 +574,19 @@ shell rather than changes to it.
   those means driving the packaged binary with `tauri-driver`.
 - These are kept out of `pnpm check` because they need a build and a browser. CI runs them as the
   **Layout** job.
+- **A stub answers in the shape the command actually returns.** The one that answers `[]` to
+  everything is the most expensive shortcut in this repository: it has taken the whole screen down
+  three separate times, because a view received a list where it expected an object and a render
+  threw. Dispatch on the command name and return the real shape — `todays_brief` gives a brief or
+  `null` and never a list; `profile_plan` gives an object with three arrays. Note that
+  `answers[command] ?? []` turns a deliberate `null` back into a list, so dispatch on presence.
+  Every one of those crashes was found by a test rather than by a user, which is the system working
+  — but only because something rendered the real component.
+- **A test that guards an invariant is not finished until you have watched it fail.** Caps,
+  boundaries, "never overwrites", "a failure writes nothing" — these pass on the day they are
+  written whatever they assert. Break the thing they guard, watch the failure, put it back, and put
+  the failure message in the pull request. See the `proving-a-guard-test` skill; it exists because
+  three of them lied in one afternoon.
 
 ## Working from Linear
 
@@ -623,7 +637,14 @@ expensive:
 ```
 
 Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
-Scopes: `agent`, `auth`, `db`, `daemon`, `integrations`, `ui`, `tauri`, `deps`, `ci`, `repo`.
+Scopes: `agent`, `auth`, `corpus`, `db`, `daemon`, `integrations`, `ui`, `tauri`, `deps`, `ci`,
+`repo`. The list is enforced by `commitlint.config.js`; a scope that is not on it fails the
+`commit-msg` hook, so read it there rather than guessing a plausible-sounding one.
+
+**Write the message to a file and commit with `-F`.** A body of several paragraphs is the norm here
+and it will contain an apostrophe, a quotation mark or a backtick sooner rather than later — `-m`
+with a shell-quoted string breaks on the first one, and the failure looks like git rejecting the
+commit rather than like a quoting mistake.
 
 Keep commits well-scoped — one logical change each, with the frontend and backend halves of a single
 feature together.

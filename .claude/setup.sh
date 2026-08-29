@@ -30,5 +30,18 @@ else
   log "pnpm not found — run 'corepack enable' first"
 fi
 
+# Disk headroom. A debug build of this crate is several gigabytes and a release
+# build more, and cargo reports exhaustion as `failed to build archive ... No
+# space left on device` part-way through a link — which reads as a build error
+# rather than a full disk. Measured: `src-tauri/target` reached 13 GB during one
+# session and took the volume to 99%.
+FREE_MB=$(df -Pm . 2>/dev/null | awk 'NR==2 {print $4}')
+if [ -n "${FREE_MB:-}" ] && [ "$FREE_MB" -lt 12000 ] 2> /dev/null; then
+  log "only ${FREE_MB}MB free — a Tauri build needs several GB"
+  if [ -d src-tauri/target ]; then
+    log "src-tauri/target is $(du -sh src-tauri/target 2>/dev/null | cut -f1); 'cargo clean --manifest-path src-tauri/Cargo.toml -p Chief' frees most of it"
+  fi
+fi
+
 log "ready"
 exit 0

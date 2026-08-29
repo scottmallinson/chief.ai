@@ -30,6 +30,7 @@
     "rust:fmt:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
     "rust:lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --all-features",
+    "fix": "pnpm format && pnpm lint:fix && pnpm rust:fmt",
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm check:migrations && pnpm test",
     "verify:commits": "commitlint --from origin/main --to HEAD",
     "verify:frontend": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
