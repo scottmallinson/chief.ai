@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0 (2026-08-29)
+
+### Features
+
+- **agent:** write the day's brief without asking a model to plan it ([0c6447e](https://github.com/scottmallinson/chief.ai/commit/0c6447e52c36b5ef4440d0b134f5fd28ce182411))
+- **db:** keep the corpus in a folder the user can open ([26cd9a7](https://github.com/scottmallinson/chief.ai/commit/26cd9a7b2bc5a3951bb8b2e1ac1ec097a163ae9d))
+- **agent:** answer from the calendar and the inbox ([a61944a](https://github.com/scottmallinson/chief.ai/commit/a61944a0c4c96cb84520fa032c69550c8c82e2a3))
+- **auth:** sign in to Outlook in the browser ([c06e8df](https://github.com/scottmallinson/chief.ai/commit/c06e8dfe06024bcb0dc519dd281f446678fd2335))
+- **tauri:** let this machine say how fast it actually answers ([accb8c8](https://github.com/scottmallinson/chief.ai/commit/accb8c8ba491dd4c1e7db5020b5158b8c7b0c7be))
+- **tauri:** give the model's memory back when nothing is using it ([036cb8f](https://github.com/scottmallinson/chief.ai/commit/036cb8f076d0be422108ef63bed0d9538fba4c92))
+- **tauri:** download a model the machine can hold, and say which ([a39ce1d](https://github.com/scottmallinson/chief.ai/commit/a39ce1dd2c153b87fce065d534624f2cabdb1931))
+- **tauri:** size the engine to the machine it is running on ([8635fce](https://github.com/scottmallinson/chief.ai/commit/8635fce52eb82bb6bcf5925358230bf92420718a))
+
+### Fixes
+
+- **agent:** leave a brief alone once somebody has edited it ([2202bee](https://github.com/scottmallinson/chief.ai/commit/2202bee12d4b79095bac8546939cd2a151361070))
+- **agent:** tell the retry what it could not look up ([9d36c9b](https://github.com/scottmallinson/chief.ai/commit/9d36c9b66b78a480e40955babdd3994c78c14254))
+- **agent:** shorten a tool result by dropping entries, not by cutting the text ([49f7868](https://github.com/scottmallinson/chief.ai/commit/49f7868c2fc16f0b5f7279f0f6eab981efb83a9b))
+- **agent:** stop the token estimate under-counting what it most has to hold back ([dcd502b](https://github.com/scottmallinson/chief.ai/commit/dcd502bfaf64c6e4bb01d0db12b53824ce86c667))
+- **agent:** charge tool results against the prompt budget, and say when an answer was cut ([5e1e67c](https://github.com/scottmallinson/chief.ai/commit/5e1e67c3685f591952d2cc98ee7fff91f9c1b8c0))
+- **tauri:** say when the engine on our port is not ours to stop ([90c2157](https://github.com/scottmallinson/chief.ai/commit/90c2157bd274e93d613612fc9c2d1db5d17a6c42))
+- **agent:** never send the model a prompt with no question in it ([04d225d](https://github.com/scottmallinson/chief.ai/commit/04d225df1704d8b6b6519ceba8c5957309cab5ea))
+- **daemon:** keep the engine alive for as long as a pass takes ([86b273e](https://github.com/scottmallinson/chief.ai/commit/86b273eaf3f18c8ad2c132033689206cfb2524d9))
+- **agent:** answer the question even when no tool fits it ([1f15c55](https://github.com/scottmallinson/chief.ai/commit/1f15c55d66ab2ab2a11c9dbb2999dd3416827c45))
+- **agent:** answer with the model's own tool calling again ([1131db1](https://github.com/scottmallinson/chief.ai/commit/1131db16b730e686bb5da14c8534a77419012fd7))
+
 ## 0.2.0 (2026-08-28)
 
 ### Features
