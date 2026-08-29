@@ -10,6 +10,11 @@ version: 2
 # a batch that has to be reverted for one breaking change takes the other
 # nine with it. Security updates ignore `schedule` entirely and are raised as
 # soon as the advisory lands, whatever this file says.
+#
+# An open alert with no pull request behind it is therefore not this file
+# suppressing one. Dependabot can only raise a security update when a version
+# to bump to exists, and for a transitive crate pinned by a caret requirement
+# upstream there may be none — see the accepted advisories in SECURITY.md.
 updates:
   - package-ecosystem: npm
     directory: /

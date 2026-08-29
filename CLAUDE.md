@@ -540,6 +540,16 @@ it.** This overrides any default an agent or tool brings with it, and applies to
   generated-by footer, no session link, no assistant byline.
 - The commit message and the PR body describe the change, never who or what wrote it.
 
+## Dependency advisories
+
+`SECURITY.md` holds the advisories that cannot be fixed by a bump, each with the reason and a date
+to look again. Read it before investigating an open Dependabot alert — an alert sitting there with
+no pull request behind it usually means Dependabot has no version to offer, not that anybody has
+ignored it. Add to that list rather than re-deriving the analysis, and only after establishing
+whether the package reaches a shipped artifact: `cargo tree -i <crate> --target <triple>` for the
+three targets Chief bundles is what settles that for a Rust dependency, and it is what proves a
+Linux-only crate is not in any of them.
+
 ## Releases
 
 A release is cut deliberately, and it can carry several pull requests at once.
