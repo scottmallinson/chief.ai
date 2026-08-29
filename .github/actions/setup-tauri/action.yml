@@ -14,6 +14,13 @@ inputs:
     description: Extra rustup targets, comma separated.
     required: false
     default: ''
+  engine-target:
+    description: >-
+      The Rust triple to fetch the llama.cpp engine for, when it is not this
+      runner's own. A cross-compiling build needs the engine that matches what
+      it is about to link, not the one that matches the machine it is on.
+    required: false
+    default: ''
   shared-key:
     description: >-
       A cargo cache key used instead of the automatic per-job one, so two jobs
@@ -71,9 +78,13 @@ runs:
     - name: Fetch the llama.cpp engine
       if: runner.os != 'Windows'
       shell: bash
+      env:
+        CHIEF_ENGINE_TARGET: ${{ inputs.engine-target }}
       run: pnpm engine:fetch
 
     - name: Fetch the llama.cpp engine
       if: runner.os == 'Windows'
       shell: pwsh
+      env:
+        CHIEF_ENGINE_TARGET: ${{ inputs.engine-target }}
       run: pnpm engine:fetch

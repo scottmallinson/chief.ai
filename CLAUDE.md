@@ -89,27 +89,42 @@ Runner time is the one cost this project has, so the workflows are written to sp
   replaced; a run on `main` is the record that a merged commit is good, so it is left to finish.
 - **Cache anything downloaded twice** — the pnpm store, the cargo registry and target directory,
   and Chromium for the layout tests.
-- **Build where nothing else is looking.** A pull request builds the app on macOS and Windows, and
-  not on Linux: the Rust job already compiles the whole crate there, but `#[cfg(windows)]` code is
+- **Build where nothing else is looking.** The app is built on macOS and Windows, and not on
+  Linux: the Rust job already compiles the whole crate there, but `#[cfg(windows)]` code is
   compiled on Windows and nowhere else — `engine.rs:493` is where the last two fixes on `main`
-  went. `main` adds Linux, where the app build is the only job that links a release profile
-  against WebKitGTK. macOS bills at 10× a Linux runner and Windows at 2×, so this is most of what
-  CI costs; it buys the only proof that the platform-conditional code compiles at all.
+  went. macOS bills at 10× a Linux runner and Windows at 2×, so this is most of what CI costs; it
+  buys the only proof that the platform-conditional code compiles at all.
+- **Chief does not ship a Linux bundle.** `main` used to add a Linux app build, to link a release
+  profile against WebKitGTK. It no longer does, and the release matrix no longer has an
+  `ubuntu-22.04` entry: that link was proving something nobody installs. Linux is still where
+  every cheap job runs — Rust, Frontend, Layout, commitlint — and the `linux-x64` engine is still
+  fetched there, because Tauri's build script wants the sidecar on disk even for `cargo test`.
 - **Don't build it at all when the change can't reach it.** The `changes` job spends a Linux
   minute working out whether a pull request touches `src-tauri/`, `scripts/`, the manifests or CI
   itself, and the app build is skipped when it does not. A change under `src/` is proved by the
-  Frontend job's `pnpm build`; it cannot break platform-conditional Rust. Everything that is not a
-  pull request builds unconditionally.
-- **A pull request builds `--debug`.** It has one question to answer — does this compile and link
-  on a platform nothing else compiles it on — and optimisation is not part of it. The release
-  profile is proved on `main` and again when a release is cut.
-- **Compile a dependency once per platform.** CI's app build and Release share one cargo cache per
-  platform — `shared-key: tauri-<platform>` — so cutting a release restores what `main` already
-  built instead of starting from nothing. Two things keep that working: both workflows set the
-  same `CARGO_TERM_COLOR`, because rust-cache hashes every `CARGO_*` and `RUST*` variable into the
-  key; and the debug builds pull-requests do are kept in a separate `tauri-dev-<platform>` cache,
-  so a branch cannot evict what a release restores from. Chief's own crates are never cached, only
-  its dependencies.
+  Frontend job's `pnpm build`; it cannot break platform-conditional Rust.
+- **The app build is a pull request's job, and only a pull request's.** It builds `--debug`,
+  because it has one question to answer — does this compile and link on a platform nothing else
+  compiles it on — and optimisation is not part of it. On `main` it does not run at all: Release
+  compiles the same two platforms in the same profile and then bundles them, so building in CI as
+  well was paying twice for one answer on the runners that bill the most. The release profile is
+  proved when a release is cut. The gap this accepts is a non-releasable push to `main` — a
+  `chore(deps)` lockfile bump, say — which gets no app build; it fails at the next release, into a
+  draft rather than a publish.
+- **Release runs after CI, not beside it.** Both used to trigger on the push to `main`, so the
+  bundles were built and attached while the tests were still running: a commit whose Rust job
+  failed could still produce a release. Release now triggers on `workflow_run` for CI and stops
+  unless the conclusion is `success`, and it checks out the commit CI actually tested rather than
+  whatever `main` has reached since. The release commit is pushed with `GITHUB_TOKEN`, which
+  raises no workflow runs, so it starts no CI run and the chain cannot loop.
+- **Compile a dependency once per target.** Release keys its cargo cache on the target rather than
+  the runner — `shared-key: tauri-<target>` — so one release restores what the last one built.
+  This matters most on macOS, where both bundles are built on one arm64 runner into different
+  target directories: a single key had the two jobs overwriting each other with artifacts the
+  other could not use. Pull request debug builds keep their own `tauri-dev-<platform>` caches, so
+  a branch cannot evict what a release restores from. Both workflows set the same
+  `CARGO_TERM_COLOR`, because rust-cache hashes every `CARGO_*` and `RUST*` variable into the key.
+  Chief's own crates are never cached, only its dependencies.
 - **One dependency pull request a month, not twenty.** Every bump touches a lockfile, which is
   exactly what makes the app build run, so Dependabot groups minor and patch updates per ecosystem
   and runs monthly. Majors stay on their own — a batch that has to be reverted for one breaking
@@ -163,8 +178,11 @@ migrate at startup, so the pool is ready before the first command runs.
 the user to install a runtime, which is the whole reason the engine is a module rather than a URL.
 
 - `scripts/fetch-llama-server.mjs` puts a pinned CPU build in `src-tauri/binaries/`:
-  `llama-server-<host triple>` for `externalBin`, and its shared libraries in `lib/` for
-  `bundle.resources`. Only CPU builds — a binary that runs on a machine with no GPU and no AVX-512,
+  `llama-server-<target triple>` for `externalBin`, and its shared libraries in `lib/` for
+  `bundle.resources`. The target is this machine's unless `CHIEF_ENGINE_TARGET` names another —
+  which the release needs, because both macOS architectures are built on one arm64 runner and the
+  Intel bundle has to link an Intel server. Getting this wrong does not degrade anything: Tauri
+  stops with `resource path binaries/llama-server-x86_64-apple-darwin doesn't exist`. Only CPU builds — a binary that runs on a machine with no GPU and no AVX-512,
   picking the best instruction set it finds at run time, is the point.
 - `Engine::discover` finds that binary next to the app executable (where Tauri puts a sidecar, in
   both a release install and `tauri dev`), then a `llama-server` on `PATH`, then gives up and says
@@ -461,18 +479,19 @@ it.** This overrides any default an agent or tool brings with it, and applies to
 ## Releases
 
 Nobody cuts a release, and nothing waits for a pull request.
-`.github/workflows/release.yml` runs on every push to `main`, and one Linux job decides whether
+`.github/workflows/release.yml` runs after CI passes on `main`, and one Linux job decides whether
 what just landed is worth releasing. If it is, that job _is_ the release: the new version is
 written into the four files that carry it, `CHANGELOG.md` gains an entry, both are committed back
-to `main` and tagged, and the four bundles build and publish against that tag.
+to `main` and tagged, and the three bundles — two macOS architectures and Windows — build and
+publish against that tag.
 
 `scripts/release.mjs` holds the decision, which is why it is a tested script rather than a heap of
 YAML — there is no human between it and a published release. `pnpm test` covers it.
 
 - **A `feat`, `fix`, `perf` or `revert` releases. Nothing else does.** A `docs`, `ci`, `chore`,
-  `style`, `test` or `refactor` commit changes nothing a person can download, and a release is four
-  bundles — two of them macOS at 10× a Linux runner, so on the order of 200 billed minutes. Those
-  commits neither cause a release nor appear in one.
+  `style`, `test` or `refactor` commit changes nothing a person can download, and a release is
+  three bundles — two of them macOS at 10× a Linux runner, so on the order of 200 billed minutes.
+  Those commits neither cause a release nor appear in one.
 - **The version is derived, never chosen.** A `feat` is a minor and anything else releasable is a
   patch. A breaking change — `feat!:` or a `BREAKING CHANGE:` footer — is a major, except before
   1.0.0, where it is a minor: a project that is not finished should not be forced to call itself
