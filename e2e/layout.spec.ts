@@ -50,7 +50,7 @@ test.describe('a conversation taller than the window', () => {
     const shell = await chief.measure();
 
     expect(shell.headerTop, 'the header should stay at the top of the window').toBe(0);
-    await expect(page.getByRole('button', { name: 'Chat', exact: true })).toBeInViewport();
+    await expect(page.getByRole('button', { name: 'Ask Chief' })).toBeInViewport();
     await expect(page.getByText(/^on-device/)).toBeInViewport();
   });
 

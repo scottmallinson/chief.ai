@@ -4,7 +4,7 @@ import { askAgent, describeTool, type ChatMessage } from '@/lib/agent';
 
 type Status = 'idle' | 'thinking';
 
-interface UseChat {
+export interface UseChat {
   messages: ChatMessage[];
   status: Status;
   /** The answer being written right now, before the model has finished. */
