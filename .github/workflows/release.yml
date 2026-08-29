@@ -1,26 +1,22 @@
 name: Release
 
 on:
-  # After CI, not beside it. Releasing on `push` meant the bundles were built
-  # and attached while the tests were still running, so a commit whose Rust job
-  # failed could still produce a release — and both workflows compiled the same
-  # crate at the same time, each racing the other's cargo cache.
+  # By hand, and only by hand.
   #
-  # `branches: [main]` filters on the branch CI itself ran on, so pull request
-  # runs never reach this. The release commit is pushed with GITHUB_TOKEN,
-  # which by design raises no workflow runs, so it starts no CI run and this
-  # cannot loop.
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
-  # Re-runs the same flow by hand. With nothing releasable since the last tag
-  # it is one Linux job that decides so and stops.
+  # A release is three bundles, two of them macOS at ten times a Linux runner,
+  # so it is the most expensive thing this repository does. Releasing on every
+  # merge spent that on each pull request separately; releasing when asked lets
+  # several merges go out together, and lets a person choose when.
   workflow_dispatch:
+    inputs:
+      ref:
+        description: The branch or commit to release. Defaults to main.
+        required: false
+        default: main
 
 concurrency:
   # Never cancelled, and never two at once: a release commits to main and moves
-  # a tag, so a second merge waits for the first rather than racing it.
+  # a tag, so a second run waits for the first rather than racing it.
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
@@ -34,18 +30,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # One Linux job on every push to main. It decides whether what just landed is
+  # The same jobs a pull request runs, against the commit this release is about
+  # to bundle — which is what makes "a release depends on CI being green" a
+  # fact rather than a cross-reference. The app build is left out: the bundle
+  # jobs below compile both platforms anyway, in the profile that ships.
+  checks:
+    name: Checks
+    uses: ./.github/workflows/checks.yml
+    with:
+      build-app: false
+
+  # One Linux job. It decides whether what has landed since the last tag is
   # worth releasing, and if it is, it is the release: the version is written
   # into the four files that carry it, the changelog gains an entry, both are
   # committed back to main and tagged, and a draft release is opened for the
   # bundles to attach to.
   version:
     name: Work out the release
-    # Nothing publishes from a red commit. A hand-started run has no CI run
-    # behind it, so it is allowed through on its own.
-    if: >-
-      github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
+    # Nothing is released from a red commit.
+    needs: checks
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     outputs:
@@ -57,13 +60,13 @@ jobs:
     steps:
       # Full history and tags: the script releases what has landed since the
       # last `v*` tag, and cannot see that in a shallow clone.
-      # The commit CI actually tested, not whatever main has reached since. The
-      # push below is `HEAD:main`, so if main has moved on it is refused rather
-      # than rewinding anything.
+      # The ref asked for, which is main unless somebody said otherwise. The
+      # push below is `HEAD:main`, so a ref that main has moved past is refused
+      # rather than rewinding anything.
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.ref }}
 
       # No `pnpm install`: the script has no dependencies, so the runner's own
       # Node runs it and a release does not wait on a package manager.

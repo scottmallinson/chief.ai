@@ -85,38 +85,40 @@ Runner time is the one cost this project has, so the workflows are written to sp
   `setup-node` is corepack, Node with a pnpm store cache, and `pnpm install`; `setup-tauri` is that
   plus the WebKitGTK toolchain on Linux, a Rust toolchain, a cargo cache and the llama.cpp engine.
   A new step that more than one job needs belongs in one of those two.
-- **Cancel superseded runs, keep `main`.** Pushing again to a pull request cancels the run it
-  replaced; a run on `main` is the record that a merged commit is good, so it is left to finish.
+- **The checks live in one file, and both workflows call it.** `.github/workflows/checks.yml` is
+  a `workflow_call` workflow holding Frontend, Layout, Rust and the app build. CI calls it on a
+  pull request; Release calls it before it bundles anything. That is what makes "a release depends
+  on CI being green" true by construction — a release runs the same jobs against the very commit
+  it is about to ship, rather than trusting that some earlier run on some other commit was green.
+- **Cancel superseded runs.** Pushing again to a pull request cancels the run it replaced.
 - **Cache anything downloaded twice** — the pnpm store, the cargo registry and target directory,
   and Chromium for the layout tests.
+- **`main` is not built.** CI runs on pull requests only. A branch has to be up to date with
+  `main` before it can merge, so the tree a pull request proves green is the tree the merge
+  produces; running the same jobs again on the merge commit would pay twice for an answer already
+  given. Nothing at all runs on a push to `main`.
 - **Build where nothing else is looking.** The app is built on macOS and Windows, and not on
   Linux: the Rust job already compiles the whole crate there, but `#[cfg(windows)]` code is
   compiled on Windows and nowhere else — `engine.rs:493` is where the last two fixes on `main`
   went. macOS bills at 10× a Linux runner and Windows at 2×, so this is most of what CI costs; it
   buys the only proof that the platform-conditional code compiles at all.
-- **Chief does not ship a Linux bundle.** `main` used to add a Linux app build, to link a release
-  profile against WebKitGTK. It no longer does, and the release matrix no longer has an
-  `ubuntu-22.04` entry: that link was proving something nobody installs. Linux is still where
-  every cheap job runs — Rust, Frontend, Layout, commitlint — and the `linux-x64` engine is still
-  fetched there, because Tauri's build script wants the sidecar on disk even for `cargo test`.
+- **Chief ships macOS Apple silicon, macOS Intel and Windows.** There is no Linux bundle, and no
+  Linux app build: that job was the only thing proving a link nobody installs. Linux is still
+  where every cheap job runs — Frontend, Layout, Rust, commitlint — and the `linux-x64` engine is
+  still fetched there, because Tauri's build script wants the sidecar on disk even for
+  `cargo test`.
 - **Don't build it at all when the change can't reach it.** The `changes` job spends a Linux
   minute working out whether a pull request touches `src-tauri/`, `scripts/`, the manifests or CI
   itself, and the app build is skipped when it does not. A change under `src/` is proved by the
   Frontend job's `pnpm build`; it cannot break platform-conditional Rust.
-- **The app build is a pull request's job, and only a pull request's.** It builds `--debug`,
-  because it has one question to answer — does this compile and link on a platform nothing else
-  compiles it on — and optimisation is not part of it. On `main` it does not run at all: Release
-  compiles the same two platforms in the same profile and then bundles them, so building in CI as
-  well was paying twice for one answer on the runners that bill the most. The release profile is
-  proved when a release is cut. The gap this accepts is a non-releasable push to `main` — a
-  `chore(deps)` lockfile bump, say — which gets no app build; it fails at the next release, into a
-  draft rather than a publish.
-- **Release runs after CI, not beside it.** Both used to trigger on the push to `main`, so the
-  bundles were built and attached while the tests were still running: a commit whose Rust job
-  failed could still produce a release. Release now triggers on `workflow_run` for CI and stops
-  unless the conclusion is `success`, and it checks out the commit CI actually tested rather than
-  whatever `main` has reached since. The release commit is pushed with `GITHUB_TOKEN`, which
-  raises no workflow runs, so it starts no CI run and the chain cannot loop.
+- **The app build only runs where it answers something.** On a pull request it builds `--debug`,
+  because the question is whether the platform-conditional code compiles and links, and
+  optimisation is not part of that. A release skips it entirely: the bundle jobs compile the same
+  two platforms straight afterwards, in the profile that actually ships.
+- **A release is asked for, not triggered.** `workflow_dispatch` and nothing else. Three bundles,
+  two of them macOS at 10×, make it the most expensive thing here — releasing on every merge spent
+  that on each pull request separately. Releasing by hand lets several merges go out together, and
+  lets a person choose when. It takes a `ref`, defaulting to `main`.
 - **Compile a dependency once per target.** Release keys its cargo cache on the target rather than
   the runner — `shared-key: tauri-<target>` — so one release restores what the last one built.
   This matters most on macOS, where both bundles are built on one arm64 runner into different
@@ -478,15 +480,17 @@ it.** This overrides any default an agent or tool brings with it, and applies to
 
 ## Releases
 
-Nobody cuts a release, and nothing waits for a pull request.
-`.github/workflows/release.yml` runs after CI passes on `main`, and one Linux job decides whether
-what just landed is worth releasing. If it is, that job _is_ the release: the new version is
+A release is cut deliberately, and it can carry several pull requests at once.
+`.github/workflows/release.yml` is started by hand from the Actions tab. It runs the checks
+first, and then one Linux job decides whether what has landed since the last tag is worth
+releasing. If it is, that job _is_ the release: the new version is
 written into the four files that carry it, `CHANGELOG.md` gains an entry, both are committed back
 to `main` and tagged, and the three bundles — two macOS architectures and Windows — build and
 publish against that tag.
 
 `scripts/release.mjs` holds the decision, which is why it is a tested script rather than a heap of
-YAML — there is no human between it and a published release. `pnpm test` covers it.
+YAML — a person chooses _when_ to release, but nothing between that click and a published release
+is checked by hand. `pnpm test` covers it.
 
 - **A `feat`, `fix`, `perf` or `revert` releases. Nothing else does.** A `docs`, `ci`, `chore`,
   `style`, `test` or `refactor` commit changes nothing a person can download, and a release is
@@ -501,16 +505,19 @@ YAML — there is no human between it and a published release. `pnpm test` cover
   string in each, failing if it finds none or several. A test asserts each pattern still matches
   its real file, so reformatting one of them breaks a test rather than a release.
 - **The release commit starts nothing.** It is pushed with `GITHUB_TOKEN`, and GitHub deliberately
-  raises no workflow runs for those — so it cannot loop back into this workflow, and it does not
-  spend another full CI matrix on `main`.
+  raises no workflow runs for those. Nothing runs on a push to `main` anyway, but this also keeps
+  the commit from tripping anything added there later.
 - **Drafted, filled, then published.** The release is created as a draft so nobody is told about a
   release they cannot download; the `publish` job takes it out of draft once every bundle is
   attached. If that job never runs, the release sits there as a draft with its assets and one click
   finishes it. That is the failure this is shaped around.
 - **The first release needs a starting point.** With no `v*` tag to measure from, the script reads
   from the `BASELINE` commit rather than summarising the entire history.
-- A branch protection rule that forbids pushing to `main` would stop this: the release commit goes
-  straight to `main`, by design.
+- **`main` is protected, and the release has to be let through it.** Merging needs the checks
+  green and the branch up to date, so a red pull request cannot land. But the release commit goes
+  straight to `main` by design, and a rule that simply forbids that would deadlock releasing
+  entirely — so the ruleset grants a bypass to the GitHub Actions app, and to nothing else. If
+  releasing ever fails on a protected-branch error, that bypass is the first thing to check.
 - `CHANGELOG.md` is in `.prettierignore`. It is generated, and a formatting check failing on a
   release commit would block releasing entirely.
 
