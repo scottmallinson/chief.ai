@@ -469,10 +469,49 @@ shell rather than changes to it.
 - These are kept out of `pnpm check` because they need a build and a browser. CI runs them as the
   **Layout** job.
 
+## Working from Linear
+
+Remaining work lives in the **Chief** project in Linear, not in this repository. Issues carry a
+work type, acceptance criteria, and `blockedBy` relations where the plan's ordering is real.
+
+**"Work on the next N Chief tasks autonomously"** means exactly this:
+
+1. List issues in the `Chief` project carrying the **`agent-executable`** label.
+2. Drop any whose `blockedBy` issues are not yet Done — fetch relations explicitly, they are not
+   in the default response.
+3. Sort what is left by priority, then by the dependency order among themselves.
+4. Take the first N, and work each to its acceptance criteria: one branch and one pull request
+   per issue, `main` protected, `Checks / Complete` green before merge.
+
+**`agent-executable` is a claim about the work, not about its importance.** It means an agent can
+finish the issue alone: no physical hardware, no third-party portal, no product decision, and no
+irreversible action outside this machine. Several of the highest-priority issues do not carry it
+and never will — validating the Windows build needs a Windows machine, registering an Entra
+application needs somebody in the Azure portal. Do not reach for those because they sort higher.
+
+Two issues are deliberately excluded and should stay excluded until a person says otherwise: the
+brief-quality defect, which needs a product decision between three stated options rather than an
+implementation; and the send path, which is the first code that changes something outside the
+machine and is the wrong thing to build unattended.
+
+If an issue turns out not to be finishable alone, stop and say why rather than guessing — and
+remove the label, so the next pass does not pick it up again.
+
 ## Commits and pull requests
 
 [Conventional Commits](https://www.conventionalcommits.org/) are enforced by commitlint on both the
 commit message (via a git hook) and the PR title (via CI).
+
+Two more guards run alongside it, because both catch mistakes that are silent until they are
+expensive:
+
+- `scripts/check-attribution.sh` runs from the `commit-msg` hook and **refuses a commit** that
+  carries a co-author or tool-attribution trailer, or whose author or committer is not the owner.
+  The documented fix is `--amend --reset-author`, which is tedious over a branch and impossible
+  once merged — so the commit is refused at the last moment it is still free.
+- `scripts/check-migrations.mjs` runs from `pre-commit` and from `pnpm check`, and refuses a
+  duplicate or non-contiguous migration version. A duplicate version compiles, passes every test,
+  and puts installed copies on a schema this code does not expect.
 
 ```
 <type>(<scope>): <subject>
