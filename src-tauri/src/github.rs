@@ -146,6 +146,14 @@ pub struct PullRequest {
     pub updated_at: String,
     /// When it was merged, for pull requests that were.
     pub merged_at: Option<String>,
+    /// The description the author wrote, when there is one.
+    ///
+    /// Carried for one reason: it is the user's own prose, and `profile.rs`
+    /// samples it to describe how they write. It is deliberately **not** in
+    /// [`as_tool_entries`] — a list of pull request bodies would swamp the
+    /// prompt budget, and the model does not need one to say what is waiting.
+    #[serde(skip_serializing)]
+    pub body: Option<String>,
 }
 
 impl PullRequest {
@@ -468,6 +476,7 @@ fn pull_request_from(item: &Value) -> PullRequest {
         merged_at: item["pull_request"]["merged_at"]
             .as_str()
             .map(ToString::to_string),
+        body: item["body"].as_str().map(ToString::to_string),
     }
 }
 
@@ -794,6 +803,7 @@ mod tests {
             url: "https://github.com/scottmallinson/chief.ai/pull/12".to_string(),
             updated_at: "2026-08-19T14:00:00Z".to_string(),
             merged_at: Some("2026-08-19T14:00:00Z".to_string()),
+            body: None,
         };
 
         assert_eq!(pr.external_id(), "scottmallinson/chief.ai#12");

@@ -5,6 +5,7 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
 import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
+import { ProfileBootstrap } from '@/components/ProfileBootstrap';
 import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
@@ -473,6 +474,13 @@ export function SettingsView() {
         <div className="flex max-w-[680px] flex-col gap-3">
           <LocalModel />
           <Corpus />
+          <SettingsSection
+            title="Your profile"
+            description="Drafts sound like a model until Chief has read some of your own writing. It can seed your writing style and your team from work you have already done — on this machine, and only when you ask."
+            state={<Chip tone="quiet">On request</Chip>}
+          >
+            <ProfileBootstrap />
+          </SettingsSection>
           <ThisMachine />
           <Integration
             service={GITHUB}
