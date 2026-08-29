@@ -17,8 +17,10 @@ use crate::context;
 use crate::db;
 use crate::engine;
 use crate::github;
+use crate::intent;
 use crate::llama::{self, ChatRequest, Client, Message, Role};
 use crate::microsoft;
+use crate::recipe;
 use crate::tools;
 
 /// The model the engine is serving. It runs one, under the name it was given
@@ -484,6 +486,28 @@ pub async fn ask_agent<R: Runtime>(
     // again between the wake and the question.
     let _waiting = attention.begin();
 
+    // Before the engine, not after it. A question this machine can answer from
+    // its own disk should not wait several seconds for a couple of gigabytes of
+    // weights to be read in order to say something already written down.
+    if let Some(question) = messages.iter().rev().find(|turn| turn.role == Role::User) {
+        if let Ok(recipe) = recipe::context(&app).await {
+            let answered = intent::deliver(&question.content, &recipe, |update| {
+                let _ = app.emit(
+                    STREAM_EVENT,
+                    StreamEvent {
+                        request_id: request_id.clone(),
+                        update,
+                    },
+                );
+            })
+            .await;
+
+            if let Some(markdown) = answered {
+                return Ok(markdown);
+            }
+        }
+    }
+
     // The engine gives its memory back when nothing is using it, so it may not
     // be running. Starting it is a few seconds of reading weights off disk, and
     // the window is told that is what the wait is.
@@ -532,6 +556,38 @@ const PRESENT: &str = "The current date and time is 14:32 on Thursday 20 August 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Decision D2's cap, enforced rather than remembered.
+    ///
+    /// The catalogue is sent as its own field on every single turn and rendered
+    /// into the prompt by the chat template, so it never shows up in any
+    /// message and is easy to forget while it quietly eats the budget. Two
+    /// ceilings, and the tokens are the one that bites: three tools cost 477 of
+    /// the 600 here, so the fourth is where this test starts having an opinion,
+    /// long before the seventh tool the count forbids outright.
+    ///
+    /// Raising either number is a decision about how much of every prompt is
+    /// spent describing tools before the user's question is even read. Make it
+    /// deliberately, here, rather than by adding a tool and finding the budget
+    /// gone.
+    #[test]
+    fn keeps_the_tool_catalogue_within_its_budget() {
+        const MAX_TOOLS: usize = 6;
+        const MAX_TOKENS: u32 = 600;
+
+        let catalog = tools::catalog();
+        let cost = catalog_cost(&catalog);
+
+        assert!(
+            catalog.len() <= MAX_TOOLS,
+            "the catalogue has {} tools and D2 caps it at {MAX_TOOLS}",
+            catalog.len()
+        );
+        assert!(
+            cost <= MAX_TOKENS,
+            "the catalogue costs about {cost} tokens and D2 caps it at {MAX_TOKENS}"
+        );
+    }
 
     #[test]
     fn puts_the_system_prompt_first() {

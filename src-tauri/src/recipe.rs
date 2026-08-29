@@ -36,7 +36,7 @@ use crate::{clock, corpus, github, integrations, work_log};
 const BRIEF_TOKENS: u32 = 500;
 
 /// How many of anything is gathered for one brief.
-const PER_SOURCE: u8 = 10;
+pub(crate) const PER_SOURCE: u8 = 10;
 
 /// Where the corpus keeps files that are loaded whatever the question.
 ///
@@ -380,12 +380,12 @@ pub async fn written_at(pool: &SqlitePool, date: &str) -> Result<Option<String>,
 }
 
 /// Today, as the date a brief is filed under.
-fn today_date() -> String {
+pub(crate) fn today_date() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 /// Midnight to midnight, in this machine's own time zone.
-fn today() -> (String, String) {
+pub(crate) fn today() -> (String, String) {
     let midnight = chrono::Local::now()
         .date_naive()
         .and_hms_opt(0, 0, 0)
@@ -406,14 +406,14 @@ async fn github_accounts(context: &Context) -> Vec<i64> {
         .unwrap_or_default()
 }
 
-async fn outlook_accounts(context: &Context) -> Vec<i64> {
+pub(crate) async fn outlook_accounts(context: &Context) -> Vec<i64> {
     integrations::accounts(&context.pool, integrations::MICROSOFT)
         .await
         .map(|accounts| accounts.iter().map(|account| account.id).collect())
         .unwrap_or_default()
 }
 
-fn describe_event(event: &microsoft::Event) -> String {
+pub(crate) fn describe_event(event: &microsoft::Event) -> String {
     let when = event
         .start
         .split('T')
