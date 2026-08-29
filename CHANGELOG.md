@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 (2026-08-29)
+
+### Fixes
+
+- **ci:** build the macOS Intel bundle against an Intel engine ([2b59c65](https://github.com/scottmallinson/chief.ai/commit/2b59c6595bc9c5bc1a1ab3f15a1c3579a99c0720))
+
 ## 0.3.0 (2026-08-29)
 
 ### Features
