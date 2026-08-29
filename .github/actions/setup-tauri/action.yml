@@ -88,3 +88,27 @@ runs:
       env:
         CHIEF_ENGINE_TARGET: ${{ inputs.engine-target }}
       run: pnpm engine:fetch
+
+    # Seconds here against minutes later. Tauri only notices a missing sidecar
+    # part-way through its build script, so the first release to reach bundling
+    # spent six macOS minutes compiling before it said
+    # `resource path binaries/llama-server-x86_64-apple-darwin doesn't exist`.
+    # On a runner billed at ten times Linux that is the most expensive possible
+    # way to discover a file is not there.
+    - name: Check the engine is on disk for the target being built
+      shell: bash
+      env:
+        ENGINE_TARGET: ${{ inputs.engine-target }}
+      run: |
+        target="${ENGINE_TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
+        case "$target" in *windows*) suffix=.exe ;; *) suffix= ;; esac
+        sidecar="src-tauri/binaries/llama-server-$target$suffix"
+
+        if [ ! -f "$sidecar" ]; then
+          echo "::error::$sidecar is missing. Tauri's externalBin needs the engine named for the target being built, not for this runner."
+          ls -la src-tauri/binaries || true
+          exit 1
+        fi
+
+        echo "Engine present: $sidecar"
+        file -b "$sidecar" || true
