@@ -123,6 +123,17 @@ fn catalog_cost(catalog: &[llama::Tool]) -> u32 {
         .unwrap_or(0)
 }
 
+/// What the model is told when a lookup it attempted could not be read.
+///
+/// Deliberately conditional. A question that needed no lookup — most of the
+/// ones that reach here — should still just be answered.
+const NOTHING_LOOKED_UP: &str = "\
+A lookup you attempted could not be completed, so you have no results from it. \
+Answer only from what is already in this conversation. If the question needs \
+information you were not given, say plainly that you could not look it up. Do \
+not guess, and do not state that something is absent when you simply have no \
+data about it.";
+
 /// Roughly what a transcript costs to send.
 fn spent_on(messages: &[Message]) -> u32 {
     messages
@@ -359,6 +370,19 @@ where
             // going to do anyway.
             Err(error) if offer_tools && is_unusable_tool_output(&error) => {
                 offer_tools = false;
+
+                // Dropping the tools is not free, and leaving it there was the
+                // worse half of this fix. Measured: asked what pull requests
+                // were waiting, the model fumbled the call, the retry went out
+                // with nothing, and it answered "there are no pull requests
+                // waiting" — with fifteen of them sitting in the reply it had
+                // just failed to fetch. A visible error became an invisible
+                // wrong answer.
+                //
+                // So the retry is told what it is missing. Conditional, because
+                // most questions that reach this point needed no lookup at all
+                // and should simply be answered.
+                messages.push(Message::system(NOTHING_LOOKED_UP));
 
                 // Anything already on screen was part of the attempt that is
                 // being thrown away.
@@ -895,6 +919,26 @@ mod orchestration_tests {
         assert!(
             body_of(&requests[1]).get("tools").is_none(),
             "the retry must not offer tools, or it will fail the same way"
+        );
+
+        // And it is told that it is answering without the lookup it tried to
+        // make. Without this the model fills the gap: measured, it reported
+        // "there are no pull requests waiting" while fifteen sat in the reply
+        // it had just failed to read.
+        let retry: String = body_of(&requests[1])["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .filter_map(|message| message["content"].as_str())
+            .collect();
+
+        assert!(
+            retry.contains("could not be completed"),
+            "the retry must know it is missing a lookup: {retry}"
+        );
+        assert!(
+            retry.contains("Do not guess"),
+            "and must be told not to fill the gap"
         );
     }
 
