@@ -22,6 +22,8 @@ mod microsoft;
 pub mod oauth;
 mod probe;
 mod profile;
+mod propose;
+mod proposed;
 mod recipe;
 mod session;
 mod settings;
@@ -91,6 +93,10 @@ pub fn run() {
             corpus::write_corpus_file,
             corpus::set_corpus_root,
             probe::run_doctor,
+            propose::refine_draft,
+            proposed::dismiss_proposal,
+            proposed::list_proposals,
+            proposed::save_proposal,
             profile::bootstrap_profile,
             profile::profile_plan,
             recipe::generate_brief,

@@ -18,6 +18,7 @@ use crate::db;
 use crate::github::{self, PullRequest, State};
 use crate::integrations;
 use crate::llama::{self, ChatRequest, Message, Options};
+use crate::propose;
 use crate::recipe;
 use crate::session::GithubSession;
 use crate::work_log::{self, NewWorkLogEntry};
@@ -104,6 +105,7 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
             }
 
             brief_if_the_day_has_none(&app).await;
+            propose_for_one_thing(&app).await;
 
             // The engine is free to go idle again from here.
             drop(working);
@@ -158,6 +160,32 @@ async fn brief_if_the_day_has_none<R: Runtime>(app: &AppHandle<R>) {
             brief.sources.join(", ")
         ),
         Err(error) => eprintln!("no brief this pass: {error}"),
+    }
+}
+
+/// Draft for one thing Chief noticed, if anything is waiting.
+///
+/// After the brief, not before it: the brief is what the user opens the app to
+/// read, and a draft nobody has asked for yet must not be in front of it in the
+/// queue for an engine that decodes one request at a time.
+///
+/// Failing is never fatal. Nothing connected, an engine still loading, a model
+/// that would not answer — all of them mean no draft this pass.
+async fn propose_for_one_thing<R: Runtime>(app: &AppHandle<R>) {
+    let attention = app.state::<Attention>().inner().clone();
+
+    if attention.is_engaged() {
+        return;
+    }
+
+    let Ok(context) = recipe::context(app).await else {
+        return;
+    };
+
+    match propose::run_once(&context, &attention).await {
+        Ok(Some(proposal)) => eprintln!("drafted {} at {}", proposal.title, proposal.path),
+        Ok(None) => {}
+        Err(error) => eprintln!("no draft this pass: {error}"),
     }
 }
 

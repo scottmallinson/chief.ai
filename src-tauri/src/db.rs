@@ -204,6 +204,34 @@ CREATE TABLE IF NOT EXISTS briefs (
 );
 ";
 
+/// The drafts Chief prepared for things it noticed, and what became of them.
+///
+/// COSTA's `task-action-state.json`, in the store Chief already has. The body
+/// lives in the corpus as markdown the user can open; only its state is here,
+/// so a draft the user edited in their own editor is still the one on screen.
+///
+/// The unique index is the dedupe: one proposal per source item, forever. It
+/// deliberately does not include `status` — a dismissed proposal has to keep
+/// occupying its slot, or the next pass would draft it again and dismissing it
+/// would read as having done nothing.
+const ADD_PROPOSED_ACTIONS: &str = r"
+CREATE TABLE IF NOT EXISTS proposed_actions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    source      TEXT NOT NULL,
+    account_id  INTEGER NOT NULL DEFAULT 0,
+    dedupe_key  TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    context     TEXT NOT NULL DEFAULT '',
+    path        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'drafted',
+    created_at  TEXT NOT NULL,
+    acted_at    TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS proposed_actions_source_item
+    ON proposed_actions (source, account_id, dedupe_key);
+";
+
 /// Migrations applied to [`DB_URL`], in order.
 ///
 /// Migrations are append-only: once a version has shipped, add a new one rather
@@ -244,6 +272,12 @@ pub fn migrations() -> Vec<Migration> {
             version: 6,
             description: "record the briefs that were written",
             sql: ADD_BRIEFS,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 7,
+            description: "keep the drafts Chief proposed",
+            sql: ADD_PROPOSED_ACTIONS,
             kind: MigrationKind::Up,
         },
     ]

@@ -36,6 +36,18 @@ export interface Brief {
   sources: string[];
 }
 
+/** A draft Chief prepared, as `list_proposals` returns it. */
+export interface Proposal {
+  id: number;
+  source: string;
+  title: string;
+  context: string;
+  path: string;
+  status: string;
+  createdAt: string;
+  body: string;
+}
+
 /** One connected account, as `connections` returns it. */
 export interface Account {
   id: number;
@@ -62,6 +74,8 @@ export interface Backend {
   brief?: Brief | null;
   /** What `list_corpus` finds, which is where the day list comes from. */
   corpus?: string[];
+  /** The drafts Chief has prepared. Nothing here has been sent. */
+  proposals?: Proposal[];
   /**
    * Leave questions unanswered until {@link Chief.finish} is called, so the
    * streaming states can be held still and measured.
@@ -148,6 +162,7 @@ interface Setup {
   accounts: Account[];
   brief: Brief | null;
   corpus: string[];
+  proposals: Proposal[];
   holdAnswers: boolean;
 }
 
@@ -274,6 +289,12 @@ function installBackend(setup: Setup) {
         case 'todays_brief':
           return Promise.resolve(setup.brief);
 
+        case 'list_proposals':
+          return Promise.resolve(setup.proposals);
+
+        case 'profile_plan':
+          return Promise.resolve({ reads: [], writes: [], keeps: [] });
+
         case 'generate_brief':
           return Promise.resolve(setup.brief);
 
@@ -390,6 +411,7 @@ function handleFor(page: Page, classicScrollbars: boolean): Chief {
         accounts: backend.accounts ?? [],
         brief: backend.brief ?? null,
         corpus: backend.corpus ?? [],
+        proposals: backend.proposals ?? [],
         holdAnswers: backend.holdAnswers ?? false,
       });
 

@@ -351,6 +351,37 @@ from here to GitHub.
 - `tools::Context` carries the pool and the GitHub client, so tools are testable against an
   in-memory database and a stub server rather than a live Tauri app.
 
+## Proposed actions
+
+`src-tauri/src/propose.rs` drafts the thing before the user asks; `proposed.rs` keeps what became
+of it. The item is one of the user's own open pull requests that has been sitting, and the draft is
+a short message asking for a review.
+
+- **Nothing here sends anything, and that boundary is a test.**
+  `never_reaches_the_network_to_draft` asserts every request the pass makes to GitHub is a `GET`,
+  having first asserted the request list is not empty — a loop over nothing passes without checking
+  anything, which would be a broken stub dressed up as proof.
+- **The prompt is assembled in COSTA's order, literally**: org structure, then writing style, then
+  the item. Who these people are frames how to address them, how the user writes frames the words,
+  and the thing being written about arrives last. `reads_the_team_and_the_style_before_the_item`
+  asserts the three appear in that order in what was actually sent.
+- **One item per pass.** A draft is a model call, and a machine that woke to nine stale pull
+  requests would spend minutes of engine on work nobody asked for while the user waits behind it.
+  The pass yields to `Attention` between accounts and between items, like the daemon's own.
+- **The model is asked before anything is written.** A refusal therefore leaves no half-written
+  draft and no orphan row, because neither had been created yet — verified by moving the write
+  earlier and watching the test fail.
+- Dedupe is the unique index on `(source, account_id, dedupe_key)`, and it deliberately excludes
+  `status`: a **dismissed** proposal has to keep occupying its slot, or the next pass drafts it
+  again and dismissing it reads as having done nothing.
+- The body is a file in the corpus and only its state is in SQLite, so a draft the user edited in
+  their own editor is the one on screen. A proposal whose file has gone is dropped from the list —
+  deleting the file is a reasonable way to say no.
+- `refine_draft` is the **single-shot transformation path**: no tools, no history, no corpus, one
+  message. It is the cheapest call Chief makes and the one the user feels most, because they make
+  it repeatedly while looking at the result. `sends_nothing_but_the_instruction_and_the_draft`
+  keeps it that way.
+
 ## Seeding the profile
 
 `src-tauri/src/profile.rs` fills in `writing_style.md` and `team_structure.md` from the user's own

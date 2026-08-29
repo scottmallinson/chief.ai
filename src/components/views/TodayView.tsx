@@ -3,7 +3,9 @@ import { PenLine } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
 import { Dots } from '@/components/ui/activity';
+import { ProposalCard } from '@/components/ProposalCard';
 import { useWorkLog } from '@/hooks/use-work-log';
+import type { Proposal } from '@/lib/proposals';
 import { readBrief, type Brief, type BriefBlock } from '@/lib/brief';
 import type { WorkLogEntry } from '@/lib/work-log';
 
@@ -14,6 +16,11 @@ interface TodayViewProps {
   error: string | null;
   /** Write today's brief. Costs a model call, so it is always a deliberate act. */
   onWrite: () => void;
+  /** The drafts Chief has prepared. Nothing here has been sent. */
+  proposals: Proposal[];
+  /** Open one in the drawer to change it. */
+  onEditProposal: (proposal: Proposal) => void;
+  onProposalDismissed: (id: number) => void;
 }
 
 /** How much of the log counts as "recently", beside a brief about today. */
@@ -86,7 +93,15 @@ function Shipped({ entry }: { entry: WorkLogEntry }) {
  * a sibling in the shell rather than a child of it, and both have to be looking
  * at the same day.
  */
-export function TodayView({ brief, status, error, onWrite }: TodayViewProps) {
+export function TodayView({
+  brief,
+  status,
+  error,
+  onWrite,
+  proposals,
+  onEditProposal,
+  onProposalDismissed,
+}: TodayViewProps) {
   const { entries } = useWorkLog();
 
   const isWriting = status === 'writing';
@@ -153,6 +168,24 @@ export function TodayView({ brief, status, error, onWrite }: TodayViewProps) {
             <p className="mt-4 micro text-verified-text" role="status">
               local · Writing your brief
             </p>
+          )}
+
+          {proposals.length > 0 && (
+            <section aria-labelledby="proposed" className="mt-8 border-t border-border pt-6">
+              <h2 id="proposed" className="micro text-muted-foreground">
+                Drafted for you · nothing sent
+              </h2>
+              <ul className="mt-3.5 flex flex-col gap-3">
+                {proposals.map((proposal) => (
+                  <ProposalCard
+                    key={proposal.id}
+                    proposal={proposal}
+                    onEdit={onEditProposal}
+                    onDismissed={onProposalDismissed}
+                  />
+                ))}
+              </ul>
+            </section>
           )}
 
           {entries.length > 0 && (
