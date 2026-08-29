@@ -29,6 +29,7 @@ mod session;
 mod settings;
 mod setup;
 mod tools;
+mod watcher;
 mod weights;
 mod work_log;
 
@@ -77,6 +78,7 @@ pub fn run() {
 
             // Keeps the work log up to date in the background.
             daemon::spawn(&app.handle().clone());
+            watcher::spawn(&app.handle().clone());
 
             Ok(())
         })
