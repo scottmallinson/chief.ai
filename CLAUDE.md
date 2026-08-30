@@ -285,6 +285,15 @@ the user to install a runtime, which is the whole reason the engine is a module 
 - `llama::Options` rides in the request body, OpenAI-style. `max_tokens` is the ceiling on how long
   a question can take; `temperature` is low because these answers are about what the tools returned.
   Nothing a request carries can change how the engine itself is running.
+- **"Waiting on you" is a different question from "your open work"**, and conflating them was a real
+  wrong answer rather than a thin one. `github::Involvement` splits `author:@me` from
+  `review-requested:@me`, and `assigned_issues` adds `is:issue assignee:@me`. The brief keeps them
+  in separate buckets under separate headings, because a review somebody requested of you is a
+  request and your own open pull request is not.
+- **The catalogue is at 515 of D2's 600 tokens.** REC-41 added the `whose` parameter for 71 and
+  recovered 33 by cutting redundancy from the description, so it cost 38 net. **85 tokens of
+  headroom is roughly half a parameter**, so measure before adding anything — the number is in the
+  PR each time it moves, not assumed.
 - `agent::Attention` counts the questions the user is waiting on. The engine decodes one request at
   a time, so the daemon reads this and steps aside rather than putting a background summary ahead of
   a person.

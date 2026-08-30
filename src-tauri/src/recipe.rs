@@ -104,7 +104,13 @@ pub struct Brief {
 #[derive(Debug, Default)]
 struct Gathered {
     agenda: Vec<String>,
+    /// Things somebody else is blocked on: a review requested of the user.
+    /// Until REC-41 this held the user's *own* open pull requests under a
+    /// heading that said "waiting on you", which is a different question and
+    /// the wrong answer to it.
     waiting: Vec<String>,
+    /// The user's own open pull requests. Their work in flight, not a request.
+    mine: Vec<String>,
     shipped: Vec<String>,
     inbox: Vec<String>,
     /// What the tracker says is assigned and unfinished — the one question the
@@ -120,7 +126,8 @@ impl Gathered {
 
         for (name, empty) in [
             ("calendar", self.agenda.is_empty()),
-            ("pull requests", self.waiting.is_empty()),
+            ("review requests", self.waiting.is_empty()),
+            ("pull requests", self.mine.is_empty()),
             ("work log", self.shipped.is_empty()),
             ("inbox", self.inbox.is_empty()),
             ("Linear", self.assigned.is_empty()),
@@ -176,8 +183,35 @@ async fn gather(context: &Context) -> Gathered {
     for account in github_accounts(context).await {
         let session = GithubSession::new(&context.pool, &context.github, account);
 
-        if let Ok(open) = session.pull_requests(github::State::Open, PER_SOURCE).await {
-            found.waiting.extend(open.iter().map(describe_pull_request));
+        // The user's own work in flight.
+        if let Ok(open) = session
+            .pull_requests(
+                github::Involvement::Authored,
+                github::State::Open,
+                PER_SOURCE,
+            )
+            .await
+        {
+            found.mine.extend(open.iter().map(describe_pull_request));
+        }
+
+        // What somebody else is actually blocked on. Each source fails on its
+        // own, so a rate-limited search costs one bucket rather than the brief.
+        if let Ok(reviewing) = session
+            .pull_requests(
+                github::Involvement::Reviewing,
+                github::State::Open,
+                PER_SOURCE,
+            )
+            .await
+        {
+            found
+                .waiting
+                .extend(reviewing.iter().map(describe_pull_request));
+        }
+
+        if let Ok(issues) = session.assigned_issues(PER_SOURCE).await {
+            found.assigned.extend(issues.iter().map(describe_issue));
         }
     }
 
@@ -325,7 +359,11 @@ fn assemble(found: &Gathered, present: &str) -> Result<String, Error> {
 
     for (heading, items) in [
         ("Today's meetings", &found.agenda),
-        ("Pull requests waiting on you", &found.waiting),
+        (
+            "Waiting on you — somebody has asked for your review",
+            &found.waiting,
+        ),
+        ("Your open pull requests", &found.mine),
         ("Unread mail", &found.inbox),
         ("Assigned to you and not finished", &found.assigned),
         ("Recently logged work", &found.shipped),
@@ -523,6 +561,10 @@ fn describe_message(message: &microsoft::MailMessage) -> String {
     format!("{from}: {}", message.subject)
 }
 
+fn describe_issue(issue: &github::Issue) -> String {
+    format!("{} #{} — {}", issue.repository, issue.number, issue.title)
+}
+
 fn describe_pull_request(pull_request: &github::PullRequest) -> String {
     format!(
         "{} #{} — {}",
@@ -608,7 +650,8 @@ mod tests {
     fn gathered() -> Gathered {
         Gathered {
             agenda: vec!["10:00 1:1 with Sam with Sam Patel".to_string()],
-            waiting: vec!["scottmallinson/chief.ai #12 — Add the corpus".to_string()],
+            waiting: vec!["scottmallinson/chief.ai #44 — Ana asked for your review".to_string()],
+            mine: vec!["scottmallinson/chief.ai #12 — Add the corpus".to_string()],
             shipped: vec!["Shipped the loopback listener".to_string()],
             inbox: vec!["Dana Reid: Re: the migration".to_string()],
             assigned: vec!["REC-42 Read Linear [In Progress]".to_string()],
@@ -693,6 +736,7 @@ mod tests {
             gathered().sources(),
             [
                 "calendar",
+                "review requests",
                 "pull requests",
                 "work log",
                 "inbox",

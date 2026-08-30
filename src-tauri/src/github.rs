@@ -164,6 +164,46 @@ impl PullRequest {
     }
 }
 
+/// What the user has to do with a pull request.
+///
+/// The distinction the brief was missing entirely. Chief only ever asked for
+/// `author:@me` — the user's own work — while the prompt called that heading
+/// "waiting on you". A review somebody has requested *of* them is the thing
+/// actually waiting, and it was unreachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Involvement {
+    /// Pull requests the user opened. Their own work in flight.
+    #[default]
+    Authored,
+    /// Pull requests waiting on the user's review. Somebody else is blocked.
+    Reviewing,
+}
+
+impl Involvement {
+    fn qualifier(self) -> &'static str {
+        match self {
+            Self::Authored => "author:@me",
+            Self::Reviewing => "review-requested:@me",
+        }
+    }
+}
+
+/// One issue assigned to the user, as the brief reads it.
+///
+/// Deliberately not a [`PullRequest`]. GitHub's search returns both from the
+/// same endpoint in the same shape, and reusing the type would mean every
+/// caller downstream having to ask which it was holding.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Issue {
+    pub number: i64,
+    pub title: String,
+    pub repository: String,
+    pub url: String,
+    pub updated_at: String,
+}
+
 /// Which pull requests to ask GitHub for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum State {
@@ -362,10 +402,11 @@ impl Client {
     pub async fn pull_requests(
         &self,
         token: &str,
+        involvement: Involvement,
         state: State,
         limit: u8,
     ) -> Result<Vec<PullRequest>, Error> {
-        let query = format!("is:pr author:@me{}", state.qualifier());
+        let query = format!("is:pr {}{}", involvement.qualifier(), state.qualifier());
         let url = format!("{}/search/issues", self.api_host);
 
         let response = self
@@ -391,6 +432,41 @@ impl Client {
             .ok_or_else(|| Error::Decode("the search response had no items".to_string()))?;
 
         Ok(items.iter().map(pull_request_from).collect())
+    }
+
+    /// Issues assigned to the user and still open.
+    ///
+    /// The other half of "waiting on me": a review request is somebody blocked
+    /// on you, and an assigned issue is your own queue. Both were invisible.
+    ///
+    /// `is:issue` rather than `is:pr`, so this and [`Self::pull_requests`]
+    /// never return the same thing twice from the one endpoint they share.
+    pub async fn assigned_issues(&self, token: &str, limit: u8) -> Result<Vec<Issue>, Error> {
+        let url = format!("{}/search/issues", self.api_host);
+
+        let response = self
+            .http
+            .get(url)
+            .query(&[
+                ("q", "is:issue assignee:@me is:open"),
+                ("sort", "updated"),
+                ("order", "desc"),
+                ("per_page", &limit.clamp(1, 100).to_string()),
+            ])
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+
+        let body: Value = self.read(response).await?;
+
+        let items = body["items"]
+            .as_array()
+            .ok_or_else(|| Error::Decode("the search response had no items".to_string()))?;
+
+        Ok(items.iter().map(issue_from).collect())
     }
 
     /// Who the stored token belongs to, so an account can name itself.
@@ -462,6 +538,16 @@ fn repository_from(repository_url: &str) -> String {
         .next()
         .unwrap_or(repository_url)
         .to_string()
+}
+
+fn issue_from(item: &Value) -> Issue {
+    Issue {
+        number: item["number"].as_i64().unwrap_or_default(),
+        title: item["title"].as_str().unwrap_or_default().to_string(),
+        repository: repository_from(item["repository_url"].as_str().unwrap_or_default()),
+        url: item["html_url"].as_str().unwrap_or_default().to_string(),
+        updated_at: item["updated_at"].as_str().unwrap_or_default().to_string(),
+    }
 }
 
 fn pull_request_from(item: &Value) -> PullRequest {
@@ -558,6 +644,17 @@ mod tests {
         "verification_uri": "https://github.com/login/device",
         "expires_in": 900,
         "interval": 5
+    }"#;
+
+    pub(super) const ONE_ISSUE: &str = r#"{
+        "total_count": 1,
+        "items": [{
+            "number": 7,
+            "title": "The engine will not start on macOS 12",
+            "repository_url": "https://api.github.com/repos/scottmallinson/chief.ai",
+            "html_url": "https://github.com/scottmallinson/chief.ai/issues/7",
+            "updated_at": "2026-08-28T10:00:00Z"
+        }]
     }"#;
 
     const PENDING: &str = r#"{"error":"authorization_pending"}"#;
@@ -807,5 +904,114 @@ mod tests {
         };
 
         assert_eq!(pr.external_id(), "scottmallinson/chief.ai#12");
+    }
+}
+
+#[cfg(test)]
+mod waiting_on_me {
+    //! The question the composer offers and Chief could not answer.
+
+    use super::tests::ONE_ISSUE;
+    use super::*;
+    use crate::llama::test_support::{serve, split};
+
+    const NONE: &str = r#"{"total_count":0,"items":[]}"#;
+
+    /// The query GitHub is actually sent, which is the whole of this change.
+    #[tokio::test]
+    async fn asks_for_reviews_requested_of_the_user() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", NONE)]);
+        let client = Client::against(&host).expect("client");
+
+        client
+            .pull_requests("gho_token", Involvement::Reviewing, State::Open, 25)
+            .await
+            .expect("should read");
+
+        let received = server.await.expect("server");
+        let (line, _) = split(&received[0]);
+
+        assert!(
+            line.contains("review-requested%3A%40me"),
+            "the point of the whole issue: {line}"
+        );
+        assert!(
+            !line.contains("author%3A%40me"),
+            "and not the user's own: {line}"
+        );
+    }
+
+    /// The behaviour that must not have changed.
+    #[tokio::test]
+    async fn still_asks_for_the_users_own_by_default() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", NONE)]);
+        let client = Client::against(&host).expect("client");
+
+        client
+            .pull_requests("gho_token", Involvement::default(), State::Open, 25)
+            .await
+            .expect("should read");
+
+        let received = server.await.expect("server");
+        let (line, _) = split(&received[0]);
+
+        assert!(line.contains("author%3A%40me"), "{line}");
+        assert!(!line.contains("review-requested"), "{line}");
+    }
+
+    #[test]
+    fn defaults_to_the_users_own_work() {
+        assert_eq!(Involvement::default(), Involvement::Authored);
+    }
+
+    #[tokio::test]
+    async fn reads_the_issues_assigned_to_the_user() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ONE_ISSUE)]);
+        let client = Client::against(&host).expect("client");
+
+        let issues = client
+            .assigned_issues("gho_token", 25)
+            .await
+            .expect("should read");
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].number, 7);
+        assert_eq!(issues[0].repository, "scottmallinson/chief.ai");
+        assert_eq!(issues[0].title, "The engine will not start on macOS 12");
+
+        let received = server.await.expect("server");
+        let (line, _) = split(&received[0]);
+
+        assert!(
+            line.contains("is%3Aissue"),
+            "issues, not pull requests: {line}"
+        );
+        assert!(line.contains("assignee%3A%40me"), "{line}");
+    }
+
+    /// The two searches share one endpoint, so this is what keeps them apart.
+    #[tokio::test]
+    async fn never_returns_a_pull_request_as_an_assigned_issue() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", NONE)]);
+        let client = Client::against(&host).expect("client");
+
+        client.assigned_issues("gho_token", 25).await.expect("read");
+
+        let received = server.await.expect("server");
+        let (line, _) = split(&received[0]);
+
+        assert!(!line.contains("is%3Apr"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn has_nothing_assigned_without_failing() {
+        let (host, _server) = serve(vec![("HTTP/1.1 200 OK", NONE)]);
+        let client = Client::against(&host).expect("client");
+
+        assert!(client
+            .assigned_issues("gho_token", 25)
+            .await
+            .expect("read")
+            .is_empty());
     }
 }

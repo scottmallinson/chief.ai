@@ -87,7 +87,9 @@ pub async fn run_once(
         }
 
         let session = GithubSession::new(&context.pool, &context.github, account);
-        let open = session.pull_requests(github::State::Open, SCAN).await?;
+        let open = session
+            .pull_requests(github::Involvement::Authored, github::State::Open, SCAN)
+            .await?;
 
         for pull_request in open.iter().filter(|one| is_worth_chasing(one)) {
             if attention.is_engaged() {

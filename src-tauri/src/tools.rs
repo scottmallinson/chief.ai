@@ -86,6 +86,30 @@ pub enum PullRequestState {
     All,
 }
 
+/// Whose pull requests the model is asking about.
+///
+/// A parameter rather than a fourth tool. D2 caps the catalogue at 6 tools and
+/// 600 tokens, and at three tools it already costs 477 — a sibling tool would
+/// have spent the remaining budget on plumbing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Whose {
+    /// The user's own pull requests.
+    #[default]
+    Mine,
+    /// Ones waiting on the user's review.
+    Reviewing,
+}
+
+impl From<Whose> for github::Involvement {
+    fn from(whose: Whose) -> Self {
+        match whose {
+            Whose::Mine => Self::Authored,
+            Whose::Reviewing => Self::Reviewing,
+        }
+    }
+}
+
 impl From<PullRequestState> for PrState {
     fn from(state: PullRequestState) -> Self {
         match state {
@@ -107,6 +131,7 @@ const PR_LIMIT: u8 = 25;
 #[serde(default)]
 struct FetchGithubPrsArgs {
     state: PullRequestState,
+    whose: Whose,
 }
 
 /// The most tools that may ever be offered, and the most characters their
@@ -127,12 +152,11 @@ pub fn catalog() -> Vec<Tool> {
     vec![
         Tool::function(ToolFunction {
             name: FETCH_GITHUB_PRS.to_string(),
-            description: "Fetch the user's GitHub pull requests, including which are still \
-             unmerged and who they are waiting on. Use state 'merged' for what they \
-             shipped. Call this whenever the user asks about pull requests, code review, \
-             or what they have shipped. Covers every GitHub account the user has \
-             connected; each pull request names the account it came from, and 'accounts' \
-             reports what was read from each."
+            description: "Fetch the user's GitHub pull requests. Call this whenever they \
+             ask about pull requests, code review, or what they shipped. Use state \
+             'merged' for what they shipped, and whose 'reviewing' for what is waiting \
+             on them. Covers every connected account; each pull request names the one it \
+             came from, and 'accounts' reports what was read from each."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -141,6 +165,12 @@ pub fn catalog() -> Vec<Tool> {
                         "type": "string",
                         "enum": ["open", "closed", "merged", "all"],
                         "description": "Which pull requests to return. Defaults to open.",
+                    },
+                    "whose": {
+                        "type": "string",
+                        "enum": ["mine", "reviewing"],
+                        "description": "'mine' for the user's own, 'reviewing' for ones \
+                         waiting on their review. Defaults to mine.",
                     },
                 },
                 "required": [],
@@ -187,7 +217,7 @@ pub fn catalog() -> Vec<Tool> {
 pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
     match call.function.name.as_str() {
         FETCH_GITHUB_PRS => match parse(&call.function) {
-            Ok(args) => match fetch_github_prs(context, args.state).await {
+            Ok(args) => match fetch_github_prs(context, args.state, args.whose).await {
                 Ok(result) => result,
                 Err(error) => json!({ "error": error.to_string() }),
             },
@@ -249,6 +279,7 @@ fn describe(account: &integrations::Account) -> String {
 async fn fetch_github_prs(
     context: &Context,
     state: PullRequestState,
+    whose: Whose,
 ) -> Result<Value, github::Error> {
     let accounts = integrations::accounts(&context.pool, integrations::GITHUB).await?;
 
@@ -261,7 +292,7 @@ async fn fetch_github_prs(
         let name = describe(account);
 
         match GithubSession::new(&context.pool, &context.github, account.id)
-            .pull_requests(state.into(), PR_LIMIT)
+            .pull_requests(whose.into(), state.into(), PR_LIMIT)
             .await
         {
             Ok(found) => {
