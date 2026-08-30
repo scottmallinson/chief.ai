@@ -7,11 +7,12 @@ import { Chip } from '@/components/ui/chip';
 import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
 import { ProfileBootstrap } from '@/components/ProfileBootstrap';
 import { CalendarSubscriptions } from '@/components/CalendarSubscriptions';
+import { LinearKey } from '@/components/LinearKey';
 import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
 import { useIntegrations } from '@/hooks/use-integrations';
-import { accountName, CALENDAR, GITHUB, MICROSOFT, type Account } from '@/lib/integrations';
+import { accountName, CALENDAR, GITHUB, LINEAR, MICROSOFT, type Account } from '@/lib/integrations';
 
 interface SettingsSectionProps {
   title: string;
@@ -498,6 +499,35 @@ function Calendars() {
   );
 }
 
+/**
+ * Linear, connected with a pasted key.
+ *
+ * Its own card for the same reason the calendar has one: there is no sign-in
+ * flow, so an `Integration` would be a browser round trip that never happens.
+ */
+function Linear() {
+  const { accountsFor, reload } = useIntegrations();
+  const workspaces = accountsFor(LINEAR);
+
+  return (
+    <SettingsSection
+      title="Linear"
+      description="What is assigned to you and not finished — the one thing pull requests and mail cannot tell Chief, because they are the outputs of work rather than the record of it."
+      state={
+        workspaces.length > 0 ? (
+          <Chip tone="verified" dot>
+            {workspaces.length === 1 ? '1 workspace' : `${workspaces.length} workspaces`}
+          </Chip>
+        ) : (
+          <Chip tone="quiet">Not connected</Chip>
+        )
+      }
+    >
+      <LinearKey accounts={workspaces} onChanged={reload} />
+    </SettingsSection>
+  );
+}
+
 export function SettingsView() {
   return (
     <div className="h-full overflow-y-auto">
@@ -514,6 +544,7 @@ export function SettingsView() {
           </SettingsSection>
           <ThisMachine />
           <Calendars />
+          <Linear />
           <Integration
             service={GITHUB}
             title="GitHub"

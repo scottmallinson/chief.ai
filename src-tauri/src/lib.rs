@@ -18,6 +18,7 @@ mod github;
 mod ical;
 mod integrations;
 mod intent;
+mod linear;
 mod microsoft;
 // OAuth machinery shared by every provider. Part of the crate's library API,
 // the same as `llama` below.
@@ -64,6 +65,7 @@ pub fn run() {
             // And Outlook, for the mailbox and calendar they connected.
             app.manage(microsoft::Client::new()?);
             app.manage(calendar::Client::new()?);
+            app.manage(linear::Client::new()?);
             app.manage(connect::Pending::default());
             app.manage(agent::Attention::default());
 
@@ -88,6 +90,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent::ask_agent,
             connect::add_calendar,
+            connect::add_linear_key,
             connect::start_login,
             connect::finish_login,
             connect::connections,

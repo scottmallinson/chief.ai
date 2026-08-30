@@ -15,8 +15,9 @@ use crate::calendar;
 use crate::db;
 use crate::github::{self, Client, DeviceLogin};
 use crate::integrations::{
-    self, Account, NewAccount, CALENDAR, GITHUB, MICROSOFT, OAUTH, SUBSCRIPTION,
+    self, Account, NewAccount, API_KEY, CALENDAR, GITHUB, LINEAR, MICROSOFT, OAUTH, SUBSCRIPTION,
 };
+use crate::linear;
 use crate::microsoft;
 use crate::oauth::Provider;
 
@@ -70,6 +71,8 @@ pub enum Error {
     Storage(#[from] db::Error),
     #[error(transparent)]
     Calendar(#[from] calendar::Error),
+    #[error(transparent)]
+    Linear(#[from] linear::Error),
 }
 
 impl serde::Serialize for Error {
@@ -81,7 +84,7 @@ impl serde::Serialize for Error {
 /// Reject a service Chief does not know, rather than failing later and less
 /// clearly.
 fn known(service: &str) -> Result<(), Error> {
-    if service == GITHUB || service == MICROSOFT || service == CALENDAR {
+    if service == GITHUB || service == MICROSOFT || service == CALENDAR || service == LINEAR {
         return Ok(());
     }
 
@@ -130,6 +133,47 @@ pub async fn add_calendar<R: Runtime>(
     Ok(stored)
 }
 
+/// Connect Linear with a personal API key.
+///
+/// Validated by reading with it before anything is stored, so a mistyped key
+/// fails while the user is looking at the field rather than producing an empty
+/// brief tomorrow morning. The key is a bearer credential — see `linear.rs` —
+/// so it is stored as one and never returned to the frontend.
+#[tauri::command]
+pub async fn add_linear_key<R: Runtime>(
+    app: AppHandle<R>,
+    linear: State<'_, linear::Client>,
+    key: String,
+) -> Result<Account, Error> {
+    let key = key.trim().to_string();
+
+    // The key names its own owner, so one read both proves it works and says
+    // whose workspace this is.
+    let found = linear.assigned(&key).await?;
+    let pool = db::pool(&app).await?;
+
+    let stored = integrations::save(
+        &pool,
+        NewAccount {
+            service: LINEAR,
+            // Keyed on the person, so re-pasting a rotated key updates the row
+            // it already has rather than making a second account.
+            account_key: &found.viewer.email,
+            identity: Some(found.viewer.name.as_str()).filter(|name| !name.is_empty()),
+            credential_kind: API_KEY,
+            access_token: &key,
+            refresh_token: None,
+            expires_at: None,
+            scopes: None,
+            client_id: None,
+            client_secret: None,
+        },
+    )
+    .await?;
+
+    Ok(stored)
+}
+
 /// Begin signing in and return what the user must do next.
 #[tauri::command]
 pub async fn start_login(
@@ -143,6 +187,12 @@ pub async fn start_login(
     if service == CALENDAR {
         return Err(Error::NoSuchService(
             "a calendar subscription is added with its address, not by signing in".to_string(),
+        ));
+    }
+
+    if service == LINEAR {
+        return Err(Error::NoSuchService(
+            "Linear is connected with a personal API key, not by signing in".to_string(),
         ));
     }
 

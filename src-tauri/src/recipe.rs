@@ -54,6 +54,8 @@ pub struct Context {
     pub microsoft: microsoft::Client,
     /// Calendars subscribed to by URL, which need no sign-in at all.
     pub calendar: crate::calendar::Client,
+    /// Linear, read with a pasted key rather than an OAuth grant.
+    pub linear: crate::linear::Client,
     pub engine: llama::Client,
     pub corpus: Corpus,
 }
@@ -105,6 +107,9 @@ struct Gathered {
     waiting: Vec<String>,
     shipped: Vec<String>,
     inbox: Vec<String>,
+    /// What the tracker says is assigned and unfinished — the one question the
+    /// other sources cannot answer, because they hold the *outputs* of work.
+    assigned: Vec<String>,
     background: Vec<(String, String)>,
 }
 
@@ -118,6 +123,7 @@ impl Gathered {
             ("pull requests", self.waiting.is_empty()),
             ("work log", self.shipped.is_empty()),
             ("inbox", self.inbox.is_empty()),
+            ("Linear", self.assigned.is_empty()),
             ("corpus", self.background.is_empty()),
         ] {
             if !empty {
@@ -184,6 +190,7 @@ async fn gather(context: &Context) -> Gathered {
         }));
     }
 
+    found.assigned = assigned_issues(context).await;
     found.background = background(context).await;
 
     found
@@ -223,6 +230,36 @@ pub(crate) async fn subscribed_events(context: &Context) -> Vec<microsoft::Event
             Ok(events) => found.extend(events),
             // Reported without the address, which is a credential.
             Err(error) => eprintln!("a calendar subscription could not be read: {error}"),
+        }
+    }
+
+    found
+}
+
+/// What every connected Linear workspace says is assigned and unfinished.
+///
+/// A workspace that will not answer fails that one source, the same rule every
+/// other source in `gather` follows.
+async fn assigned_issues(context: &Context) -> Vec<String> {
+    let Ok(accounts) =
+        crate::integrations::accounts(&context.pool, crate::integrations::LINEAR).await
+    else {
+        return Vec::new();
+    };
+
+    let mut found = Vec::new();
+
+    for account in accounts {
+        let Ok(Some(credentials)) =
+            crate::integrations::credentials(&context.pool, account.id).await
+        else {
+            continue;
+        };
+
+        match context.linear.assigned(&credentials.access_token).await {
+            Ok(assigned) => found.extend(assigned.issues.iter().map(crate::linear::describe)),
+            // Reported without the key, which is a credential.
+            Err(error) => eprintln!("a Linear workspace could not be read: {error}"),
         }
     }
 
@@ -290,6 +327,7 @@ fn assemble(found: &Gathered, present: &str) -> Result<String, Error> {
         ("Today's meetings", &found.agenda),
         ("Pull requests waiting on you", &found.waiting),
         ("Unread mail", &found.inbox),
+        ("Assigned to you and not finished", &found.assigned),
         ("Recently logged work", &found.shipped),
     ] {
         if items.is_empty() {
@@ -508,6 +546,7 @@ pub async fn context<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Con
         github: app.state::<github::Client>().inner().clone(),
         microsoft: app.state::<microsoft::Client>().inner().clone(),
         calendar: app.state::<crate::calendar::Client>().inner().clone(),
+        linear: app.state::<crate::linear::Client>().inner().clone(),
         engine: app.state::<llama::Client>().inner().clone(),
     })
 }
@@ -572,6 +611,7 @@ mod tests {
             waiting: vec!["scottmallinson/chief.ai #12 — Add the corpus".to_string()],
             shipped: vec!["Shipped the loopback listener".to_string()],
             inbox: vec!["Dana Reid: Re: the migration".to_string()],
+            assigned: vec!["REC-42 Read Linear [In Progress]".to_string()],
             background: vec![(
                 "context/agents/org/team_structure.md".to_string(),
                 "# Team\nSam owns auth.".to_string(),
@@ -651,7 +691,14 @@ mod tests {
     fn sources_name_only_what_had_something_to_say() {
         assert_eq!(
             gathered().sources(),
-            ["calendar", "pull requests", "work log", "inbox", "corpus"]
+            [
+                "calendar",
+                "pull requests",
+                "work log",
+                "inbox",
+                "Linear",
+                "corpus"
+            ]
         );
 
         let empty = Gathered::default();
@@ -718,6 +765,7 @@ mod tests {
                 github: github::Client::against("127.0.0.1:1").expect("client"),
                 microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
                 calendar: crate::calendar::Client::new().expect("client"),
+                linear: crate::linear::Client::new().expect("client"),
                 engine: llama::Client::with_base_url(engine_host).expect("client"),
                 corpus,
             },
@@ -875,6 +923,7 @@ mod tests {
             github: github::Client::against("127.0.0.1:1").expect("client"),
             microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
             calendar: crate::calendar::Client::new().expect("client"),
+            linear: crate::linear::Client::new().expect("client"),
             engine: llama::Client::with_base_url(&host).expect("client"),
             corpus: Corpus::at(root),
         };
