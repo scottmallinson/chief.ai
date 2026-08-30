@@ -229,8 +229,24 @@ impl<'a> GithubSession<'a> {
     }
 
     /// The user's pull requests, renewing the token if GitHub says it expired.
+    /// Issues assigned to the user, renewing the credential the same way.
+    pub async fn assigned_issues(&self, limit: u8) -> Result<Vec<github::Issue>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.assigned_issues(&token, limit).await
+            })
+            .await
+    }
+
     pub async fn pull_requests(
         &self,
+        involvement: github::Involvement,
         state: State,
         limit: u8,
     ) -> Result<Vec<PullRequest>, github::Error> {
@@ -247,7 +263,9 @@ impl<'a> GithubSession<'a> {
         // the read.
         self.session
             .renewing(token, |token| async move {
-                self.client.pull_requests(&token, state, limit).await
+                self.client
+                    .pull_requests(&token, involvement, state, limit)
+                    .await
             })
             .await
     }
@@ -321,7 +339,7 @@ mod tests {
         let client = Client::against(&host).expect("should build a client");
 
         let prs = GithubSession::with_client_id(&pool, &client, account_id, "Iv1.clientid")
-            .pull_requests(State::Open, 25)
+            .pull_requests(github::Involvement::Authored, State::Open, 25)
             .await
             .expect("the stub should answer");
 
@@ -344,7 +362,7 @@ mod tests {
         let client = Client::against(&host).expect("should build a client");
 
         let prs = GithubSession::with_client_id(&pool, &client, account_id, "Iv1.clientid")
-            .pull_requests(State::Open, 25)
+            .pull_requests(github::Involvement::Authored, State::Open, 25)
             .await
             .expect("the read should succeed after renewing");
 
@@ -381,7 +399,7 @@ mod tests {
         let client = Client::against(&host).expect("should build a client");
 
         GithubSession::with_client_id(&pool, &client, account_id, "Iv1.clientid")
-            .pull_requests(State::Open, 25)
+            .pull_requests(github::Involvement::Authored, State::Open, 25)
             .await
             .expect("the read should succeed after renewing");
 
@@ -403,7 +421,7 @@ mod tests {
         let client = Client::against(&host).expect("should build a client");
 
         let error = GithubSession::with_client_id(&pool, &client, account_id, "Iv1.clientid")
-            .pull_requests(State::Open, 25)
+            .pull_requests(github::Involvement::Authored, State::Open, 25)
             .await
             .expect_err("without a refresh token there is no way back");
 
@@ -420,7 +438,7 @@ mod tests {
         let client = Client::against("http://127.0.0.1:1").expect("should build a client");
 
         let error = GithubSession::with_client_id(&pool, &client, 404, "Iv1.clientid")
-            .pull_requests(State::Open, 25)
+            .pull_requests(github::Involvement::Authored, State::Open, 25)
             .await
             .expect_err("there is nothing to read with");
 

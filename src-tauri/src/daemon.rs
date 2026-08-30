@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::agent::Attention;
 use crate::db;
-use crate::github::{self, PullRequest, State};
+use crate::github::{self, Involvement, PullRequest, State};
 use crate::integrations;
 use crate::llama::{self, ChatRequest, Message, Options};
 use crate::propose;
@@ -255,7 +255,9 @@ async fn run_one_account(
         }
     }
 
-    let merged = session.pull_requests(State::Merged, BATCH).await?;
+    let merged = session
+        .pull_requests(Involvement::Authored, State::Merged, BATCH)
+        .await?;
 
     let mut written = 0;
 

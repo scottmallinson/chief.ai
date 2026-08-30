@@ -174,7 +174,10 @@ async fn sample(context: &recipe::Context) -> Vec<String> {
     for account in recipe::github_accounts(context).await {
         let session = GithubSession::new(&context.pool, &context.github, account);
 
-        if let Ok(pull_requests) = session.pull_requests(github::State::Closed, SAMPLE).await {
+        if let Ok(pull_requests) = session
+            .pull_requests(github::Involvement::Authored, github::State::Closed, SAMPLE)
+            .await
+        {
             written.extend(
                 pull_requests
                     .iter()
