@@ -9,6 +9,9 @@ export const MICROSOFT = 'microsoft';
 /** A calendar subscribed to by URL rather than signed in to. */
 export const CALENDAR = 'calendar';
 
+/** Linear, read with a personal API key rather than an OAuth grant. */
+export const LINEAR = 'linear';
+
 /** One connected account, as the backend reports it. Carries no secret. */
 export interface Account {
   id: number;
@@ -79,6 +82,16 @@ export function finishLogin(service: string): Promise<Account[]> {
  */
 export function addCalendar(url: string, label: string | null): Promise<Account> {
   return invoke<Account>('add_calendar', { url, label });
+}
+
+/**
+ * Connect Linear with a personal API key.
+ *
+ * The key is a bearer credential carrying that person's whole Linear access, so
+ * it goes straight to Rust and is never returned or displayed.
+ */
+export function addLinearKey(key: string): Promise<Account> {
+  return invoke<Account>('add_linear_key', { key });
 }
 
 export function disconnect(accountId: number): Promise<Account[]> {

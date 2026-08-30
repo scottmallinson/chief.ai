@@ -35,6 +35,7 @@ The current state of every step. **Update this table in the pull request that ch
 | 16–21 | Integration fan-out                  | Not started                    | —                | —         |
 | 22    | Bootstrapping the corpus             | Shipped                        | REC-16           | #54       |
 | —     | Calendar by .ics subscription        | Shipped                        | REC-39           | #60       |
+| —     | Linear by pasted API key             | Shipped                        | REC-40           | #61       |
 
 **Step 22 was built before step 14**, out of the numbered order and on the plan's own advice: an
 empty corpus is step 14's failure mode, and a draft written against seven empty starter files is
@@ -734,6 +735,10 @@ removes from it.**
   whole calendar to anyone holding it, so it is stored like a token and never displayed.
 - **A new integration does not get a new tool.** The catalogue is at 477 of D2's 600-token cap, so
   the fourth breaks it. New sources feed the recipes and the router, which cost nothing per turn.
+- **A pasted key or URL is a credential, not a setting.** Both Linear and the calendar store one the
+  way an OAuth token is stored, and neither is ever shown again.
+- **"Open" is never a workflow state name.** Linear workspaces rename theirs; `completedAt` and
+  `canceledAt` being null is the question that survives it.
 - **The corpus watcher needs no way to tell Chief's writes from a person's.** Reindexing writes only
   to SQLite, so a self-triggered loop has no closing edge. The debounce is the whole mechanism.
 - **The watcher is an optimisation, not a dependency.** Reindex-on-command still runs, so a machine

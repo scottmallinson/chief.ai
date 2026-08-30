@@ -463,6 +463,7 @@ mod tests {
             github: github::Client::against(github_host).expect("client"),
             microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
             calendar: crate::calendar::Client::new().expect("client"),
+            linear: crate::linear::Client::new().expect("client"),
             engine: llama::Client::with_base_url(engine_host).expect("client"),
             corpus,
         };

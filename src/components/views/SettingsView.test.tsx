@@ -95,8 +95,11 @@ describe('SettingsView', () => {
 
     render(<SettingsView />);
 
-    // Two services now, each carrying its own state.
-    expect(await screen.findAllByText('Not connected')).toHaveLength(2);
+    // GitHub, Outlook and Linear each say so; the calendar card says "None",
+    // because a subscription is not a connection. Waited for rather than read
+    // once: every card holds its own `useIntegrations`, so they settle
+    // independently and `findAllByText` returns as soon as the *first* one has.
+    await waitFor(() => expect(screen.getAllByText('Not connected')).toHaveLength(3));
     expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Connect Outlook' })).toBeInTheDocument();
     expect(screen.getByText('On this machine')).toBeInTheDocument();

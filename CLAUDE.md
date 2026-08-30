@@ -458,6 +458,26 @@ pastes the address their provider already publishes.
   continuation to RFC 5545, so it silently glues `SUMMARY` onto the line above and the parser gets
   blamed. `calendar_file()` is built from a list of lines for exactly this reason.
 
+## Linear, read with a pasted key
+
+`src-tauri/src/linear.rs` is the simplest integration Chief has, deliberately.
+
+- **No OAuth at all.** Linear issues personal API keys, and Chief only reads what is assigned to one
+  person, so there is no `Provider`, no PKCE, no loopback listener and no renewal — a header on one
+  request. An OAuth application would be right only if Chief acted on behalf of a workspace.
+- **The key is a credential and never comes back.** Stored beside the OAuth tokens, and like the
+  calendar subscription address it is never logged, never in an error and never returned to the
+  frontend. `linear::Error` carries no key, which a test asserts. The field is `type="password"`.
+- **A personal key has no read-only kind**, so it carries read _and_ write. The Settings card says
+  so out loud, for the same reason the `repo` scope should.
+- **One GraphQL query**, asking for exactly the fields the brief renders. `viewer` comes back with
+  the issues rather than from a second call: a key that cannot name its owner cannot read issues
+  either, so one round trip both validates and reads.
+- **Open means `completedAt` and `canceledAt` are null**, never a workflow state called "Done".
+  Every workspace renames its states; none of them can rename those two fields.
+- **GraphQL answers 200 with an `errors` array**, so status alone is not enough — `read` inspects
+  the body and separates an authentication failure, which is the user's to fix, from anything else.
+
 ## Background daemon
 
 `src-tauri/src/daemon.rs` keeps the work log current: ask GitHub what the user merged, ask the local

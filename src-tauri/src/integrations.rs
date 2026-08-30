@@ -20,6 +20,8 @@ pub const GITHUB: &str = "github";
 pub const MICROSOFT: &str = "microsoft";
 /// A calendar the user subscribed to by URL rather than signed in to.
 pub const CALENDAR: &str = "calendar";
+/// Linear, read with a personal API key rather than an OAuth grant.
+pub const LINEAR: &str = "linear";
 
 /// How a credential was obtained, so routing is explicit rather than inferred
 /// from which columns happen to be NULL.
@@ -28,6 +30,9 @@ pub const OAUTH: &str = "oauth";
 /// a subscription address grants read access to a whole calendar, so it is
 /// stored beside the OAuth tokens rather than in settings, and never shown.
 pub const SUBSCRIPTION: &str = "subscription";
+/// A key the user pasted. Like [`SUBSCRIPTION`], a bearer credential that is
+/// never shown again once stored.
+pub const API_KEY: &str = "api_key";
 
 /// A connected account, as the settings screen sees it. Carries no secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
