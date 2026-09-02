@@ -7,8 +7,15 @@ name: CI
 # produces — running the same jobs again on the merge commit would be paying
 # twice for an answer already given. And a release does not read this run: it
 # runs the checks itself, against the commit it is about to bundle.
+#
+# `ready_for_review` is not one of the default `pull_request` types, and it has
+# to be here: the job below skips drafts, so without it a pull request marked
+# ready would sit with `Checks / Complete` never reporting — and that is a
+# required check, so it would block the merge it was meant to permit until
+# somebody pushed again.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -21,6 +28,17 @@ permissions:
 jobs:
   checks:
     name: Checks
+    # A draft is work in progress, and this call is the most expensive thing
+    # this repository does: two of its jobs are macOS at 10x a Linux runner and
+    # Windows at 2x. Nobody reads a red draft, so paying for one on every push
+    # buys nothing — the author runs `pnpm verify` locally, which is the same
+    # jobs in the same order on the machine they are already sitting at.
+    #
+    # The guard names the event as well as the flag, because `workflow_dispatch`
+    # carries no `pull_request` object at all: `github.event.pull_request.draft`
+    # is null there, `null == false` is false, and gating on the flag alone
+    # would quietly make the manual trigger do nothing.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     uses: ./.github/workflows/checks.yml
     with:
       build-app: true

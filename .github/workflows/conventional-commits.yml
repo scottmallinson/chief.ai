@@ -2,7 +2,7 @@ name: Conventional Commits
 
 on:
   pull_request:
-    types: [opened, edited, reopened, synchronize]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
 
 concurrency:
   # A pull request is usually edited and pushed to in bursts, and only the
@@ -16,6 +16,11 @@ permissions:
 jobs:
   lint:
     name: Lint PR title and commits
+    # Skipped on a draft for consistency with CI rather than for the money:
+    # this is twenty seconds of Linux at 1x, against the two paid platforms
+    # next door. The title is what CI lints and the title is what matters at
+    # merge, so checking it from `ready_for_review` onwards loses nothing.
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
