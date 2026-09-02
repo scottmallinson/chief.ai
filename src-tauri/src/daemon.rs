@@ -1,13 +1,18 @@
 //! The background work log.
 //!
-//! Periodically, for every connected account: ask GitHub what the user merged,
-//! ask the local model to turn each one into a single-sentence achievement, and
-//! write it to `work_logs`.
-//! Both halves stay on the user's terms — GitHub is an account they connected,
-//! and the summarising model runs on this machine.
+//! Periodically, for every connected account: ask GitHub what the user has been
+//! doing, turn each item into a row through [`ingest`], and write it to
+//! `work_logs`. GitHub is an account the user connected, and nothing leaves the
+//! machine that they did not point Chief at.
+//!
+//! **The model is not involved.** A pass used to spend one generation per item
+//! writing a one-sentence achievement; `ingest` derives the same fields from
+//! what GitHub already said. That is what makes the interval a setting rather
+//! than a compromise with `engine::IDLE_TIMEOUT`.
 //!
 //! Every pass is idempotent: entries carry the pull request's identifier and the
-//! account that read it, so a merge already in the log is never written again.
+//! account that read it, so a merge already in the log is revised rather than
+//! repeated, and an unchanged one is not written at all.
 
 use std::time::Duration;
 
@@ -22,6 +27,7 @@ use crate::llama;
 use crate::propose;
 use crate::recipe;
 use crate::session::GithubSession;
+use crate::settings;
 use crate::sync_state;
 use crate::work_log;
 
@@ -29,8 +35,34 @@ use crate::work_log;
 /// competing with a model.
 const FIRST_PASS_DELAY: Duration = Duration::from_secs(20);
 
-/// How often to look for new work afterwards.
-const PASS_INTERVAL: Duration = Duration::from_secs(30 * 60);
+/// Where the pass interval is stored, in whole minutes.
+///
+/// A setting rather than a constant because the right answer is a person's:
+/// somebody who ships all day wants ten minutes and somebody who checks Chief
+/// once a morning wants four hours, and neither is wrong. It became affordable
+/// with deterministic ingestion — a pass that never wakes the engine costs one
+/// GitHub page per account, so a short interval is no longer a decision to hold
+/// two gigabytes resident all day.
+const CADENCE_KEY: &str = "daemon.pass_interval_minutes";
+
+/// How often to look for new work when nothing says otherwise.
+const DEFAULT_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+/// The narrowest and widest intervals a stored value is allowed to ask for.
+///
+/// The floor is about the services rather than about this machine: GitHub's
+/// rate limit is per hour, and a pass reads one page per connected account, so
+/// polling every minute would spend somebody's whole allowance on a question
+/// whose answer changes a few times a day. The ceiling is so that a value typed
+/// with an extra digit degrades into "daily" rather than into "never".
+const MINIMUM_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const MAXIMUM_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How often the loop asks whether a pass is due.
+///
+/// Short enough that a machine waking from suspend runs within a minute of
+/// opening the lid, and the check itself is two clock reads.
+const TICK: Duration = Duration::from_secs(60);
 
 /// How many merged pull requests to consider in one pass.
 const BATCH: u8 = 25;
@@ -106,9 +138,87 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
             // The engine is free to go idle again from here.
             drop(working);
 
-            tokio::time::sleep(PASS_INTERVAL).await;
+            let interval = match db::pool(&app).await {
+                Ok(pool) => cadence(&pool).await,
+                // A pool that cannot be opened is the next pass's problem to
+                // report; waiting the default is the right thing to do until
+                // then.
+                Err(_) => DEFAULT_INTERVAL,
+            };
+
+            wait_until_due(interval).await;
         }
     });
+}
+
+/// How long to wait between passes, as the user has it set.
+async fn cadence(pool: &sqlx::SqlitePool) -> Duration {
+    let stored = settings::get(pool, CADENCE_KEY).await.unwrap_or_default();
+
+    interval_from(stored.as_deref())
+}
+
+/// Turn a stored value into an interval.
+///
+/// Pure, so the clamping is tested without a database. A value that is not a
+/// positive whole number of minutes falls back to the default rather than
+/// being clamped: `0`, `-5` and `soon` are not somebody asking for the floor,
+/// they are somebody having got it wrong, and answering a mistake with the
+/// most aggressive polling Chief allows is the worst reading available.
+fn interval_from(stored: Option<&str>) -> Duration {
+    let Some(minutes) = stored.and_then(|value| value.trim().parse::<u64>().ok()) else {
+        return DEFAULT_INTERVAL;
+    };
+
+    if minutes == 0 {
+        return DEFAULT_INTERVAL;
+    }
+
+    Duration::from_secs(minutes * 60).clamp(MINIMUM_INTERVAL, MAXIMUM_INTERVAL)
+}
+
+/// Whether a pass is due, given how much time each clock says has passed.
+///
+/// **Two clocks, because neither is sufficient alone.** `Instant` is monotonic
+/// and on Linux does not advance while the machine is suspended, so a laptop
+/// closed for four hours wakes believing four *minutes* went by, and the log
+/// stays stale until the interval runs out all over again. The wall clock does
+/// advance across a suspend — but it also moves when the user corrects it, when
+/// a time zone changes, and when NTP steps it backwards, and a clock that
+/// jumped backwards would postpone the pass indefinitely.
+///
+/// So a pass is due when **either** says so. Whichever clock jumped covers the
+/// one that did not, and taking the earlier of the two means a wrong clock can
+/// make a pass early but can never stop one happening.
+///
+/// It answers *whether*, never *how many*. A machine suspended across four
+/// scheduled passes runs one when it wakes: those four would have read the same
+/// GitHub page four times and upserted the same unchanged rows, so three of
+/// them are work with nothing at the end of it. This is the same reasoning as
+/// `brief_if_the_day_has_none` — ask what is true now, do not replay a
+/// schedule that was missed.
+const fn is_due(interval: Duration, monotonic: Duration, wall: Duration) -> bool {
+    monotonic.as_secs() >= interval.as_secs() || wall.as_secs() >= interval.as_secs()
+}
+
+/// Sleep until the next pass is due, checking both clocks as it goes.
+async fn wait_until_due(interval: Duration) {
+    let monotonic = std::time::Instant::now();
+    let started_at = chrono::Utc::now();
+
+    loop {
+        tokio::time::sleep(TICK.min(interval)).await;
+
+        // A wall clock that moved backwards yields a negative span, which is
+        // no evidence that a pass is due — the monotonic side carries it.
+        let wall = (chrono::Utc::now() - started_at)
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+
+        if is_due(interval, monotonic.elapsed(), wall) {
+            return;
+        }
+    }
 }
 
 /// Write today's brief if today has not had one.
@@ -758,5 +868,131 @@ mod tests {
 
         let requests = github_server.await.expect("github stub should finish");
         assert_eq!(requests.len(), 2, "the read should still have happened");
+    }
+}
+
+#[cfg(test)]
+mod cadence_tests {
+    use std::time::Duration;
+
+    use super::{
+        cadence, interval_from, is_due, CADENCE_KEY, DEFAULT_INTERVAL, MAXIMUM_INTERVAL,
+        MINIMUM_INTERVAL,
+    };
+    use crate::db::test_support::migrated_pool;
+    use crate::settings;
+
+    #[tokio::test]
+    async fn an_unset_cadence_is_half_an_hour() {
+        let pool = migrated_pool().await;
+
+        assert_eq!(cadence(&pool).await, DEFAULT_INTERVAL);
+        assert_eq!(DEFAULT_INTERVAL, Duration::from_secs(30 * 60));
+    }
+
+    #[tokio::test]
+    async fn a_stored_cadence_is_read_in_minutes() {
+        let pool = migrated_pool().await;
+
+        settings::set(&pool, CADENCE_KEY, "10")
+            .await
+            .expect("write");
+
+        assert_eq!(cadence(&pool).await, Duration::from_secs(10 * 60));
+    }
+
+    /// Proved by deleting the `minutes == 0` arm, which leaves `0` clamping
+    /// to the floor instead:
+    ///
+    /// ```text
+    /// Some("0") should have fallen back
+    ///   left: 300s
+    ///  right: 1800s
+    /// ```
+    #[test]
+    fn a_value_that_is_not_a_number_of_minutes_falls_back() {
+        // Not clamped to the floor: `0` and `soon` are somebody having got it
+        // wrong, and answering a mistake with the most aggressive polling
+        // Chief allows would spend their GitHub rate limit on it.
+        for stored in [
+            None,
+            Some(""),
+            Some("soon"),
+            Some("0"),
+            Some("-5"),
+            Some("1.5"),
+        ] {
+            assert_eq!(
+                interval_from(stored),
+                DEFAULT_INTERVAL,
+                "{stored:?} should have fallen back"
+            );
+        }
+    }
+
+    #[test]
+    fn a_number_outside_the_range_is_clamped_rather_than_refused() {
+        assert_eq!(interval_from(Some("1")), MINIMUM_INTERVAL);
+        assert_eq!(interval_from(Some(" 90 ")), Duration::from_secs(90 * 60));
+        assert_eq!(interval_from(Some("100000")), MAXIMUM_INTERVAL);
+    }
+
+    /// The laptop-lid case, which is the whole reason two clocks are read.
+    ///
+    /// On Linux `Instant` does not advance across a suspend, so the monotonic
+    /// side of a four-hour sleep reads as a few seconds. Without the wall
+    /// clock the machine would wake and wait out the rest of the interval on
+    /// a log that is four hours stale.
+    ///
+    /// Proved by dropping the wall-clock half of `is_due`, which no other
+    /// test in this module notices:
+    ///
+    /// ```text
+    /// a machine that slept through four passes should run one on waking
+    /// ```
+    #[test]
+    fn a_suspend_the_monotonic_clock_slept_through_still_makes_a_pass_due() {
+        let interval = Duration::from_secs(30 * 60);
+
+        assert!(
+            is_due(
+                interval,
+                Duration::from_secs(3),
+                Duration::from_secs(4 * 3600)
+            ),
+            "a machine that slept through four passes should run one on waking"
+        );
+    }
+
+    /// The other half, and the reason it is `or` rather than `and`.
+    ///
+    /// A wall clock stepped backwards by NTP, or corrected by hand, reports
+    /// less time than has actually passed — and on the reading that requires
+    /// both clocks it would postpone the pass for as long as the correction.
+    ///
+    /// Proved by dropping the monotonic half, likewise alone:
+    ///
+    /// ```text
+    /// a clock correction must not be able to postpone a pass
+    /// ```
+    #[test]
+    fn a_wall_clock_that_went_backwards_cannot_postpone_a_pass() {
+        let interval = Duration::from_secs(30 * 60);
+
+        assert!(
+            is_due(interval, Duration::from_secs(30 * 60), Duration::ZERO),
+            "a clock correction must not be able to postpone a pass"
+        );
+    }
+
+    #[test]
+    fn nothing_is_due_before_either_clock_reaches_the_interval() {
+        let interval = Duration::from_secs(30 * 60);
+
+        assert!(!is_due(
+            interval,
+            Duration::from_secs(29 * 60),
+            Duration::from_secs(29 * 60 + 59)
+        ));
     }
 }
