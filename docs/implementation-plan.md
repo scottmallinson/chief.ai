@@ -38,7 +38,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | Calendar by .ics subscription          | Shipped                        | REC-39           | #60       |
 | —     | Linear by pasted API key               | Shipped                        | REC-40           | #61       |
 | —     | "What is waiting on me?"               | Shipped                        | REC-41           | #62       |
-| —     | DLE — structured log, FTS5, sync state | Shipped                        | DLE-0 / REC-43   | —         |
+| —     | DLE — structured log, FTS5, sync state | Shipped                        | DLE-0 / REC-43   | #65       |
 | —     | DLE — zero-network read path           | Not started                    | DLE-1 / REC-44   | —         |
 | —     | DLE — deterministic ingestion          | Not started                    | DLE-2 / REC-45   | —         |
 | —     | DLE — freshness in the interface       | Not started                    | DLE-3 / REC-46   | —         |
