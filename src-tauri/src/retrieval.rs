@@ -5,14 +5,14 @@
 //! calling the services the work came from. No request leaves the machine, and
 //! the answer arrives in the time a query takes.
 //!
-//! What this module deliberately does **not** do is format anything for a
-//! prompt. A [`Hit`] carries the `url` because the interface renders a link
-//! from it; the injected context must not, because a GitHub link costs 13–15
-//! tokens of the ~15 a whole row is worth and the model has no use for it.
-//! Stripping it is what turns a 300-token budget from eight rows into twenty.
+//! A [`Hit`] carries the `url` because the interface renders a link from it;
+//! the injected context must not, because a link is most of what a row costs
+//! and the model has no use for it. Leaving it out is what makes a 300-token
+//! budget hold an answer about a week rather than a handful of rows.
 
 use sqlx::SqlitePool;
 
+use crate::context::Budget;
 use crate::db::Error;
 
 /// The most rows a single search will return.
@@ -95,26 +95,137 @@ pub async fn search(pool: &SqlitePool, question: &str, limit: i64) -> Result<Vec
     Ok(hits)
 }
 
-/// Read the most recent entries, for a question with no search terms in it.
+/// Read what happened inside a window, in the order it happened.
 ///
-/// "What did I do today" names nothing to match on, so the index has nothing
-/// to rank; the answer is a window over time instead. Kept here beside
-/// [`search`] because both answer the same question for the caller — what does
-/// this machine already know — and neither touches the network.
-pub async fn recent(pool: &SqlitePool, since: &str, limit: i64) -> Result<Vec<Hit>, Error> {
+/// "What is on my calendar today" names nothing to match on, so the index has
+/// nothing to rank; the answer is a window over time. Ascending, because a day
+/// of meetings is read forwards.
+///
+/// `from` and `to` are compared as strings against `work_logs.timestamp`,
+/// which the schema stores as ISO-8601 **UTC**. Callers converting a local day
+/// into that window must convert to UTC first — see `intent::day_window`.
+pub async fn in_window(
+    pool: &SqlitePool,
+    from: &str,
+    to: &str,
+    category: Option<&str>,
+    limit: i64,
+) -> Result<Vec<Hit>, Error> {
     let hits = sqlx::query_as::<_, Hit>(
         "SELECT id, timestamp, source, category, title, summary, url
            FROM work_logs
-          WHERE timestamp >= ?1
-          ORDER BY timestamp DESC, id DESC
-          LIMIT ?2",
+          WHERE timestamp >= ?1 AND timestamp < ?2
+            AND (?3 IS NULL OR category = ?3)
+          ORDER BY timestamp ASC, id ASC
+          LIMIT ?4",
     )
-    .bind(since)
+    .bind(from)
+    .bind(to)
+    .bind(category)
     .bind(limit.clamp(1, MAX_LIMIT))
     .fetch_all(pool)
     .await?;
 
     Ok(hits)
+}
+
+/// The newest entries, whatever they are.
+///
+/// What `/log` answers with: no window and no search terms, just the last few
+/// things that happened, newest first.
+pub async fn latest(pool: &SqlitePool, limit: i64) -> Result<Vec<Hit>, Error> {
+    let hits = sqlx::query_as::<_, Hit>(
+        "SELECT id, timestamp, source, category, title, summary, url
+           FROM work_logs
+          ORDER BY timestamp DESC, id DESC
+          LIMIT ?1",
+    )
+    .bind(limit.clamp(1, MAX_LIMIT))
+    .fetch_all(pool)
+    .await?;
+
+    Ok(hits)
+}
+
+/// One row, as a line for a person or a prompt to read.
+///
+/// `- [GitHub] Add PKCE auth handler — merged`
+///
+/// **No URL, ever.** That is the whole reason [`crate::context::RETRIEVAL_CEILING`]
+/// of 300 tokens is a useful budget rather than a crippling one: a link is most
+/// of what a row costs, for a string the model cannot use and should not be
+/// able to repeat back. The interface renders it from `work_logs.url` instead.
+///
+/// Returns `None` for a row with nothing to say. **An entry the user typed by
+/// hand has an empty `title`** — migration 8 gave the column a default rather
+/// than inventing one mid-flight — so the summary carries the line instead. A
+/// row with neither is dropped, because `- [GitHub]` on its own is worse than
+/// one fewer row.
+#[must_use]
+pub fn describe(hit: &Hit) -> Option<String> {
+    let source = title_case(&hit.source);
+    let title = hit.title.trim();
+    let summary = hit
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty());
+
+    match (title.is_empty(), summary) {
+        (false, Some(summary)) if summary != title => {
+            Some(format!("- [{source}] {title} — {summary}"))
+        }
+        (false, _) => Some(format!("- [{source}] {title}")),
+        (true, Some(summary)) => Some(format!("- [{source}] {summary}")),
+        (true, None) => None,
+    }
+}
+
+/// `github` reads as `GitHub` to a person, and `linear` as `Linear`.
+///
+/// A lookup rather than capitalising the first letter, because the two that
+/// matter are not simply capitalised and getting them wrong in every answer
+/// would be a small permanent papercut.
+fn title_case(source: &str) -> String {
+    match source {
+        "github" => "GitHub".to_string(),
+        "linear" => "Linear".to_string(),
+        "outlook" => "Outlook".to_string(),
+        "calendar" => "Calendar".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Turn hits into a block that fits the budget, dropping the weakest first.
+///
+/// Returns `None` when there is nothing to say, which is the caller's signal
+/// to step aside rather than to answer "you have nothing" — those two are
+/// indistinguishable to a reader, and the plan records the distinction as
+/// settled.
+///
+/// Hits are already ranked, so truncation drops from the end: the rows most
+/// likely to be what was asked about are the ones that survive the ceiling.
+#[must_use]
+pub fn to_context(hits: &[Hit], ceiling: u32) -> Option<String> {
+    let mut budget = Budget::with_ceiling(ceiling);
+    let mut lines: Vec<String> = Vec::new();
+
+    for hit in hits {
+        let Some(line) = describe(hit) else {
+            continue;
+        };
+
+        // A refused line costs nothing, but stopping at the first refusal
+        // keeps the block in rank order rather than letting a short low-ranked
+        // row jump ahead of a long high-ranked one it should sit behind.
+        if budget.add("row", &line).is_err() {
+            break;
+        }
+
+        lines.push(line);
+    }
+
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -250,24 +361,214 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recent_reads_a_window_rather_than_the_index() {
+    async fn a_window_holds_only_what_falls_inside_it() {
         let pool = migrated_pool().await;
 
         for (id, stamp) in [
             ("1", "2026-08-30T09:00:00.000Z"),
             ("2", "2026-09-01T09:00:00.000Z"),
+            ("3", "2026-09-02T09:00:00.000Z"),
         ] {
             let mut entry = record(id, "Shipped something", "done");
             entry.timestamp = stamp.to_string();
             work_log::upsert(&pool, entry).await.expect("should store");
         }
 
-        let hits = recent(&pool, "2026-08-31T00:00:00.000Z", 10)
-            .await
-            .expect("recent");
+        let hits = in_window(
+            &pool,
+            "2026-09-01T00:00:00.000Z",
+            "2026-09-02T00:00:00.000Z",
+            None,
+            10,
+        )
+        .await
+        .expect("window");
 
-        assert_eq!(hits.len(), 1, "only the entry after the cutoff");
+        assert_eq!(hits.len(), 1, "the upper bound is exclusive");
         assert_eq!(hits[0].timestamp, "2026-09-01T09:00:00.000Z");
+    }
+
+    #[tokio::test]
+    async fn a_window_can_ask_for_one_kind_of_thing() {
+        let pool = migrated_pool().await;
+
+        for (id, category) in [("1", "pr"), ("2", "calendar")] {
+            let mut entry = record(id, "Something happened", "done");
+            entry.category = category.to_string();
+            work_log::upsert(&pool, entry).await.expect("should store");
+        }
+
+        let hits = in_window(
+            &pool,
+            "2026-09-01T00:00:00.000Z",
+            "2026-09-02T00:00:00.000Z",
+            Some("calendar"),
+            10,
+        )
+        .await
+        .expect("window");
+
+        assert_eq!(hits.len(), 1, "only the calendar row");
+        assert_eq!(hits[0].category, "calendar");
+    }
+
+    /// The one guard on the whole 300-token budget: a link must never reach
+    /// the block that goes into a prompt.
+    ///
+    /// Proved by putting `hit.url` back into `describe` and watching this
+    /// fail:
+    ///
+    /// ```text
+    /// a retrieved row must never carry a link into a prompt:
+    ///   "- [GitHub] Add PKCE auth handler (https://github.com/o/r/pull/1) — open"
+    /// ```
+    #[tokio::test]
+    async fn a_described_row_never_carries_a_link() {
+        let pool = migrated_pool().await;
+
+        work_log::upsert(&pool, record("1", "Add PKCE auth handler", "open"))
+            .await
+            .expect("should store");
+
+        let hits = latest(&pool, 10).await.expect("latest");
+
+        assert!(
+            !hits.is_empty(),
+            "nothing was stored, so this would prove nothing"
+        );
+        assert!(
+            hits.iter().all(|hit| hit.url.is_some()),
+            "the rows must carry a url, or the assertion below is vacuous"
+        );
+
+        for hit in &hits {
+            let line = describe(hit).expect("a row with a title describes");
+
+            assert!(
+                !line.contains("http://") && !line.contains("https://"),
+                "a retrieved row must never carry a link into a prompt: {line:?}"
+            );
+        }
+    }
+
+    /// The claim the 300-token ceiling actually rests on: **leaving the link
+    /// out fits about half as many again.**
+    ///
+    /// Asserted as a comparison rather than an absolute count, because an
+    /// absolute count measures `context::BYTES_PER_TOKEN` as much as it
+    /// measures the format. That constant is 3 and uncalibrated (plan §9), and
+    /// it is *more* pessimistic than a real tokenizer for this text: the PR
+    /// that introduced this ceiling claimed 20 rows from a real-tokenizer
+    /// estimate, and the estimator that enforces the gate fits 15. Both halves
+    /// of the comparison go through the same estimator, so the ratio holds
+    /// whichever way the calibration eventually lands.
+    ///
+    /// Measured here: **15 rows without the link against 10 with it**, using a
+    /// short `github.com/o/r/pull/1`. A real repository path is longer than
+    /// that placeholder, so the gap widens in practice — which is why the
+    /// assertion is a floor rather than an equality, and why the claim is "half
+    /// as many again" rather than the "double" an earlier draft asserted.
+    #[tokio::test]
+    async fn leaving_the_link_out_is_what_makes_the_ceiling_workable() {
+        let pool = migrated_pool().await;
+
+        for id in 1..=30 {
+            work_log::upsert(
+                &pool,
+                record(
+                    &id.to_string(),
+                    "Add the PKCE authorisation handler",
+                    "merged",
+                ),
+            )
+            .await
+            .expect("should store");
+        }
+
+        let hits = latest(&pool, 30).await.expect("latest");
+        assert_eq!(hits.len(), 30, "the fixture has to have thirty rows");
+        assert!(
+            hits.iter().all(|hit| hit.url.is_some()),
+            "every row must carry a url, or the comparison below is vacuous"
+        );
+
+        let without = to_context(&hits, crate::context::RETRIEVAL_CEILING)
+            .expect("a block")
+            .lines()
+            .count();
+
+        // The same rows, formatted the way the specification asked for.
+        let with: usize = {
+            let mut budget =
+                crate::context::Budget::with_ceiling(crate::context::RETRIEVAL_CEILING);
+            hits.iter()
+                .take_while(|hit| {
+                    let line = format!(
+                        "{} ({})",
+                        describe(hit).unwrap_or_default(),
+                        hit.url.as_deref().unwrap_or_default()
+                    );
+                    budget.add("row", &line).is_ok()
+                })
+                .count()
+        };
+
+        // 1.4x, against a measured 1.5x on the shortest link a row could
+        // carry. Stated as a floor because a longer path only widens it.
+        assert!(
+            without * 5 >= with * 7,
+            "leaving the link out should fit about half as many rows again, \
+             but {without} without against {with} with"
+        );
+        assert!(
+            without >= 12,
+            "the ceiling has to hold enough rows to answer a question about a \
+             week; {without} is not enough"
+        );
+    }
+
+    /// Over-budget input is truncated rather than refused, and the ceiling
+    /// still holds.
+    ///
+    /// Proved by returning every line regardless of the budget and watching
+    /// this fail:
+    ///
+    /// ```text
+    /// the block must never exceed the ceiling it was given
+    /// ```
+    #[tokio::test]
+    async fn too_many_rows_are_cut_to_fit() {
+        let pool = migrated_pool().await;
+
+        for id in 1..=60 {
+            work_log::upsert(
+                &pool,
+                record(
+                    &id.to_string(),
+                    "Add the PKCE authorisation handler for the desktop client",
+                    "merged and released",
+                ),
+            )
+            .await
+            .expect("should store");
+        }
+
+        let hits = latest(&pool, 60).await.expect("latest");
+        let block = to_context(&hits, crate::context::RETRIEVAL_CEILING).expect("a block");
+
+        assert!(
+            block.lines().count() < hits.len(),
+            "sixty rows cannot fit 300 tokens, so some must have been cut"
+        );
+        assert!(
+            crate::context::estimate_tokens(&block) <= crate::context::RETRIEVAL_CEILING,
+            "the block must never exceed the ceiling it was given"
+        );
+    }
+
+    #[test]
+    fn nothing_to_say_is_nothing_rather_than_an_empty_block() {
+        assert_eq!(to_context(&[], crate::context::RETRIEVAL_CEILING), None);
     }
 
     #[test]

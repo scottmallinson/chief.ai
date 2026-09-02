@@ -405,17 +405,29 @@ the tier (`probe.rs`), `--ctx-size` (D7) and **KV quantisation** (`--cache-type-
 halving the KV term), which Chief does not currently use. Enforcement is selection plus measurement.
 
 **Two ceilings, not one.** The specification asks for ≤ 300 tokens of injected context. That is
-right for a read question and wrong for a brief. Measured on its own example line, a row carrying an
-inline GitHub link costs 34–38 tokens — **the URL alone is 13–15 of them** — so 300 tokens buys 8 or
-9 rows. Drop the URL, which the model has no use for and which the interface renders from
-`work_logs.url` anyway, and the same row costs 14–16 tokens: **19 to 21 rows in the same 300**. Eight
-rows is not an answer to "what did I ship this week?"; twenty is. So:
+right for a read question and wrong for a brief. Dropping the URL — which the model has no use for
+and which the interface renders from `work_logs.url` anyway — is what makes 300 workable, because a
+link is a large part of what a row costs. So:
 
 | Ceiling                      | Value | Governs                                           |
 | ---------------------------- | ----- | ------------------------------------------------- |
 | `context::RETRIEVAL_CEILING` | 300   | the FTS5 snippet a read question injects (new)    |
 | `context::DEFAULT_CEILING`   | 2,400 | recipe and brief assembly (unchanged, D7)         |
 | assembled prompt             | 2,000 | hard truncation of **chat history**, oldest first |
+
+**The row counts this section first carried were wrong, twice — corrected against a measurement
+(REC-44).** It claimed 300 tokens bought 8–9 rows with links and 19–21 without, and therefore that
+leaving the link out roughly doubled what fits. Both figures came from reasoning about a real
+tokenizer. The gate is enforced by `context::estimate_tokens`, which is 3 bytes per token and
+**more pessimistic than that for this text**, and it is the one that decides. Measured through it:
+**15 rows without the link against 10 with** — half as many again, not double.
+
+The decision is unaffected and the ceiling stays at 300; only the arithmetic advertising it was
+fiction. `retrieval::leaving_the_link_out_is_what_makes_the_ceiling_workable` now asserts the
+**ratio** rather than either count, with both halves measured through the same estimator, so
+calibrating `BYTES_PER_TOKEN` later cannot quietly invalidate it. The lesson is narrow and worth
+keeping: a token count reasoned about is not a token count, and the only ruler that matters is the
+one the gate holds.
 
 One caveat that belongs beside the 300 rather than in a footnote: it is measured with
 `context::BYTES_PER_TOKEN`, which is 3 and still uncalibrated (§9). The gate therefore has to use

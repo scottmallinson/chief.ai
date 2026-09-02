@@ -16,9 +16,9 @@
 //! the local database, the corpus, or a connected account's own API.
 
 use crate::agent::Update;
+use crate::context::RETRIEVAL_CEILING;
 use crate::recipe;
-use crate::session::OutlookSession;
-use crate::work_log;
+use crate::retrieval;
 
 /// How many entries `/log` answers with. Enough to see the shape of a week.
 const LOG_ENTRIES: i64 = 10;
@@ -143,53 +143,75 @@ async fn brief(context: &recipe::Context) -> Option<String> {
 }
 
 /// Today's meetings, in the order they happen.
+///
+/// **Read from the work log, not from Microsoft Graph.** This function used to
+/// call `session.events` while the user waited, which made "what is on my
+/// calendar" — the DLE specification's own example of a read — a question that
+/// left the machine and took as long as somebody else's API decided. D9 says a
+/// read is answered from local storage; the daemon's ingestion pass is what
+/// puts the meetings there.
 async fn prep(context: &recipe::Context) -> Option<String> {
-    let (from, to) = recipe::today();
-    let mut lines = Vec::new();
+    let (from, to) = day_window(&chrono::Local::now());
 
-    for account in recipe::outlook_accounts(context).await {
-        let session = OutlookSession::new(&context.pool, &context.microsoft, account);
+    let hits = retrieval::in_window(
+        &context.pool,
+        &from,
+        &to,
+        Some("calendar"),
+        recipe::PER_SOURCE.into(),
+    )
+    .await
+    .ok()?;
 
-        if let Ok(events) = session.events(&from, &to, recipe::PER_SOURCE).await {
-            lines.extend(events.iter().map(recipe::describe_event));
-        }
-    }
+    retrieval::to_context(&hits, RETRIEVAL_CEILING).map(|body| format!("## Today\n{body}"))
+}
 
-    bullets("Today", &lines)
+/// Local midnight today and tomorrow, as the **UTC** instants the work log
+/// stores.
+///
+/// `recipe::today` produces local wall-clock strings, and `work_logs.timestamp`
+/// is written by SQLite's `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`, which is
+/// UTC. Comparing one against the other directly reads the wrong day by
+/// whatever the offset is — invisible in London in winter and wrong by a day's
+/// edge everywhere else, which is exactly the kind of bug that only appears
+/// for somebody else.
+///
+/// Generic over the time zone, so the conversion is tested at a fixed offset
+/// rather than against whatever clock the test machine keeps — the same reason
+/// `clock::describe` is.
+fn day_window<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> (String, String) {
+    let midnight = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default();
+    let tomorrow = midnight + chrono::Duration::days(1);
+    let zone = now.timezone();
+
+    // A local midnight can be ambiguous or absent on the day a clock changes.
+    // `earliest` takes the first instant that exists, and the fallback treats
+    // the naive time as UTC rather than refusing to answer at all: being an
+    // hour out once a year beats showing nothing.
+    let as_utc = |naive: chrono::NaiveDateTime| {
+        zone.from_local_datetime(&naive)
+            .earliest()
+            .map_or_else(
+                || naive.and_utc(),
+                |local| local.with_timezone(&chrono::Utc),
+            )
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string()
+    };
+
+    (as_utc(midnight), as_utc(tomorrow))
 }
 
 /// What the daemon has logged lately, newest first.
+///
+/// Reads the same structured rows `prep` does, so a logged item is described
+/// the same way wherever it appears — and, like `prep`, touches nothing but
+/// this machine's own disk.
 async fn log(context: &recipe::Context) -> Option<String> {
-    let entries = work_log::fetch(&context.pool, Some(LOG_ENTRIES))
-        .await
-        .ok()?;
+    let hits = retrieval::latest(&context.pool, LOG_ENTRIES).await.ok()?;
 
-    let lines: Vec<String> = entries
-        .iter()
-        .map(|entry| {
-            entry
-                .summary
-                .clone()
-                .unwrap_or_else(|| entry.content.clone())
-        })
-        .collect();
-
-    bullets("Recently logged", &lines)
-}
-
-/// A heading and a bullet each, or nothing at all when there is nothing to say.
-fn bullets(heading: &str, lines: &[String]) -> Option<String> {
-    if lines.is_empty() {
-        return None;
-    }
-
-    let body = lines
-        .iter()
-        .map(|line| format!("- {line}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    Some(format!("## {heading}\n{body}"))
+    retrieval::to_context(&hits, RETRIEVAL_CEILING)
+        .map(|body| format!("## Recently logged\n{body}"))
 }
 
 /// Answer this question here, if it is one of ours.
@@ -303,28 +325,43 @@ mod tests {
         assert_eq!(route("/logout"), None);
     }
 
+    /// The local day converted to the UTC window the work log is stored in.
+    ///
+    /// Tested at a fixed offset rather than against the machine's own clock,
+    /// which is the same reason `clock::describe` is generic: a test that
+    /// passes only in UTC proves nothing for anybody east or west of it.
+    #[test]
+    fn a_local_day_becomes_the_utc_window_the_log_is_stored_in() {
+        // UTC+10: local midnight is 14:00 the previous day in UTC.
+        let east = chrono::FixedOffset::east_opt(10 * 3600).expect("a real offset");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-02T09:00:00+10:00")
+            .expect("a real instant")
+            .with_timezone(&east);
+
+        let (from, to) = day_window(&now);
+
+        assert_eq!(from, "2026-09-01T14:00:00.000Z");
+        assert_eq!(to, "2026-09-02T14:00:00.000Z");
+    }
+
+    /// And the other direction, so the test cannot pass by ignoring the offset.
+    #[test]
+    fn a_western_offset_shifts_the_window_the_other_way() {
+        let west = chrono::FixedOffset::west_opt(7 * 3600).expect("a real offset");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-02T09:00:00-07:00")
+            .expect("a real instant")
+            .with_timezone(&west);
+
+        let (from, to) = day_window(&now);
+
+        assert_eq!(from, "2026-09-02T07:00:00.000Z");
+        assert_eq!(to, "2026-09-03T07:00:00.000Z");
+    }
+
     #[test]
     fn refuses_an_empty_question() {
         assert_eq!(route(""), None);
         assert_eq!(route("   "), None);
-    }
-
-    #[test]
-    fn has_nothing_to_say_when_there_is_nothing_logged() {
-        assert_eq!(bullets("Recently logged", &[]), None);
-    }
-
-    #[test]
-    fn writes_one_bullet_per_line_under_a_heading() {
-        let written = bullets(
-            "Today",
-            &["09:30 Standup".to_string(), "16:00 Retro".to_string()],
-        );
-
-        assert_eq!(
-            written.as_deref(),
-            Some("## Today\n- 09:30 Standup\n- 16:00 Retro")
-        );
     }
 }
 
@@ -334,6 +371,7 @@ mod delivery {
     use crate::corpus::Corpus;
     use crate::db::test_support::migrated_pool;
     use crate::llama::test_support::serve;
+    use crate::work_log;
     use crate::{github, llama, microsoft};
 
     struct Scratch(std::path::PathBuf);
@@ -402,7 +440,7 @@ mod delivery {
         assert_eq!(
             updates,
             vec![Update::Delta {
-                text: "## Recently logged\n- Shipped the release workflow".to_string()
+                text: "## Recently logged\n- [GitHub] Shipped the release workflow".to_string()
             }]
         );
         assert_eq!(
@@ -410,6 +448,77 @@ mod delivery {
             Vec::<String>::new(),
             "a routed intent must cost zero model calls"
         );
+    }
+
+    /// `/prep` used to call Microsoft Graph while the user waited. It must not.
+    ///
+    /// The Microsoft client points at `127.0.0.1:1`, where nothing listens, so
+    /// **a call would fail and `prep` would return `None`** — an answer here is
+    /// therefore proof no call was made. The two assertions before it are what
+    /// stop that being vacuous: without a stored meeting `prep` returns `None`
+    /// for the innocent reason too, and the test would pass while proving
+    /// nothing.
+    ///
+    /// Proved by pointing `prep` back at `session.events` and watching it fail:
+    ///
+    /// ```text
+    /// /prep must answer from the work log, not from Graph
+    /// ```
+    #[tokio::test]
+    async fn prep_answers_from_the_work_log_rather_than_the_network() {
+        let (context, _scratch, server) = silent("prep").await;
+
+        let (from, _to) = day_window(&chrono::Local::now());
+        let mut meeting = work_log::WorkLogRecord {
+            timestamp: from,
+            source: "calendar".to_string(),
+            category: "calendar".to_string(),
+            title: "Standup".to_string(),
+            content: "Standup".to_string(),
+            summary: Some("09:30, with Dana".to_string()),
+            url: None,
+            raw_ref: None,
+            external_id: "cal:1".to_string(),
+            account_id: 1,
+        };
+        // Nudged past local midnight so it lands inside today rather than on
+        // the boundary the window excludes at the far end.
+        meeting.timestamp = bump(&meeting.timestamp);
+
+        work_log::upsert(&context.pool, meeting)
+            .await
+            .expect("should store");
+
+        let stored = retrieval::latest(&context.pool, 10).await.expect("read");
+        assert_eq!(stored.len(), 1, "the fixture must have stored a meeting");
+
+        let answered = answer(Intent::Prep, &context).await;
+
+        assert!(
+            answered.is_some(),
+            "/prep must answer from the work log, not from Graph"
+        );
+        assert!(
+            answered.as_deref().unwrap_or_default().contains("Standup"),
+            "the answer should be the stored meeting: {answered:?}"
+        );
+        assert_eq!(
+            server.await.expect("server"),
+            Vec::<String>::new(),
+            "and it must cost zero model calls"
+        );
+    }
+
+    /// One minute past whatever instant this is, so a fixture lands inside a
+    /// window rather than on its edge.
+    fn bump(stamp: &str) -> String {
+        chrono::DateTime::parse_from_rfc3339(stamp)
+            .map(|at| {
+                (at + chrono::Duration::minutes(1))
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string()
+            })
+            .unwrap_or_else(|_| stamp.to_string())
     }
 
     #[tokio::test]

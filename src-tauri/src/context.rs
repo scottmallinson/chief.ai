@@ -72,6 +72,30 @@ pub enum Error {
 /// is put in.
 pub const DEFAULT_CEILING: u32 = 2_400;
 
+/// The most context a *read question* may inject.
+///
+/// Deliberately a different number from [`DEFAULT_CEILING`], and deliberately
+/// named beside it so neither silently absorbs the other. A brief assembles
+/// corpus files, a calendar and pull requests and needs the larger figure; a
+/// read question needs a handful of rows and should cost almost nothing, so
+/// that "what did I ship this week" is answered in the time a query takes.
+///
+/// **300 is only useful because the URL is left out.** A link is a large part
+/// of what a row costs, so leaving it out fits about half as many rows again —
+/// measured, 15 against 10 — which is the difference between an answer about a
+/// week and a handful of rows. The interface renders the link from
+/// `work_logs.url` instead, which also means the model cannot invent one.
+///
+/// **How many rows that is depends on the estimator, not just the format.**
+/// Measured through [`estimate_tokens`], which is 3 bytes per token and still
+/// uncalibrated (plan §9), 300 tokens holds **15** rows of realistic length. An
+/// earlier note here said 20, from a real-tokenizer estimate; the estimator
+/// that actually enforces the gate is more pessimistic than that, and it is the
+/// one that decides. `retrieval::leaving_the_link_out_is_what_makes_the_ceiling_workable`
+/// asserts the ratio rather than either number, so calibrating the estimator
+/// later cannot quietly invalidate it.
+pub const RETRIEVAL_CEILING: u32 = 300;
+
 /// A ledger for what a prompt is allowed to cost.
 ///
 /// Not an assembler: it records what has been spent and refuses the block that
