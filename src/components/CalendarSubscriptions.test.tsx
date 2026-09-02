@@ -29,9 +29,12 @@ describe('CalendarSubscriptions', () => {
     // nothing else does, and a stub that answers one shape to everything is
     // what CLAUDE.md calls the most expensive shortcut in this repository —
     // it took this whole card down when the freshness line was added.
-    invoke.mockImplementation((command: string) =>
-      Promise.resolve(command === 'sync_status' ? [] : work),
-    );
+    invoke.mockImplementation((command: string) => {
+      if (command === 'sync_status') return Promise.resolve([]);
+      if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
+
+      return Promise.resolve(work);
+    });
   });
 
   it('says what a subscription is, in the words a provider uses', () => {
@@ -105,6 +108,9 @@ describe('CalendarSubscriptions', () => {
     render(<CalendarSubscriptions accounts={[work]} onChanged={onChanged} />);
 
     await userEvent.click(screen.getByRole('button', { name: 'Remove Work' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Delete Work and everything it stored' }),
+    );
 
     expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 3 });
     expect(onChanged).toHaveBeenCalled();

@@ -31,9 +31,12 @@ describe('LinearKey', () => {
     // nothing else does, and a stub that answers one shape to everything is
     // what CLAUDE.md calls the most expensive shortcut in this repository —
     // it took this whole card down when the freshness line was added.
-    invoke.mockImplementation((command: string) =>
-      Promise.resolve(command === 'sync_status' ? [] : workspace),
-    );
+    invoke.mockImplementation((command: string) => {
+      if (command === 'sync_status') return Promise.resolve([]);
+      if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
+
+      return Promise.resolve(workspace);
+    });
   });
 
   it('says where the key comes from', () => {
@@ -113,6 +116,11 @@ describe('LinearKey', () => {
     render(<LinearKey accounts={[workspace]} onChanged={onChanged} />);
 
     await userEvent.click(screen.getByRole('button', { name: 'Disconnect Scott Mallinson' }));
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Delete Scott Mallinson and everything it stored',
+      }),
+    );
 
     expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 4 });
     expect(onChanged).toHaveBeenCalled();

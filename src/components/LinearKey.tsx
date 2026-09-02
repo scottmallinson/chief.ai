@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
-import { KeyRound, X } from 'lucide-react';
+import { KeyRound } from 'lucide-react';
 
+import { DisconnectAccount } from '@/components/DisconnectAccount';
 import { Freshness } from '@/components/Freshness';
 import { useSyncState } from '@/hooks/use-sync-state';
 import { Button } from '@/components/ui/button';
@@ -84,16 +85,13 @@ export function LinearKey({ accounts, onChanged }: LinearKeyProps) {
                       re-entered where it was entered. */}
                   <Freshness state={states.get(account.id)} />
                 </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => forget(account)}
-                  disabled={busy !== null}
-                  aria-label={`Disconnect ${name}`}
-                >
-                  {busy === account.id ? <Dots /> : <X aria-hidden />}
-                  Disconnect
-                </Button>
+                <DisconnectAccount
+                  accountId={account.id}
+                  name={name}
+                  verb="Disconnect"
+                  leaving={busy !== null}
+                  onConfirm={() => forget(account)}
+                />
               </li>
             );
           })}

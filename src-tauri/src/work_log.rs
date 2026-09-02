@@ -189,6 +189,38 @@ pub async fn upsert(pool: &SqlitePool, record: WorkLogRecord) -> Result<bool, Er
     Ok(done.rows_affected() > 0)
 }
 
+/// Forget everything one account put in the work log.
+///
+/// Keyed on the **account**, never on the source: migration v3 made the
+/// account the unit because a person can hold a work and a personal GitHub,
+/// and unlinking one of them must not take the other's history with it.
+///
+/// Hand-written entries carry `account_id = 0` — the sentinel for "no account",
+/// which `AUTOINCREMENT` never issues — so nothing the user typed can be
+/// reached by this. The search index follows through migration 8's delete
+/// trigger.
+///
+/// Returns how many rows went, for the confirmation that has to say so before
+/// anything is deleted.
+pub async fn forget_account(pool: &SqlitePool, account_id: i64) -> Result<u64, Error> {
+    let done = sqlx::query("DELETE FROM work_logs WHERE account_id = ?1")
+        .bind(account_id)
+        .execute(pool)
+        .await?;
+
+    Ok(done.rows_affected())
+}
+
+/// How many work log rows one account is holding.
+pub async fn count_for_account(pool: &SqlitePool, account_id: i64) -> Result<i64, Error> {
+    Ok(
+        sqlx::query_scalar("SELECT count(*) FROM work_logs WHERE account_id = ?1")
+            .bind(account_id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
 /// Whether this account has already logged that thing.
 ///
 /// Test-only since ingestion moved to [`upsert`], which asks the index the

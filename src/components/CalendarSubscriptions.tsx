@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
-import { CalendarPlus, X } from 'lucide-react';
+import { CalendarPlus } from 'lucide-react';
 
+import { DisconnectAccount } from '@/components/DisconnectAccount';
 import { Freshness } from '@/components/Freshness';
 import { useSyncState } from '@/hooks/use-sync-state';
 import { Button } from '@/components/ui/button';
@@ -88,16 +89,13 @@ export function CalendarSubscriptions({ accounts, onChanged }: CalendarSubscript
                       re-entered where it was entered. */}
                   <Freshness state={states.get(account.id)} />
                 </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => remove(account)}
-                  disabled={busy !== null}
-                  aria-label={`Remove ${name}`}
-                >
-                  {busy === account.id ? <Dots /> : <X aria-hidden />}
-                  Remove
-                </Button>
+                <DisconnectAccount
+                  accountId={account.id}
+                  name={name}
+                  verb="Remove"
+                  leaving={busy !== null}
+                  onConfirm={() => remove(account)}
+                />
               </li>
             );
           })}

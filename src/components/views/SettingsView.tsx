@@ -4,6 +4,7 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
+import { DisconnectAccount } from '@/components/DisconnectAccount';
 import { Freshness } from '@/components/Freshness';
 import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
 import { ProfileBootstrap } from '@/components/ProfileBootstrap';
@@ -113,17 +114,13 @@ function ConnectedAccount({
           <Freshness state={sync} onReconnect={onReconnect} />
         </p>
       </div>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={leaving}
-        onClick={() => onDisconnect(account.id)}
-      >
-        {/* Bounded and truncated, so a long name ends in an ellipsis rather
-            than pushing the field that names it down to nothing. The button
-            keeps its full accessible name either way. */}
-        <span className="max-w-[9rem] truncate">Disconnect {accountName(account)}</span>
-      </Button>
+      <DisconnectAccount
+        accountId={account.id}
+        name={accountName(account)}
+        verb="Disconnect"
+        leaving={leaving}
+        onConfirm={onDisconnect}
+      />
     </div>
   );
 }

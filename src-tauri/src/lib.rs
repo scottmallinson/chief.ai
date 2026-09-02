@@ -96,6 +96,7 @@ pub fn run() {
             connect::add_linear_key,
             connect::start_login,
             connect::finish_login,
+            connect::account_data,
             connect::connections,
             connect::disconnect,
             connect::label_account,

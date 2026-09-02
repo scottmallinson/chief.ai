@@ -42,7 +42,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | DLE — zero-network read path           | Shipped                        | DLE-1 / REC-44   | #65       |
 | —     | DLE — deterministic ingestion          | Shipped                        | DLE-2 / REC-45   | #65       |
 | —     | DLE — freshness in the interface       | Shipped                        | DLE-3 / REC-46   | #65       |
-| —     | DLE — unlinking deletes its data       | Not started                    | DLE-4 / REC-47   | —         |
+| —     | DLE — unlinking deletes its data       | Shipped                        | DLE-4 / REC-47   | #65       |
 | —     | DLE — local directory permissions      | Not started                    | DLE-5 / REC-48   | —         |
 | —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
 | —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7 / REC-50   | —         |
@@ -925,6 +925,17 @@ removes from it.**
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **A purge is keyed on `account_id`, never on `source`.** The DLE specification proposed
+  `purge_integration_data(source)`, which would wipe both of a person's GitHub accounts when they
+  unlinked one; migration v3 made the account the unit precisely because holding a work and a
+  personal account is ordinary. Hand-written entries carry `account_id = 0`, the sentinel
+  `AUTOINCREMENT` never issues, so nothing the user typed is reachable by any purge.
+- **The credential goes last.** If deleting the data fails half way, the account is still connected
+  and still visible, which is a state the user can act on; the other order leaves orphaned rows
+  nothing can name.
+- **Work log rows are still not pruned by age.** Unlinking deletes an account's rows because the
+  user asked for that account to be gone. Time passing is not somebody asking — see the open
+  question on `work_logs` retention.
 - **The header shows the oldest sync across accounts, not the newest.** Showing the newest would
   say everything was fresh while one account had been failing for a week, which is the reading D9
   cannot afford: an answer assembled from local rows is only as good as its stalest source. An
