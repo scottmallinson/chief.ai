@@ -183,6 +183,12 @@ impl Corpus {
     /// Safe to run on every launch: a file the user has edited is never
     /// replaced, because the only files written are ones that are not there.
     pub async fn ensure_shape(&self) -> Result<(), Error> {
+        // Before anything is written into it. The corpus is the user's own
+        // writing and, on a shared machine, nobody else's to read.
+        if self.root.exists() {
+            crate::perms::restrict_directory(&self.root);
+        }
+
         for (path, contents) in SHAPE {
             let absolute = self.resolve(path)?;
 
@@ -206,6 +212,11 @@ impl Corpus {
                     source,
                 })?;
         }
+
+        // And again, because the first pass runs before `create_dir_all` has
+        // made the root on a first launch. Doing it at both ends means an
+        // existing corpus is tightened and a new one is never briefly open.
+        crate::perms::restrict_directory(&self.root);
 
         Ok(())
     }
@@ -568,6 +579,46 @@ mod tests {
             corpus: Corpus::at(root.clone()),
             root,
         }
+    }
+
+    /// The corpus is the user's own writing, and on a machine with more than
+    /// one account it is nobody else's to read.
+    ///
+    /// Proved by removing the second `restrict_directory` call — the one after
+    /// the loop, which is the one that matters on a first launch, since the
+    /// root does not exist when the first call runs:
+    ///
+    /// ```text
+    /// a freshly created corpus should not be readable by anybody else
+    ///   left: "755"
+    ///  right: "700"
+    /// ```
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_new_corpus_is_readable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = scratch("permissions");
+
+        scratch
+            .corpus
+            .ensure_shape()
+            .await
+            .expect("should create the corpus");
+
+        let mode = format!(
+            "{:o}",
+            std::fs::metadata(&scratch.root)
+                .expect("should stat")
+                .permissions()
+                .mode()
+                & 0o777
+        );
+
+        assert_eq!(
+            mode, "700",
+            "a freshly created corpus should not be readable by anybody else"
+        );
     }
 
     #[test]

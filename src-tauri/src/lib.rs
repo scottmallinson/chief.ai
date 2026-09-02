@@ -24,6 +24,7 @@ mod microsoft;
 // OAuth machinery shared by every provider. Part of the crate's library API,
 // the same as `llama` below.
 pub mod oauth;
+mod perms;
 mod probe;
 mod profile;
 mod propose;
@@ -80,6 +81,10 @@ pub fn run() {
             // model holds a couple of gigabytes, which on the machines Chief
             // is written for is most of the room there is.
             engine::supervise(&app.handle().clone());
+
+            // Nobody else on this machine needs to be able to read the
+            // database the tokens are in. Before anything else touches it.
+            perms::prepare(&app.handle().clone());
 
             // The folder of markdown the user can edit themselves.
             corpus::prepare(&app.handle().clone());

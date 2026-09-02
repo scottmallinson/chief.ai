@@ -43,7 +43,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | DLE — deterministic ingestion          | Shipped                        | DLE-2 / REC-45   | #65       |
 | —     | DLE — freshness in the interface       | Shipped                        | DLE-3 / REC-46   | #65       |
 | —     | DLE — unlinking deletes its data       | Shipped                        | DLE-4 / REC-47   | #65       |
-| —     | DLE — local directory permissions      | Not started                    | DLE-5 / REC-48   | —         |
+| —     | DLE — local directory permissions      | Shipped                        | DLE-5 / REC-48   | #65       |
 | —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
 | —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7 / REC-50   | —         |
 | —     | DLE — monthly journal roll-up          | Not started                    | DLE-8 / REC-51   | —         |
@@ -925,6 +925,15 @@ removes from it.**
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **The app-config directory matters more than the corpus.** The DLE specification asked for `0700`
+  on the corpus and never mentioned the directory holding `chief.db`, which is where the OAuth
+  tokens actually are. Both are restricted, and the database file is restricted as well as its
+  directory: a mode on a directory says who may reach a path, a mode on the file says who may read
+  it, and SQLite created that file at whatever the umask allowed. This narrows the exposure and does
+  not close it — the tokens are still plain text, and REC-28 is the real fix.
+- **The Windows branch consumes its arguments rather than silencing a lint.** An `allow` or an
+  `expect` there would be a claim about a compiler warning on a platform the branch cannot be tested
+  on, which is the shape of mistake `#[cfg(windows)]` keeps producing.
 - **A purge is keyed on `account_id`, never on `source`.** The DLE specification proposed
   `purge_integration_data(source)`, which would wipe both of a person's GitHub accounts when they
   unlinked one; migration v3 made the account the unit precisely because holding a work and a
