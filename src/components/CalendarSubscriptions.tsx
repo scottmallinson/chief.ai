@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { CalendarPlus, X } from 'lucide-react';
 
+import { Freshness } from '@/components/Freshness';
+import { useSyncState } from '@/hooks/use-sync-state';
 import { Button } from '@/components/ui/button';
 import { Dots } from '@/components/ui/activity';
 import { addCalendar, disconnect, type Account } from '@/lib/integrations';
@@ -27,6 +29,7 @@ interface CalendarSubscriptionsProps {
  * prints it hands the calendar to whoever is looking at the laptop.
  */
 export function CalendarSubscriptions({ accounts, onChanged }: CalendarSubscriptionsProps) {
+  const { states } = useSyncState();
   const [url, setUrl] = useState('');
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState<number | 'adding' | null>(null);
@@ -78,7 +81,13 @@ export function CalendarSubscriptions({ accounts, onChanged }: CalendarSubscript
                 key={account.id}
                 className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2"
               >
-                <span className="min-w-0 flex-1 truncate text-sm">{name}</span>
+                <span className="flex min-w-0 flex-1 flex-col gap-1">
+                  <span className="truncate text-sm">{name}</span>
+                  {/* The card's own form below is the way back in, so no
+                      reconnect button here: the key or the address is
+                      re-entered where it was entered. */}
+                  <Freshness state={states.get(account.id)} />
+                </span>
                 <Button
                   size="sm"
                   variant="ghost"

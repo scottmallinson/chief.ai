@@ -27,7 +27,13 @@ function show(accounts: Account[] = []) {
 describe('LinearKey', () => {
   beforeEach(() => {
     invoke.mockReset();
-    invoke.mockResolvedValue(workspace);
+    // Dispatched on the command name. `sync_status` answers `SyncState[]` and
+    // nothing else does, and a stub that answers one shape to everything is
+    // what CLAUDE.md calls the most expensive shortcut in this repository —
+    // it took this whole card down when the freshness line was added.
+    invoke.mockImplementation((command: string) =>
+      Promise.resolve(command === 'sync_status' ? [] : workspace),
+    );
   });
 
   it('says where the key comes from', () => {

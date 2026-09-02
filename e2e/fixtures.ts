@@ -48,6 +48,15 @@ export interface Proposal {
   body: string;
 }
 
+/** One account's freshness, as `sync_status` returns it. */
+export interface SyncState {
+  accountId: number;
+  source: string;
+  status: 'ok' | 'syncing' | 'authRequired' | 'error';
+  lastSyncedAt: string | null;
+  errorMessage: string | null;
+}
+
 /** One connected account, as `connections` returns it. */
 export interface Account {
   id: number;
@@ -70,6 +79,12 @@ export interface Backend {
   workLog?: WorkLogEntry[];
   /** Which accounts the settings screen finds connected. */
   accounts?: Account[];
+  /**
+   * How fresh each account is. An account with no entry here has never been
+   * read, which is a legitimate state and reads as "Never synced" — so the
+   * default is an empty list rather than one fabricated row per account.
+   */
+  syncStates?: SyncState[];
   /** Today's brief, or null when none has been written. */
   brief?: Brief | null;
   /** What `list_corpus` finds, which is where the day list comes from. */
@@ -160,6 +175,7 @@ interface Setup {
   answer: string;
   workLog: WorkLogEntry[];
   accounts: Account[];
+  syncStates: SyncState[];
   brief: Brief | null;
   corpus: string[];
   proposals: Proposal[];
@@ -286,6 +302,13 @@ function installBackend(setup: Setup) {
         case 'connections':
           return Promise.resolve(setup.accounts);
 
+        // Dispatched on the command name, and answering with a list of
+        // `SyncState` rather than with whatever `answers[command] ?? []`
+        // would have produced. CLAUDE.md calls the stub that answers `[]` to
+        // everything the most expensive shortcut in this repository.
+        case 'sync_status':
+          return Promise.resolve(setup.syncStates);
+
         case 'todays_brief':
           return Promise.resolve(setup.brief);
 
@@ -409,6 +432,7 @@ function handleFor(page: Page, classicScrollbars: boolean): Chief {
         answer: backend.answer ?? 'Two pull requests are waiting on review.',
         workLog: backend.workLog ?? [],
         accounts: backend.accounts ?? [],
+        syncStates: backend.syncStates ?? [],
         brief: backend.brief ?? null,
         corpus: backend.corpus ?? [],
         proposals: backend.proposals ?? [],

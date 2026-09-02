@@ -45,11 +45,22 @@ const deviceLogin = {
  */
 const NO_PLAN = { reads: [], writes: [], keeps: [] };
 
-/** Answer `profile_plan` properly, and everything else with `value`. */
-function answering(value: unknown) {
-  invoke.mockImplementation((command: string) =>
-    Promise.resolve(command === 'profile_plan' ? NO_PLAN : value),
-  );
+/**
+ * Answer `profile_plan` and `sync_status` in their own shapes, and everything
+ * else with `value`.
+ *
+ * Both are dispatched on the command name rather than being swept up by the
+ * catch-all, because neither returns a list of accounts: `sync_status` returns
+ * `SyncState[]` keyed on `accountId`, and answering it with the account list
+ * would key the map on `undefined` and quietly render nothing.
+ */
+function answering(value: unknown, syncStates: unknown[] = []) {
+  invoke.mockImplementation((command: string) => {
+    if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+    if (command === 'sync_status') return Promise.resolve(syncStates);
+
+    return Promise.resolve(value);
+  });
 }
 
 describe('SettingsView', () => {
@@ -473,5 +484,139 @@ describe('SettingsView', () => {
     // The row is a field beside a button in a 680px measure, so a name has to
     // end somewhere. What it does to the layout is measured in the browser.
     expect(field).toHaveValue('a'.repeat(40));
+  });
+  describe('freshness', () => {
+    /**
+     * The crash class CLAUDE.md calls the most expensive shortcut in this
+     * repository: a view receiving a shape it did not expect. A fresh install
+     * has no `sync_state` rows at all, which is a legitimate state.
+     */
+    it('says never synced when nothing has been read yet, and throws nothing', async () => {
+      answering([octocat], []);
+
+      render(<SettingsView />);
+
+      expect(await screen.findByText('Never synced')).toBeInTheDocument();
+    });
+
+    it('says how long ago the last successful read was', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-09-02T09:30:00.000Z'));
+
+      try {
+        answering(
+          [octocat],
+          [
+            {
+              accountId: 1,
+              source: 'github',
+              status: 'ok',
+              lastSyncedAt: '2026-09-02T09:00:00.000Z',
+              errorMessage: null,
+            },
+          ],
+        );
+
+        render(<SettingsView />);
+
+        await vi.waitFor(() => {
+          expect(screen.getByText('Synced 30m ago')).toBeInTheDocument();
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    /**
+     * Amber is reserved for *you are needed*, and a revoked credential is the
+     * only one of the four states that is. A host that could not be reached is
+     * Chief's problem and will be tried again.
+     */
+    it('offers a way back in when the credential is gone', async () => {
+      answering(
+        [octocat],
+        [
+          {
+            accountId: 1,
+            source: 'github',
+            status: 'authRequired',
+            lastSyncedAt: '2026-09-01T09:00:00.000Z',
+            errorMessage: 'the credential was refused',
+          },
+        ],
+      );
+
+      render(<SettingsView />);
+
+      expect(await screen.findByText('Sign in again')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
+    });
+
+    it('does not offer a way back in, or use amber, for an account that is fine', async () => {
+      answering(
+        [octocat],
+        [
+          {
+            accountId: 1,
+            source: 'github',
+            status: 'ok',
+            lastSyncedAt: '2026-09-02T09:00:00.000Z',
+            errorMessage: null,
+          },
+        ],
+      );
+
+      render(<SettingsView />);
+
+      await screen.findByLabelText('Name for octocat');
+
+      expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Sign in again')).not.toBeInTheDocument();
+    });
+
+    /**
+     * The crash this hook was taught about the expensive way. Freshness is
+     * rendered per account across three cards, so one answer of the wrong
+     * shape took all three down at once — found by a test rather than by a
+     * user, which is the system working, but only because something rendered
+     * the real component.
+     *
+     * Proved by dropping the `Array.isArray` guard:
+     *
+     *   Uncaught [TypeError: all.map is not a function]
+     */
+    it('survives an answer that is not a list of states', async () => {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'sync_status') return Promise.resolve({ nothing: 'like a state' });
+
+        return Promise.resolve([octocat]);
+      });
+
+      render(<SettingsView />);
+
+      expect(await screen.findByLabelText('Name for octocat')).toBeInTheDocument();
+      expect(screen.getByText('Never synced')).toBeInTheDocument();
+    });
+
+    /**
+     * A failure reading freshness must not take the screen that carries it.
+     * Freshness is an annotation on a screen whose actual job is connecting
+     * accounts, and every row degrading to "Never synced" is the same thing a
+     * fresh install shows.
+     */
+    it('still lets an account be managed when freshness cannot be read', async () => {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'sync_status') return Promise.reject(new Error('the database is locked'));
+
+        return Promise.resolve([octocat]);
+      });
+
+      render(<SettingsView />);
+
+      expect(await screen.findByLabelText('Name for octocat')).toBeInTheDocument();
+      expect(screen.getByText('Never synced')).toBeInTheDocument();
+    });
   });
 });

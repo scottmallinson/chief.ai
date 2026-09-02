@@ -99,6 +99,7 @@ pub fn run() {
             connect::connections,
             connect::disconnect,
             connect::label_account,
+            sync_state::sync_status,
             corpus::corpus_location,
             corpus::list_corpus,
             corpus::read_corpus_file,

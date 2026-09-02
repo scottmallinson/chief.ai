@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use tauri::{AppHandle, Runtime};
 
 use crate::db::Error;
 
@@ -146,10 +147,6 @@ pub async fn record(
 
 /// Every account's state, oldest read first — so the interface can show the
 /// staleness that matters without sorting it again.
-// Read by the settings and header commands (DLE-3, REC-46) and by the purge
-// that unlinking performs (DLE-4, REC-47). Written here because this module is
-// the seam DLE-0 landed for them; the daemon writes, nothing reads yet.
-#[allow(dead_code)]
 pub async fn all(pool: &SqlitePool) -> Result<Vec<SyncState>, Error> {
     let rows = sqlx::query_as::<_, Row>(
         "SELECT account_id, source, status, last_synced_at, error_message
@@ -163,9 +160,9 @@ pub async fn all(pool: &SqlitePool) -> Result<Vec<SyncState>, Error> {
 }
 
 /// One account's state, or nothing if it has never been read.
-// Read by the settings and header commands (DLE-3, REC-46) and by the purge
-// that unlinking performs (DLE-4, REC-47). Written here because this module is
-// the seam DLE-0 landed for them; the daemon writes, nothing reads yet.
+// Read by the purge that unlinking performs (DLE-4, REC-47), which is the only
+// thing that has a reason to ask about one account rather than all of them, or
+// to throw a state away.
 #[allow(dead_code)]
 pub async fn for_account(pool: &SqlitePool, account_id: i64) -> Result<Option<SyncState>, Error> {
     let row = sqlx::query_as::<_, Row>(
@@ -181,9 +178,9 @@ pub async fn for_account(pool: &SqlitePool, account_id: i64) -> Result<Option<Sy
 }
 
 /// Forget an account's state, for when the account itself is forgotten.
-// Read by the settings and header commands (DLE-3, REC-46) and by the purge
-// that unlinking performs (DLE-4, REC-47). Written here because this module is
-// the seam DLE-0 landed for them; the daemon writes, nothing reads yet.
+// Read by the purge that unlinking performs (DLE-4, REC-47), which is the only
+// thing that has a reason to ask about one account rather than all of them, or
+// to throw a state away.
 #[allow(dead_code)]
 pub async fn forget(pool: &SqlitePool, account_id: i64) -> Result<(), Error> {
     sqlx::query("DELETE FROM sync_state WHERE account_id = ?1")
@@ -192,6 +189,23 @@ pub async fn forget(pool: &SqlitePool, account_id: i64) -> Result<(), Error> {
         .await?;
 
     Ok(())
+}
+
+/// Every account's freshness, for the settings screen and the header.
+///
+/// An account that has never been read has **no row here at all**, and that is
+/// a legitimate state rather than a failure: a fresh install, or an account
+/// connected between one pass and the next. The command returns what exists
+/// and the interface says "Never synced" for the rest — filling in a
+/// placeholder row here would mean inventing a status the daemon never
+/// recorded.
+#[tauri::command]
+pub async fn sync_status<R: Runtime>(app: AppHandle<R>) -> Result<Vec<SyncState>, String> {
+    all(&crate::db::pool(&app)
+        .await
+        .map_err(|error| error.to_string())?)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

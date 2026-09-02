@@ -41,7 +41,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | DLE — structured log, FTS5, sync state | Shipped                        | DLE-0 / REC-43   | #65       |
 | —     | DLE — zero-network read path           | Shipped                        | DLE-1 / REC-44   | #65       |
 | —     | DLE — deterministic ingestion          | Shipped                        | DLE-2 / REC-45   | #65       |
-| —     | DLE — freshness in the interface       | Not started                    | DLE-3 / REC-46   | —         |
+| —     | DLE — freshness in the interface       | Shipped                        | DLE-3 / REC-46   | #65       |
 | —     | DLE — unlinking deletes its data       | Not started                    | DLE-4 / REC-47   | —         |
 | —     | DLE — local directory permissions      | Not started                    | DLE-5 / REC-48   | —         |
 | —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
@@ -918,13 +918,25 @@ removes from it.**
 | **Reviewers in `team_structure.md`**   | GitHub's search response carries none, so it is a call per pull request                                                                   | REC-16      |
 | **`glib` GHSA-wrw7-89jp-8q8g**         | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                      | SECURITY.md |
 | **AC/battery polling cadence**         | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                              | DLE-2       |
-| **A control for the pass interval**    | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. It belongs with the rest of the settings screen                | DLE-3       |
+| **A control for the pass interval**    | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it     | —           |
 | **Whether `work_logs` is ever pruned** | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                   | DLE-8       |
 | **`busy_timeout` through the plugin**  | `tauri-plugin-sql` owns the pool and `busy_timeout` is per-connection, so it may not be reachable without patching. `sqlx` defaults to 5s | DLE-11      |
 | **FTS5 query semantics**               | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                             | DLE-0       |
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **The header shows the oldest sync across accounts, not the newest.** Showing the newest would
+  say everything was fresh while one account had been failing for a week, which is the reading D9
+  cannot afford: an answer assembled from local rows is only as good as its stalest source. An
+  account that has never been read makes the whole thing unknown for the same reason.
+- **Amber is only for a revoked credential.** `AuthRequired` is the one of the four sync states
+  that is _you are needed_; an unreachable host is Chief's problem and reads as a quiet line. Making
+  both amber turns the settings screen into an alarm every time somebody closes their laptop, at
+  which point neither gets read.
+- **Reconnecting clears an account's `sync_state` in the same transaction that stores the
+  credential.** Signing in again adopts the existing account row rather than making a second one, so
+  without this the screen would still be amber and still asking somebody to sign in, moments after
+  they did. It deletes rather than writing `Ok`, because no pass has run yet.
 - **A pass is due when either clock says so, never when both do.** `Instant` does not advance
   across a suspend on Linux, so a laptop closed for four hours wakes believing four minutes passed;
   the wall clock does advance, but it also moves when NTP steps it backwards, and requiring both
