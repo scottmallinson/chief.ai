@@ -38,18 +38,18 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | Calendar by .ics subscription          | Shipped                        | REC-39           | #60       |
 | —     | Linear by pasted API key               | Shipped                        | REC-40           | #61       |
 | —     | "What is waiting on me?"               | Shipped                        | REC-41           | #62       |
-| —     | DLE — structured log, FTS5, sync state | Not started                    | DLE-0            | —         |
-| —     | DLE — zero-network read path           | Not started                    | DLE-1            | —         |
-| —     | DLE — deterministic ingestion          | Not started                    | DLE-2            | —         |
-| —     | DLE — freshness in the interface       | Not started                    | DLE-3            | —         |
-| —     | DLE — unlinking deletes its data       | Not started                    | DLE-4            | —         |
-| —     | DLE — local directory permissions      | Not started                    | DLE-5            | —         |
-| —     | DLE — model adapter seam               | Not started                    | DLE-6            | —         |
-| —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7            | —         |
-| —     | DLE — monthly journal roll-up          | Not started                    | DLE-8            | —         |
-| —     | DLE — provenance footers               | Not started                    | DLE-9            | —         |
-| —     | DLE — action links from the feed       | Not started                    | DLE-10           | —         |
-| —     | DLE — model-swap and concurrency       | Not started                    | DLE-11           | —         |
+| —     | DLE — structured log, FTS5, sync state | Not started                    | DLE-0 / REC-43   | —         |
+| —     | DLE — zero-network read path           | Not started                    | DLE-1 / REC-44   | —         |
+| —     | DLE — deterministic ingestion          | Not started                    | DLE-2 / REC-45   | —         |
+| —     | DLE — freshness in the interface       | Not started                    | DLE-3 / REC-46   | —         |
+| —     | DLE — unlinking deletes its data       | Not started                    | DLE-4 / REC-47   | —         |
+| —     | DLE — local directory permissions      | Not started                    | DLE-5 / REC-48   | —         |
+| —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
+| —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7 / REC-50   | —         |
+| —     | DLE — monthly journal roll-up          | Not started                    | DLE-8 / REC-51   | —         |
+| —     | DLE — provenance footers               | Not started                    | DLE-9 / REC-52   | —         |
+| —     | DLE — action links from the feed       | Not started                    | DLE-10 / REC-53  | —         |
+| —     | DLE — model-swap and concurrency       | Not started                    | DLE-11 / REC-54  | —         |
 
 **Step 22 was built before step 14**, out of the numbered order and on the plan's own advice: an
 empty corpus is step 14's failure mode, and a draft written against seven empty starter files is
@@ -721,6 +721,10 @@ owns its own module and the only shared file is `lib.rs`, which gains one regist
 | DLE-9     | `ChatView.tsx`, `agent.rs`                              | **blockedBy DLE-1** — the one edge left   |
 | DLE-10    | `TodayView.tsx`, `work_log.rs`                          | Links from `work_logs.url`, no model      |
 | DLE-11    | `db.rs` tests, `weights.rs` tests                       | Model-swap isolation; WAL concurrency     |
+
+The twelve are **REC-43 through REC-54** in Linear, in that order, each carrying
+`agent-executable`; DLE-0 and DLE-4 also carry `risk:high`. Every one is `blockedBy` REC-43 except
+DLE-5, DLE-6 and DLE-7, which touch no schema, and DLE-9, which is `blockedBy` DLE-1.
 
 Three mechanics make that table true rather than aspirational. A command lives in the module that
 owns it, never in `connect.rs`, which DLE-4 rewrites. DLE-8's monthly pass is a `journal::run_once`
