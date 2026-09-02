@@ -59,6 +59,11 @@ pub struct Hit {
 ///
 /// Returns `None` when nothing usable is left, because `MATCH ''` is an error
 /// rather than an empty result.
+// The free-text seam DLE-0 landed. `intent` answers `/prep` and `/log` from
+// `in_window` and `latest`; the question that arrives in words rather than as a
+// command reaches this through the tool catalogue, which is DLE-6's (REC-49)
+// rewrite. Kept and tested here rather than written twice.
+#[allow(dead_code)]
 pub fn to_match_query(question: &str) -> Option<String> {
     let terms: Vec<String> = question
         .split(|c: char| !c.is_alphanumeric())
@@ -74,6 +79,11 @@ pub fn to_match_query(question: &str) -> Option<String> {
 /// Ordered by `bm25()` — which is negative and ascending, so the strongest
 /// match sorts first — and then by recency, so two equally good matches put
 /// the newer one in front.
+// The free-text seam DLE-0 landed. `intent` answers `/prep` and `/log` from
+// `in_window` and `latest`; the question that arrives in words rather than as a
+// command reaches this through the tool catalogue, which is DLE-6's (REC-49)
+// rewrite. Kept and tested here rather than written twice.
+#[allow(dead_code)]
 pub async fn search(pool: &SqlitePool, question: &str, limit: i64) -> Result<Vec<Hit>, Error> {
     let Some(query) = to_match_query(question) else {
         return Ok(Vec::new());

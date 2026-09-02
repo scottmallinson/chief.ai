@@ -146,6 +146,10 @@ pub async fn record(
 
 /// Every account's state, oldest read first — so the interface can show the
 /// staleness that matters without sorting it again.
+// Read by the settings and header commands (DLE-3, REC-46) and by the purge
+// that unlinking performs (DLE-4, REC-47). Written here because this module is
+// the seam DLE-0 landed for them; the daemon writes, nothing reads yet.
+#[allow(dead_code)]
 pub async fn all(pool: &SqlitePool) -> Result<Vec<SyncState>, Error> {
     let rows = sqlx::query_as::<_, Row>(
         "SELECT account_id, source, status, last_synced_at, error_message
@@ -159,6 +163,10 @@ pub async fn all(pool: &SqlitePool) -> Result<Vec<SyncState>, Error> {
 }
 
 /// One account's state, or nothing if it has never been read.
+// Read by the settings and header commands (DLE-3, REC-46) and by the purge
+// that unlinking performs (DLE-4, REC-47). Written here because this module is
+// the seam DLE-0 landed for them; the daemon writes, nothing reads yet.
+#[allow(dead_code)]
 pub async fn for_account(pool: &SqlitePool, account_id: i64) -> Result<Option<SyncState>, Error> {
     let row = sqlx::query_as::<_, Row>(
         "SELECT account_id, source, status, last_synced_at, error_message
@@ -173,6 +181,10 @@ pub async fn for_account(pool: &SqlitePool, account_id: i64) -> Result<Option<Sy
 }
 
 /// Forget an account's state, for when the account itself is forgotten.
+// Read by the settings and header commands (DLE-3, REC-46) and by the purge
+// that unlinking performs (DLE-4, REC-47). Written here because this module is
+// the seam DLE-0 landed for them; the daemon writes, nothing reads yet.
+#[allow(dead_code)]
 pub async fn forget(pool: &SqlitePool, account_id: i64) -> Result<(), Error> {
     sqlx::query("DELETE FROM sync_state WHERE account_id = ?1")
         .bind(account_id)

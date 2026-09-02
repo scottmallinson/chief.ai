@@ -16,6 +16,7 @@ mod db;
 mod engine;
 mod github;
 mod ical;
+mod ingest;
 mod integrations;
 mod intent;
 mod linear;
@@ -28,19 +29,10 @@ mod profile;
 mod propose;
 mod proposed;
 mod recipe;
-// Reading the work log, and recording how fresh each account is: the two seams
-// D9 is built on. Nothing calls them yet — DLE-1 answers read questions
-// through `retrieval`, DLE-2 writes `sync_state` from an ingestion pass, and
-// DLE-3 renders it. The allow comes off with the first of those; it is here so
-// the schema and its accessors can land as one reviewable change rather than
-// waiting for a consumer, and it is scoped to these two modules so it cannot
-// hide dead code anywhere else.
-#[allow(dead_code)]
 mod retrieval;
 mod session;
 mod settings;
 mod setup;
-#[allow(dead_code)]
 mod sync_state;
 mod tools;
 mod watcher;

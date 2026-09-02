@@ -16,12 +16,14 @@ use tauri::{AppHandle, Manager, Runtime};
 use crate::agent::Attention;
 use crate::db;
 use crate::github::{self, Involvement, PullRequest, State};
+use crate::ingest;
 use crate::integrations;
-use crate::llama::{self, ChatRequest, Message, Options};
+use crate::llama;
 use crate::propose;
 use crate::recipe;
 use crate::session::GithubSession;
-use crate::work_log::{self, NewWorkLogEntry};
+use crate::sync_state;
+use crate::work_log;
 
 /// How long to settle after launch before the first pass, so startup is not
 /// competing with a model.
@@ -33,20 +35,6 @@ const PASS_INTERVAL: Duration = Duration::from_secs(30 * 60);
 /// How many merged pull requests to consider in one pass.
 const BATCH: u8 = 25;
 
-/// Summaries should be a sentence, so this needs very few tokens.
-const SUMMARY_MODEL: &str = crate::agent::DEFAULT_MODEL;
-
-/// A sentence, and the model should stop there rather than write an essay
-/// nobody reads. Nothing else about how the engine runs is touched: the
-/// context window belongs to the server, not to a request.
-const SUMMARY_OPTIONS: Options = Options::new().with_answer_length(80);
-
-const SUMMARY_PROMPT: &str = "\
-You turn a developer's activity into a work log. Summarise the activity into a
-single sentence describing what they achieved, in the past tense. Do not add
-commentary, quotes, bullet points, or a preamble — reply with the sentence and
-nothing else.";
-
 /// What can go wrong during a pass.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -54,16 +42,24 @@ pub enum Error {
     Github(#[from] github::Error),
     #[error(transparent)]
     Storage(#[from] db::Error),
-    #[error("could not summarise the activity: {0}")]
-    Summary(#[from] llama::Error),
 }
 
 /// Everything a pass needs. Passed in so the whole thing runs in tests against
 /// an in-memory database and stub servers.
+/// **No engine.** Ingestion is deterministic (see `ingest`), so a pass has no
+/// client to call the model with — which makes "a pass never calls the model"
+/// a property of the type rather than something a test has to keep watching.
+/// The brief and the proposal pass build their own context through
+/// `recipe::context`, and those do have one, because generating prose is what
+/// they are for.
+///
+/// This replaced four tests that stood up an empty engine stub and asserted it
+/// received nothing. Once the field went, those could not fail whatever the
+/// pass did — a stub nothing can reach records nothing — so they were removed
+/// rather than kept for the reassurance. The type is the guard now.
 pub struct Context {
     pub pool: sqlx::SqlitePool,
     pub github: github::Client,
-    pub engine: llama::Client,
     /// Whether the user is waiting on an answer right now.
     pub attention: Attention,
 }
@@ -193,7 +189,6 @@ async fn context<R: Runtime>(app: &AppHandle<R>) -> Result<Context, db::Error> {
     Ok(Context {
         pool: db::pool(app).await?,
         github: app.state::<github::Client>().inner().clone(),
-        engine: app.state::<llama::Client>().inner().clone(),
         attention: app.state::<Attention>().inner().clone(),
     })
 }
@@ -225,12 +220,68 @@ pub async fn run_once(context: &Context) -> Result<usize, Error> {
         // noticed which one was at fault. Reported against the id, the way a
         // name that could not be read is, and tried again next pass.
         match run_one_account(context, &account).await {
-            Ok(entries) => written += entries,
-            Err(error) => eprintln!("could not read account {}: {error}", account.id),
+            Ok(entries) => {
+                written += entries;
+                record_state(context, &account, sync_state::Status::Ok, None).await;
+            }
+            Err(error) => {
+                // A rejected credential is the user's to fix and says so in
+                // the interface; anything else is worth retrying quietly next
+                // pass. Conflating the two is how the amber chip becomes a
+                // false alarm every time somebody closes their laptop, so the
+                // distinction is drawn here, once, from the error itself.
+                let status = if is_credential_gone(&error) {
+                    sync_state::Status::AuthRequired
+                } else {
+                    sync_state::Status::Error
+                };
+
+                eprintln!("could not read account {}: {error}", account.id);
+                record_state(context, &account, status, Some(&error.to_string())).await;
+            }
         }
     }
 
     Ok(written)
+}
+
+/// Whether this failure means the credential is gone rather than the host is.
+///
+/// Only a rejected token counts. `session.rs` already renews and retries once,
+/// so a `Github` error that survived that has been refused twice — and every
+/// other shape (a timeout, a 500, no route to the host) is a reason to try
+/// again later rather than to send the user to a browser.
+fn is_credential_gone(error: &Error) -> bool {
+    match error {
+        Error::Github(inner) => {
+            <github::Client as crate::oauth::Provider>::is_token_rejected(inner)
+        }
+        _ => false,
+    }
+}
+
+/// Write what just happened to an account, and step over a failure to do so.
+///
+/// Recording freshness is bookkeeping about the pass; it must never be the
+/// reason a pass reports failure, because then the interface would lose the
+/// state at exactly the moment it became worth showing.
+async fn record_state(
+    context: &Context,
+    account: &integrations::Account,
+    status: sync_state::Status,
+    message: Option<&str>,
+) {
+    if let Err(error) = sync_state::record(
+        &context.pool,
+        account.id,
+        integrations::GITHUB,
+        status,
+        message,
+    )
+    .await
+    {
+        eprintln!("could not record sync state for {}: {error}", account.id);
+    }
 }
 
 /// Read one account's merged work and log whatever is new.
@@ -277,90 +328,35 @@ async fn run_one_account(
     Ok(written)
 }
 
-/// Summarise one merged pull request and add it to the log.
+/// Add one pull request to the log, or bring the row it already has up to date.
 ///
-/// Returns whether anything was written. A pull request already in the log is
-/// skipped before the model is asked, so a pass costs nothing once it has
-/// caught up.
+/// **No model call.** This used to ask the engine for a one-sentence
+/// achievement per item, which was the right shape when the log was prose a
+/// person read and the wrong one once D9 made it the thing reads are answered
+/// from: a feed row wants a title, a state and a link, and the provider already
+/// said all three. See `ingest`.
+///
+/// `upsert` rather than `insert_new`, so a pull request that was open when it
+/// was first seen and is merged by the next pass changes rather than being
+/// skipped as already known. It reports whether anything actually moved, so a
+/// caught-up pass still writes nothing and still counts nothing.
 async fn log_one(
     context: &Context,
     account_id: i64,
     pull_request: &PullRequest,
 ) -> Result<bool, Error> {
-    let external_id = pull_request.external_id();
-
-    if work_log::has_logged(&context.pool, "github", account_id, &external_id).await? {
-        return Ok(false);
-    }
-
-    let content = describe(pull_request);
-
-    // If the model is unreachable we write nothing, rather than filling the log
-    // with unsummarised rows that would never be revisited — the entry is
-    // picked up on a later pass instead.
-    let summary = summarise(&context.engine, &content).await?;
-
-    let entry = NewWorkLogEntry {
-        source: "github".to_string(),
-        content,
-        timestamp: pull_request
-            .merged_at
-            .clone()
-            .or_else(|| Some(pull_request.updated_at.clone())),
-        summary: Some(summary),
-        external_id: Some(external_id),
-        account_id: Some(account_id),
-    };
-
-    Ok(work_log::insert_new(&context.pool, entry).await?.is_some())
-}
-
-/// The raw activity, as the model sees it and as the log keeps it.
-fn describe(pull_request: &PullRequest) -> String {
-    format!(
-        "Merged pull request #{} in {}: {}",
-        pull_request.number, pull_request.repository, pull_request.title
+    Ok(work_log::upsert(
+        &context.pool,
+        ingest::from_pull_request(pull_request, account_id),
     )
-}
-
-/// Ask the local model for a one-sentence achievement.
-async fn summarise(client: &llama::Client, activity: &str) -> Result<String, llama::Error> {
-    let request = ChatRequest::new(
-        SUMMARY_MODEL,
-        vec![
-            Message::system(SUMMARY_PROMPT),
-            Message::user(activity.to_string()),
-        ],
-    )
-    .with_options(SUMMARY_OPTIONS);
-
-    let reply = client.chat(&request).await?;
-
-    Ok(tidy(&reply.content))
-}
-
-/// Small models like to wrap an answer in quotes or a preamble. Take the first
-/// sentence-ish line and strip the decoration.
-fn tidy(summary: &str) -> String {
-    summary
-        .trim()
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .trim_start_matches("Summary:")
-        .trim_start_matches("Achievement:")
-        .trim()
-        .trim_matches('"')
-        .trim()
-        .to_string()
+    .await?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::test_support::migrated_pool;
-    use crate::llama::test_support::{answer, serve};
+    use crate::llama::test_support::serve;
 
     const MERGED_PRS: &str = r#"{
         "total_count": 2,
@@ -418,7 +414,7 @@ mod tests {
         .id
     }
 
-    async fn context_for(github_host: &str, engine_host: &str, connected: bool) -> Context {
+    async fn context_for(github_host: &str, connected: bool) -> Context {
         let pool = migrated_pool().await;
 
         if connected {
@@ -428,7 +424,6 @@ mod tests {
         Context {
             pool,
             github: github::Client::against(github_host).expect("should build a github client"),
-            engine: llama::Client::with_base_url(engine_host).expect("loopback is allowed"),
             attention: Attention::default(),
         }
     }
@@ -437,7 +432,7 @@ mod tests {
     async fn steps_aside_while_the_user_is_waiting_on_an_answer() {
         // Neither host exists, so a pass that read anything at all would fail
         // rather than quietly report nothing: this proves it never started.
-        let context = context_for("http://127.0.0.1:1", "http://127.0.0.1:1", true).await;
+        let context = context_for("http://127.0.0.1:1", true).await;
         let _waiting = context.attention.begin();
 
         let written = run_once(&context).await.expect("a pass should not fail");
@@ -451,7 +446,7 @@ mod tests {
 
     #[tokio::test]
     async fn does_nothing_when_github_is_not_connected() {
-        let context = context_for("http://127.0.0.1:1", "http://127.0.0.1:1", false).await;
+        let context = context_for("http://127.0.0.1:1", false).await;
 
         let written = run_once(&context).await.expect("a pass should not fail");
 
@@ -463,17 +458,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn summarises_merged_pull_requests_into_the_log() {
+    async fn writes_a_row_per_merged_pull_request_without_asking_the_model() {
         let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", MERGED_PRS)]);
-        let (engine_host, engine_server) = serve(vec![
-            (
-                "HTTP/1.1 200 OK",
-                answer("Shipped the tool calling orchestrator."),
-            ),
-            ("HTTP/1.1 200 OK", answer("Shipped the local database.")),
-        ]);
 
-        let context = context_for(&github_host, &engine_host, true).await;
+        let context = context_for(&github_host, true).await;
         let written = run_once(&context).await.expect("a pass should not fail");
 
         assert_eq!(written, 2);
@@ -482,10 +470,9 @@ mod tests {
         assert_eq!(entries.len(), 2);
 
         // Newest first, by the time each was merged.
-        assert_eq!(
-            entries[0].summary.as_deref(),
-            Some("Shipped the tool calling orchestrator.")
-        );
+        // Templated from what GitHub said, not generated: the state is the
+        // thing a feed row answers and the thing that changes between passes.
+        assert_eq!(entries[0].summary.as_deref(), Some("merged"));
         assert_eq!(entries[0].timestamp, "2026-08-19T13:58:00Z");
         assert_eq!(entries[0].source, "github");
         assert_eq!(
@@ -501,13 +488,12 @@ mod tests {
         );
 
         github_server.await.expect("github stub should finish");
-        engine_server.await.expect("engine stub should finish");
     }
 
     #[tokio::test]
     async fn asks_github_only_for_merged_work() {
         let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", NO_PRS)]);
-        let context = context_for(&github_host, "http://127.0.0.1:1", true).await;
+        let context = context_for(&github_host, true).await;
 
         run_once(&context).await.expect("a pass should not fail");
 
@@ -520,6 +506,116 @@ mod tests {
         );
     }
 
+    /// A rejected credential is the user's to fix; anything else is not.
+    ///
+    /// **The negative is the point.** A revoked token and an unreachable host
+    /// both fail a pass, and only one of them should send somebody to a
+    /// browser. Recording both as `AuthRequired` would put an amber "sign in
+    /// again" chip on screen every time a laptop lid closes, and a signal that
+    /// cries wolf is worse than no signal — the user learns to ignore it, and
+    /// then misses the real one.
+    ///
+    /// Proved by making `is_credential_gone` return `true` unconditionally and
+    /// watching the second half fail:
+    ///
+    /// ```text
+    /// an unreachable host is not a revoked credential
+    ///   left: AuthRequired
+    ///  right: Error
+    /// ```
+    #[tokio::test]
+    async fn only_a_rejected_credential_asks_the_user_to_sign_in_again() {
+        // One reply, because `serve` hands back what it received only once
+        // every reply has been consumed: prime two for one account and the
+        // await never returns. `session` does renew and retry, but a credential
+        // with nothing to renew from fails without reaching this host again.
+        let (github_host, github_server) = serve(vec![(
+            "HTTP/1.1 401 Unauthorized",
+            r#"{"message":"Bad credentials"}"#,
+        )]);
+        let context = context_for(&github_host, true).await;
+        let account = only_account(&context).await;
+
+        run_once(&context)
+            .await
+            .expect("a pass reports rather than fails");
+
+        let refused = sync_state::for_account(&context.pool, account)
+            .await
+            .expect("should read")
+            .expect("a pass records what happened");
+
+        assert_eq!(
+            refused.status,
+            sync_state::Status::AuthRequired,
+            "a refused credential is gone, and the user has to go and fix it"
+        );
+        assert!(
+            refused.last_synced_at.is_none(),
+            "a failure must never stamp a time no successful read produced"
+        );
+
+        github_server.await.expect("github stub should finish");
+
+        // The same pass, against a host that is simply not there.
+        let unreachable = context_for("http://127.0.0.1:1", true).await;
+        let account = only_account(&unreachable).await;
+
+        run_once(&unreachable)
+            .await
+            .expect("a pass reports rather than fails");
+
+        let stalled = sync_state::for_account(&unreachable.pool, account)
+            .await
+            .expect("should read")
+            .expect("a pass records what happened");
+
+        assert_eq!(
+            stalled.status,
+            sync_state::Status::Error,
+            "an unreachable host is not a revoked credential"
+        );
+    }
+
+    /// A pass that worked says so, and stamps the time.
+    #[tokio::test]
+    async fn a_pass_that_read_an_account_records_it_as_fresh() {
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", MERGED_PRS)]);
+        let context = context_for(&github_host, true).await;
+        let account = only_account(&context).await;
+
+        run_once(&context).await.expect("a pass should not fail");
+
+        let state = sync_state::for_account(&context.pool, account)
+            .await
+            .expect("should read")
+            .expect("a pass records what happened");
+
+        assert_eq!(state.status, sync_state::Status::Ok);
+        assert_eq!(state.source, integrations::GITHUB);
+        assert!(
+            state.last_synced_at.is_some(),
+            "a successful read is what a freshness timestamp means"
+        );
+        assert!(
+            state.error_message.is_none(),
+            "nothing went wrong, so there is nothing to explain"
+        );
+
+        github_server.await.expect("github stub should finish");
+    }
+
+    /// Whatever account the fixture connected.
+    async fn only_account(context: &Context) -> i64 {
+        integrations::accounts(&context.pool, integrations::GITHUB)
+            .await
+            .expect("should read")
+            .into_iter()
+            .next()
+            .expect("the fixture connects one")
+            .id
+    }
+
     #[tokio::test]
     async fn running_again_logs_nothing_new() {
         let (github_host, github_server) = serve(vec![
@@ -527,12 +623,8 @@ mod tests {
             ("HTTP/1.1 200 OK", MERGED_PRS),
         ]);
         // Only two model replies: a second pass must not ask again.
-        let (engine_host, engine_server) = serve(vec![
-            ("HTTP/1.1 200 OK", answer("Shipped the orchestrator.")),
-            ("HTTP/1.1 200 OK", answer("Shipped the database.")),
-        ]);
 
-        let context = context_for(&github_host, &engine_host, true).await;
+        let context = context_for(&github_host, true).await;
 
         assert_eq!(run_once(&context).await.expect("first pass"), 2);
         assert_eq!(
@@ -549,7 +641,6 @@ mod tests {
         );
 
         github_server.await.expect("github stub should finish");
-        engine_server.await.expect("engine stub should finish");
     }
 
     #[tokio::test]
@@ -561,14 +652,8 @@ mod tests {
             ("HTTP/1.1 200 OK", MERGED_PRS),
             ("HTTP/1.1 200 OK", MERGED_PRS),
         ]);
-        let (engine_host, engine_server) = serve(vec![
-            ("HTTP/1.1 200 OK", answer("Shipped the orchestrator.")),
-            ("HTTP/1.1 200 OK", answer("Shipped the database.")),
-            ("HTTP/1.1 200 OK", answer("Shipped the orchestrator.")),
-            ("HTTP/1.1 200 OK", answer("Shipped the database.")),
-        ]);
 
-        let context = context_for(&github_host, &engine_host, true).await;
+        let context = context_for(&github_host, true).await;
         let second = connect(&context.pool, "hubot", Some("hubot")).await;
 
         assert_eq!(run_once(&context).await.expect("a pass should not fail"), 4);
@@ -585,7 +670,6 @@ mod tests {
         );
 
         github_server.await.expect("github stub should finish");
-        engine_server.await.expect("engine stub should finish");
     }
 
     #[tokio::test]
@@ -602,13 +686,9 @@ mod tests {
             ),
             ("HTTP/1.1 200 OK", MERGED_PRS),
         ]);
-        let (engine_host, engine_server) = serve(vec![
-            ("HTTP/1.1 200 OK", answer("Shipped the orchestrator.")),
-            ("HTTP/1.1 200 OK", answer("Shipped the database.")),
-        ]);
 
         // The refused account is the one read first, by id.
-        let context = context_for(&github_host, &engine_host, true).await;
+        let context = context_for(&github_host, true).await;
         let healthy = connect(&context.pool, "hubot", Some("hubot")).await;
 
         let written = run_once(&context)
@@ -629,7 +709,6 @@ mod tests {
         );
 
         github_server.await.expect("github stub should finish");
-        engine_server.await.expect("engine stub should finish");
     }
 
     #[tokio::test]
@@ -641,7 +720,7 @@ mod tests {
             ("HTTP/1.1 200 OK", VIEWER),
             ("HTTP/1.1 200 OK", NO_PRS),
         ]);
-        let context = context_for(&github_host, "http://127.0.0.1:1", false).await;
+        let context = context_for(&github_host, false).await;
         connect(&context.pool, "github", None).await;
 
         run_once(&context).await.expect("a pass should not fail");
@@ -670,7 +749,7 @@ mod tests {
             ),
             ("HTTP/1.1 200 OK", NO_PRS),
         ]);
-        let context = context_for(&github_host, "http://127.0.0.1:1", false).await;
+        let context = context_for(&github_host, false).await;
         connect(&context.pool, "github", None).await;
 
         run_once(&context)
@@ -679,75 +758,5 @@ mod tests {
 
         let requests = github_server.await.expect("github stub should finish");
         assert_eq!(requests.len(), 2, "the read should still have happened");
-    }
-
-    #[tokio::test]
-    async fn writes_nothing_when_the_model_is_unreachable() {
-        let (github_host, github_server) = serve(vec![
-            ("HTTP/1.1 200 OK", MERGED_PRS),
-            ("HTTP/1.1 200 OK", MERGED_PRS),
-        ]);
-        let context = context_for(&github_host, "http://127.0.0.1:1", true).await;
-        let account = integrations::accounts(&context.pool, integrations::GITHUB)
-            .await
-            .expect("should read")
-            .into_iter()
-            .next()
-            .expect("the account should be connected");
-
-        // Reading the account fails, and says so in the terms the caller needs.
-        let error = run_one_account(&context, &account)
-            .await
-            .expect_err("an unreachable model should surface");
-
-        assert!(matches!(error, Error::Summary(_)), "got {error:?}");
-
-        // The pass over the accounts reports that and carries on, so an engine
-        // still loading does not take the whole thing down.
-        assert_eq!(
-            run_once(&context)
-                .await
-                .expect("a pass reports a failure rather than becoming one"),
-            0
-        );
-        assert!(
-            work_log::fetch(&context.pool, None)
-                .await
-                .expect("read")
-                .is_empty(),
-            "an unsummarised entry should not be written"
-        );
-
-        github_server.await.expect("github stub should finish");
-    }
-
-    #[test]
-    fn strips_the_decoration_small_models_add() {
-        assert_eq!(tidy("  Shipped it.  "), "Shipped it.");
-        assert_eq!(tidy("\"Shipped it.\""), "Shipped it.");
-        assert_eq!(tidy("Summary: Shipped it."), "Shipped it.");
-        assert_eq!(tidy("Achievement: Shipped it."), "Shipped it.");
-        assert_eq!(tidy("Shipped it.\n\nLet me know!"), "Shipped it.");
-        assert_eq!(tidy(""), "");
-    }
-
-    #[test]
-    fn describes_activity_for_the_model() {
-        let pr = PullRequest {
-            number: 12,
-            title: "Add the daemon".to_string(),
-            repository: "scottmallinson/chief.ai".to_string(),
-            state: "closed".to_string(),
-            draft: false,
-            url: "https://github.com/scottmallinson/chief.ai/pull/12".to_string(),
-            updated_at: "2026-08-19T14:00:00Z".to_string(),
-            merged_at: Some("2026-08-19T13:58:00Z".to_string()),
-            body: None,
-        };
-
-        assert_eq!(
-            describe(&pr),
-            "Merged pull request #12 in scottmallinson/chief.ai: Add the daemon"
-        );
     }
 }

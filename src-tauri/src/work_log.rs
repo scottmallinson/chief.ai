@@ -95,37 +95,7 @@ pub async fn insert(pool: &SqlitePool, entry: NewWorkLogEntry) -> Result<WorkLog
     Ok(stored)
 }
 
-/// Append an entry unless this account has already logged that thing.
-///
-/// Returns the stored entry, or `None` when it was already there. This is what
-/// lets the daemon run as often as it likes.
-pub async fn insert_new(
-    pool: &SqlitePool,
-    entry: NewWorkLogEntry,
-) -> Result<Option<WorkLogEntry>, Error> {
-    let stored = sqlx::query_as::<_, WorkLogEntry>(&format!(
-        "INSERT INTO work_logs (timestamp, source, content, summary, external_id, account_id)
-         VALUES (COALESCE(?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?2, ?3, ?4, ?5,
-                 IFNULL(?6, 0))
-         ON CONFLICT (source, account_id, external_id) WHERE external_id IS NOT NULL DO NOTHING
-         RETURNING {ENTRY_COLUMNS}"
-    ))
-    .bind(entry.timestamp)
-    .bind(entry.source)
-    .bind(entry.content)
-    .bind(entry.summary)
-    .bind(entry.external_id)
-    .bind(entry.account_id)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(stored)
-}
-
 /// A structured entry from a connected service, ready to be written.
-///
-/// Unused until DLE-2's ingestion pass calls it; see the note in `lib.rs`
-/// beside `mod retrieval`.
 ///
 /// Separate from [`NewWorkLogEntry`], which is what the *user* submits by hand
 /// and carries no `url` and no category. This is what ingestion builds: the
@@ -133,7 +103,6 @@ pub async fn insert_new(
 /// deterministically from the provider's own response rather than by asking
 /// the model to write prose about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct WorkLogRecord {
     /// ISO-8601, UTC.
     pub timestamp: String,
@@ -163,7 +132,7 @@ pub struct WorkLogRecord {
 /// SQLite matches an upsert target against the index definition, and without
 /// the predicate it finds no unique index to use and rejects the statement.
 ///
-/// This is `DO UPDATE` where [`insert_new`] is `DO NOTHING`, and that is the
+/// It is `DO UPDATE` where ingestion used to be `DO NOTHING`, and that is the
 /// difference between a log and a mirror. A pull request that was open when it
 /// was first seen and is merged by the next pass has to change; an entry the
 /// daemon can never revise would leave the feed asserting something that has
@@ -171,9 +140,19 @@ pub struct WorkLogRecord {
 ///
 /// `account_id` is deliberately not updated: it is part of the key, so a row
 /// that matched already has it.
-#[allow(dead_code)]
-pub async fn upsert(pool: &SqlitePool, record: WorkLogRecord) -> Result<(), Error> {
-    sqlx::query(
+///
+/// **The `WHERE` on the update is what keeps a caught-up pass free.** Without
+/// it `DO UPDATE` rewrites the row every time the daemon sees the same
+/// unchanged pull request, which is not just a wasted statement: every write
+/// fires migration 8's update trigger, so the search index is deleted and
+/// reinserted for a row that did not move. `IS NOT` rather than `<>` because
+/// three of these columns are nullable and `NULL <> NULL` is null, not true.
+///
+/// Returns whether anything actually changed, so a caller can report work done
+/// rather than work considered — which is what the `Option` the daemon used to
+/// read meant, and what its count still needs to mean.
+pub async fn upsert(pool: &SqlitePool, record: WorkLogRecord) -> Result<bool, Error> {
+    let done = sqlx::query(
         "INSERT INTO work_logs
              (timestamp, source, category, title, content, summary, url, raw_ref,
               external_id, account_id)
@@ -185,7 +164,14 @@ pub async fn upsert(pool: &SqlitePool, record: WorkLogRecord) -> Result<(), Erro
                        content   = excluded.content,
                        summary   = excluded.summary,
                        url       = excluded.url,
-                       raw_ref   = excluded.raw_ref",
+                       raw_ref   = excluded.raw_ref
+         WHERE work_logs.title     IS NOT excluded.title
+            OR work_logs.summary   IS NOT excluded.summary
+            OR work_logs.url       IS NOT excluded.url
+            OR work_logs.category  IS NOT excluded.category
+            OR work_logs.content   IS NOT excluded.content
+            OR work_logs.timestamp IS NOT excluded.timestamp
+            OR work_logs.raw_ref   IS NOT excluded.raw_ref",
     )
     .bind(record.timestamp)
     .bind(record.source)
@@ -200,10 +186,16 @@ pub async fn upsert(pool: &SqlitePool, record: WorkLogRecord) -> Result<(), Erro
     .execute(pool)
     .await?;
 
-    Ok(())
+    Ok(done.rows_affected() > 0)
 }
 
 /// Whether this account has already logged that thing.
+///
+/// Test-only since ingestion moved to [`upsert`], which asks the index the
+/// same question and needs no answer beforehand. Kept because it is what the
+/// daemon's per-account assertions want to say, and writing the `SELECT` out
+/// three times would say it less clearly.
+#[cfg(test)]
 pub async fn has_logged(
     pool: &SqlitePool,
     source: &str,
@@ -395,135 +387,6 @@ mod deduplication_tests {
     use super::*;
     use crate::db::test_support::migrated_pool;
 
-    fn from_github(external_id: &str, content: &str) -> NewWorkLogEntry {
-        NewWorkLogEntry {
-            source: "github".to_string(),
-            content: content.to_string(),
-            timestamp: None,
-            summary: Some("Shipped something".to_string()),
-            external_id: Some(external_id.to_string()),
-            account_id: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn logs_an_entry_the_first_time() {
-        let pool = migrated_pool().await;
-
-        let stored = insert_new(&pool, from_github("pr-12", "Merged PR #12"))
-            .await
-            .expect("insert should succeed");
-
-        assert!(stored.is_some(), "the first sighting should be logged");
-    }
-
-    #[tokio::test]
-    async fn does_not_log_the_same_activity_twice() {
-        let pool = migrated_pool().await;
-
-        insert_new(&pool, from_github("pr-12", "Merged PR #12"))
-            .await
-            .expect("insert should succeed");
-        let again = insert_new(&pool, from_github("pr-12", "Merged PR #12"))
-            .await
-            .expect("insert should succeed");
-
-        assert!(again.is_none(), "the second sighting should be skipped");
-        assert_eq!(fetch(&pool, None).await.expect("read").len(), 1);
-    }
-
-    #[tokio::test]
-    async fn tells_two_sources_apart() {
-        let pool = migrated_pool().await;
-
-        insert_new(&pool, from_github("12", "Merged PR #12"))
-            .await
-            .expect("insert should succeed");
-
-        let calendar = NewWorkLogEntry {
-            source: "calendar".to_string(),
-            ..from_github("12", "Attended event 12")
-        };
-        let stored = insert_new(&pool, calendar)
-            .await
-            .expect("insert should succeed");
-
-        assert!(
-            stored.is_some(),
-            "the same id from another source is a different thing"
-        );
-    }
-
-    #[tokio::test]
-    async fn hand_written_entries_never_collide() {
-        let pool = migrated_pool().await;
-
-        for _ in 0..2 {
-            let stored = insert_new(
-                &pool,
-                NewWorkLogEntry {
-                    source: "manual".to_string(),
-                    content: "Wrote something down".to_string(),
-                    timestamp: None,
-                    summary: None,
-                    external_id: None,
-                    account_id: None,
-                },
-            )
-            .await
-            .expect("insert should succeed");
-
-            assert!(stored.is_some(), "entries without an id are always kept");
-        }
-
-        assert_eq!(fetch(&pool, None).await.expect("read").len(), 2);
-    }
-
-    #[tokio::test]
-    async fn two_accounts_may_log_the_same_identifier() {
-        let pool = migrated_pool().await;
-
-        // Two people can merge the same pull request number in the same
-        // repository — on two different accounts, it is two people's work.
-        let entry = |account_id| NewWorkLogEntry {
-            source: "github".to_string(),
-            content: "Merged PR #7".to_string(),
-            timestamp: None,
-            summary: None,
-            external_id: Some("owner/repo#7".to_string()),
-            account_id: Some(account_id),
-        };
-
-        assert!(
-            insert_new(&pool, entry(1))
-                .await
-                .expect("should insert")
-                .is_some(),
-            "the first account should log it"
-        );
-        assert!(
-            insert_new(&pool, entry(2))
-                .await
-                .expect("should insert")
-                .is_some(),
-            "a different account is different work"
-        );
-        assert!(
-            insert_new(&pool, entry(1))
-                .await
-                .expect("should insert")
-                .is_none(),
-            "the same account should not log it twice"
-        );
-
-        assert!(has_logged(&pool, "github", 1, "owner/repo#7")
-            .await
-            .expect("should read"));
-        assert!(!has_logged(&pool, "github", 3, "owner/repo#7")
-            .await
-            .expect("should read"));
-    }
-
     fn record(account_id: i64, title: &str, state: &str) -> WorkLogRecord {
         WorkLogRecord {
             timestamp: "2026-09-01T09:00:00.000Z".to_string(),
@@ -546,9 +409,10 @@ mod deduplication_tests {
             .expect("should read")
     }
 
-    /// The difference between `upsert` and `insert_new`: a pull request that
-    /// was open when it was first seen and is merged by the next pass has to
-    /// change, or the feed keeps asserting something that stopped being true.
+    /// The reason ingestion upserts rather than inserting-and-skipping: a pull
+    /// request that was open when it was first seen and is merged by the next
+    /// pass has to change, or the feed keeps asserting something that stopped
+    /// being true.
     #[tokio::test]
     async fn upserting_the_same_thing_revises_it_rather_than_repeating_it() {
         let pool = migrated_pool().await;
@@ -594,6 +458,41 @@ mod deduplication_tests {
             titles(&pool).await.len(),
             2,
             "the same external id under a different account is different work"
+        );
+    }
+
+    /// The index carries `source` as well as `account_id`, and this is the
+    /// clause that proves it. GitHub numbers pull requests from 1 and so does
+    /// every other tracker: `owner/repo#7` from a calendar and `owner/repo#7`
+    /// from GitHub are two things, and collapsing them would silently lose one.
+    ///
+    /// Proved by binding a constant `"github"` in place of `record.source`,
+    /// which no other test in this module notices:
+    ///
+    /// ```text
+    /// the same external id under another source is different work
+    ///   left: 1
+    ///  right: 2
+    /// ```
+    #[tokio::test]
+    async fn the_same_identifier_from_another_source_is_another_thing() {
+        let pool = migrated_pool().await;
+
+        upsert(&pool, record(1, "Add PKCE auth handler", "open"))
+            .await
+            .expect("should store");
+
+        let elsewhere = WorkLogRecord {
+            source: "calendar".to_string(),
+            category: "calendar".to_string(),
+            ..record(1, "Sprint review", "attended")
+        };
+        upsert(&pool, elsewhere).await.expect("should store");
+
+        assert_eq!(
+            titles(&pool).await.len(),
+            2,
+            "the same external id under another source is different work"
         );
     }
 
