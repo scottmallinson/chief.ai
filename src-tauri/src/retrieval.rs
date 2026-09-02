@@ -206,6 +206,69 @@ fn title_case(source: &str) -> String {
     }
 }
 
+/// What an answer drew on, as the line under it.
+///
+/// **Built here, from the rows, and never asked of the model.** A provenance
+/// line the model composes is one it can get wrong, and this is the single
+/// piece of text on the screen that has to be true: it is the only thing left
+/// saying how fresh the answer is, now that a read no longer takes as long as
+/// somebody else's API decides.
+///
+/// Returns `None` when no rows were read. An answer built from a corpus file —
+/// `/brief` reads today's brief and nothing else — has no local rows behind it,
+/// and an empty footer claiming otherwise would be worse than none.
+///
+/// The `to` is the newest row the answer saw, so it reads as a bound on what
+/// was included rather than as a claim about when a sync happened. Local time,
+/// because "to 14:02" means the user's 14:02.
+#[must_use]
+pub fn provenance(hits: &[Hit]) -> Option<String> {
+    if hits.is_empty() {
+        return None;
+    }
+
+    // First seen wins, so the order follows the ranking rather than the
+    // alphabet — the service the strongest match came from reads first.
+    let mut services: Vec<String> = Vec::new();
+
+    for hit in hits {
+        let named = title_case(&hit.source);
+
+        if !services.contains(&named) {
+            services.push(named);
+        }
+    }
+
+    let newest = hits.iter().map(|hit| hit.timestamp.as_str()).max();
+    let until = newest
+        .and_then(as_local_time)
+        .map_or_else(String::new, |at| format!(" (to {at})"));
+
+    Some(format!(
+        "Sources: work log · {}{until}",
+        services.join(", ")
+    ))
+}
+
+/// An ISO-8601 UTC instant as the user's own clock reads it.
+///
+/// `HH:MM` when it is today and `D MMM` otherwise: a time on its own is only
+/// unambiguous within the day, and a date on its own throws away the precision
+/// that makes "to 14:02" worth printing at all.
+fn as_local_time(at: &str) -> Option<String> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(at)
+        .ok()?
+        .with_timezone(&chrono::Local);
+
+    let today = chrono::Local::now().date_naive();
+
+    Some(if parsed.date_naive() == today {
+        parsed.format("%H:%M").to_string()
+    } else {
+        parsed.format("%-d %b").to_string()
+    })
+}
+
 /// Turn hits into a block that fits the budget, dropping the weakest first.
 ///
 /// Returns `None` when there is nothing to say, which is the caller's signal
@@ -586,6 +649,108 @@ mod tests {
         assert_eq!(
             to_match_query("Refactoring Auth").expect("two terms"),
             "\"refactoring\" OR \"auth\""
+        );
+    }
+    fn hit(source: &str, timestamp: &str) -> Hit {
+        Hit {
+            id: 1,
+            timestamp: timestamp.to_string(),
+            source: source.to_string(),
+            category: "pr".to_string(),
+            title: "Add the PKCE auth handler".to_string(),
+            summary: Some("merged".to_string()),
+            url: None,
+        }
+    }
+
+    /// An answer with no rows behind it has no provenance to state, and an
+    /// empty footer claiming otherwise would be worse than none: it is the one
+    /// line on the screen that has to be true.
+    #[test]
+    fn nothing_read_is_no_footer_rather_than_an_empty_one() {
+        assert_eq!(provenance(&[]), None);
+    }
+
+    /// Every service that contributed, each named once, in the order the
+    /// ranking put them — the service the strongest match came from reads
+    /// first, rather than whichever happens to be alphabetically early.
+    ///
+    /// Proved by sorting the names:
+    ///
+    /// ```text
+    /// got Sources: work log · Calendar, GitHub, Linear (to 3 Jan)
+    /// ```
+    #[test]
+    fn names_every_service_once_in_the_order_they_ranked() {
+        let hits = [
+            hit("github", "2026-01-01T09:00:00Z"),
+            hit("linear", "2026-01-02T09:00:00Z"),
+            hit("github", "2026-01-03T09:00:00Z"),
+            hit("calendar", "2026-01-02T09:00:00Z"),
+        ];
+
+        let line = provenance(&hits).expect("rows were read");
+
+        assert!(
+            line.starts_with("Sources: work log · GitHub, Linear, Calendar"),
+            "got {line}"
+        );
+    }
+
+    /// The bound is the **newest** row the answer saw, so it reads as "this
+    /// covers work up to here" rather than as a claim about a sync.
+    ///
+    /// Proved by taking the oldest instead:
+    ///
+    /// ```text
+    ///   left: "Sources: work log · GitHub (to 1 Jan)"
+    ///  right: "Sources: work log · GitHub (to 3 Jan)"
+    /// ```
+    #[test]
+    fn the_bound_is_the_newest_row_the_answer_saw() {
+        let hits = [
+            hit("github", "2026-01-03T09:00:00Z"),
+            hit("github", "2026-01-01T09:00:00Z"),
+        ];
+
+        assert_eq!(
+            provenance(&hits).expect("rows were read"),
+            "Sources: work log · GitHub (to 3 Jan)"
+        );
+    }
+
+    /// A time on its own is only unambiguous within the day. Today's rows read
+    /// as `14:02`; anything older reads as a date, because "to 09:00" on a row
+    /// from last March would be read as this morning.
+    #[test]
+    fn today_reads_as_a_time_and_anything_older_reads_as_a_date() {
+        let today = chrono::Local::now()
+            .with_timezone(&chrono::Utc)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        let line = provenance(&[hit("github", &today)]).expect("rows were read");
+
+        assert!(
+            line.contains(&format!(" (to {})", chrono::Local::now().format("%H:%M"))),
+            "a row from today should read as a time: {line}"
+        );
+
+        let old = provenance(&[hit("github", "2026-01-03T09:00:00Z")]).expect("rows were read");
+
+        assert!(
+            old.contains("(to 3 Jan)"),
+            "an older row reads as a date: {old}"
+        );
+    }
+
+    /// A timestamp the clock cannot read is left out rather than guessed at.
+    /// The services are still worth naming; an invented time is not.
+    #[test]
+    fn a_timestamp_that_cannot_be_read_costs_the_bound_and_nothing_else() {
+        assert_eq!(
+            provenance(&[hit("github", "not a timestamp")]).expect("rows were read"),
+            "Sources: work log · GitHub"
         );
     }
 }

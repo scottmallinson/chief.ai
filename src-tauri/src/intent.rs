@@ -125,21 +125,48 @@ fn normalise(question: &str) -> String {
 /// from Chief having misunderstood them — so it steps aside and lets the model
 /// answer instead. The cost of being wrong is one model call, which is what the
 /// question cost before this module existed.
-pub async fn answer(intent: Intent, context: &recipe::Context) -> Option<String> {
-    let markdown = match intent {
+pub async fn answer(intent: Intent, context: &recipe::Context) -> Option<Answered> {
+    let answered = match intent {
         Intent::Brief => brief(context).await,
         Intent::Prep => prep(context).await,
         Intent::Log => log(context).await,
     }?;
 
-    (!markdown.trim().is_empty()).then_some(markdown)
+    (!answered.markdown.trim().is_empty()).then_some(answered)
+}
+
+/// An answer, and the line under it saying where it came from.
+///
+/// The provenance is **built in Rust from the rows**, never written by a model.
+/// It is the only thing left telling the reader how fresh an answer is, now
+/// that a read is a query rather than a call somebody else's API times — so it
+/// is the one piece of text on the screen that has to be true, and a line the
+/// model composed could be wrong in exactly the way nothing else would catch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answered {
+    pub markdown: String,
+    /// `None` when the answer used no stored rows. `/brief` reads a corpus
+    /// file, so it has nothing local behind it and shows no footer at all
+    /// rather than an empty one.
+    pub provenance: Option<String>,
 }
 
 /// Today's brief, as written. Reading, never regenerating.
-async fn brief(context: &recipe::Context) -> Option<String> {
+async fn brief(context: &recipe::Context) -> Option<Answered> {
     let path = format!("briefs/{}.md", recipe::today_date());
 
-    context.corpus.read(&path).await.ok()
+    // No provenance: this is a file the user can open, not rows Chief read.
+    // Claiming a work log behind it would be a claim about where it came from
+    // that happens not to be true.
+    context
+        .corpus
+        .read(&path)
+        .await
+        .ok()
+        .map(|markdown| Answered {
+            markdown,
+            provenance: None,
+        })
 }
 
 /// Today's meetings, in the order they happen.
@@ -150,7 +177,7 @@ async fn brief(context: &recipe::Context) -> Option<String> {
 /// left the machine and took as long as somebody else's API decided. D9 says a
 /// read is answered from local storage; the daemon's ingestion pass is what
 /// puts the meetings there.
-async fn prep(context: &recipe::Context) -> Option<String> {
+async fn prep(context: &recipe::Context) -> Option<Answered> {
     let (from, to) = day_window(&chrono::Local::now());
 
     let hits = retrieval::in_window(
@@ -163,7 +190,10 @@ async fn prep(context: &recipe::Context) -> Option<String> {
     .await
     .ok()?;
 
-    retrieval::to_context(&hits, RETRIEVAL_CEILING).map(|body| format!("## Today\n{body}"))
+    retrieval::to_context(&hits, RETRIEVAL_CEILING).map(|body| Answered {
+        markdown: format!("## Today\n{body}"),
+        provenance: retrieval::provenance(&hits),
+    })
 }
 
 /// Local midnight today and tomorrow, as the **UTC** instants the work log
@@ -207,11 +237,13 @@ fn day_window<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> (String, Stri
 /// Reads the same structured rows `prep` does, so a logged item is described
 /// the same way wherever it appears — and, like `prep`, touches nothing but
 /// this machine's own disk.
-async fn log(context: &recipe::Context) -> Option<String> {
+async fn log(context: &recipe::Context) -> Option<Answered> {
     let hits = retrieval::latest(&context.pool, LOG_ENTRIES).await.ok()?;
 
-    retrieval::to_context(&hits, RETRIEVAL_CEILING)
-        .map(|body| format!("## Recently logged\n{body}"))
+    retrieval::to_context(&hits, RETRIEVAL_CEILING).map(|body| Answered {
+        markdown: format!("## Recently logged\n{body}"),
+        provenance: retrieval::provenance(&hits),
+    })
 }
 
 /// Answer this question here, if it is one of ours.
@@ -228,17 +260,20 @@ pub async fn deliver<F>(
     question: &str,
     context: &recipe::Context,
     mut on_update: F,
-) -> Option<String>
+) -> Option<Answered>
 where
     F: FnMut(Update),
 {
-    let markdown = answer(route(question)?, context).await?;
+    let answered = answer(route(question)?, context).await?;
 
+    // The body streams; the footer does not. It is appended once the answer is
+    // whole, which is also why it costs no prefill and is not measured against
+    // `RETRIEVAL_CEILING` — it was never in a prompt.
     on_update(Update::Delta {
-        text: markdown.clone(),
+        text: answered.markdown.clone(),
     });
 
-    Some(markdown)
+    Some(answered)
 }
 
 #[cfg(test)]
@@ -499,7 +534,9 @@ mod delivery {
             "/prep must answer from the work log, not from Graph"
         );
         assert!(
-            answered.as_deref().unwrap_or_default().contains("Standup"),
+            answered
+                .as_ref()
+                .is_some_and(|answered| answered.markdown.contains("Standup")),
             "the answer should be the stored meeting: {answered:?}"
         );
         assert_eq!(
@@ -533,7 +570,15 @@ mod delivery {
 
         let answered = deliver("/brief", &context, |_| {}).await;
 
-        assert_eq!(answered.as_deref(), Some("- Standup at 09:30"));
+        assert_eq!(
+            answered.as_ref().map(|answered| answered.markdown.as_str()),
+            Some("- Standup at 09:30")
+        );
+        assert_eq!(
+            answered.and_then(|answered| answered.provenance),
+            None,
+            "a brief is a file the user can open, not rows Chief assembled"
+        );
         assert_eq!(
             server.await.expect("server"),
             Vec::<String>::new(),

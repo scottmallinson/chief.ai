@@ -458,6 +458,22 @@ where
     Ok(reply.content)
 }
 
+/// An answer, and the line under it saying where it came from.
+///
+/// Two fields rather than one string, because the footer is **not part of the
+/// answer**: it is composed in Rust from the rows the read path returned, and
+/// keeping it separate is what makes that checkable. A model that writes
+/// `Sources: everything, verified` into its reply produces text in the body
+/// and leaves this field exactly as it was.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Answer {
+    pub content: String,
+    /// `None` when nothing local was read — a tool answer, or a brief, which is
+    /// a file the user can open rather than rows Chief assembled.
+    pub provenance: Option<String>,
+}
+
 /// Ask the local model to answer the conversation so far.
 ///
 /// The answer is returned whole, and also emitted piece by piece on
@@ -473,7 +489,7 @@ pub async fn ask_agent<R: Runtime>(
     messages: Vec<Turn>,
     model: Option<String>,
     request_id: String,
-) -> Result<String, Error> {
+) -> Result<Answer, Error> {
     let model = model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let context = tools::Context {
         pool: db::pool(&app).await?,
@@ -502,8 +518,11 @@ pub async fn ask_agent<R: Runtime>(
             })
             .await;
 
-            if let Some(markdown) = answered {
-                return Ok(markdown);
+            if let Some(answered) = answered {
+                return Ok(Answer {
+                    content: answered.markdown,
+                    provenance: answered.provenance,
+                });
             }
         }
     }
@@ -526,7 +545,7 @@ pub async fn ask_agent<R: Runtime>(
 
     let conversation = conversation(messages, &clock::present());
 
-    respond(&client, &context, &model, conversation, |update| {
+    let content = respond(&client, &context, &model, conversation, |update| {
         // A dropped update costs a frame of the answer, nothing more: the whole
         // reply is returned from this command regardless.
         let _ = app.emit(
@@ -537,7 +556,15 @@ pub async fn ask_agent<R: Runtime>(
             },
         );
     })
-    .await
+    .await?;
+
+    // No provenance on the tool path. The tools reach services live, so there
+    // are no stored rows to name and no "to" that would mean anything — and a
+    // footer that appeared on every answer regardless would stop being read.
+    Ok(Answer {
+        content,
+        provenance: None,
+    })
 }
 
 /// Build a transcript turn, shared by the test modules below.

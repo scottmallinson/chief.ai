@@ -70,14 +70,23 @@ export interface Account {
   connectedAt: string;
 }
 
+/** What `ask_agent` resolves with: the answer, and where it came from. */
+export interface Answer {
+  content: string;
+  /** Null when nothing local was read — a tool answer, or a brief. */
+  provenance: string | null;
+}
+
 /** A step in an answer, as `agent::Update` serialises it. */
 export type AgentUpdate =
   { kind: 'delta'; text: string } | { kind: 'restart' } | { kind: 'tool'; name: string };
 
 /** What the Rust side should answer for one test. */
 export interface Backend {
-  /** What `ask_agent` resolves with. */
+  /** What `ask_agent` answers with. A string is the content and no footer. */
   answer?: string;
+  /** The provenance line under the answer, when the read path found rows. */
+  provenance?: string;
   /** What the work log is filled with. */
   workLog?: WorkLogEntry[];
   /** Which accounts the settings screen finds connected. */
@@ -176,6 +185,7 @@ export interface Chief {
 
 interface Setup {
   answer: string;
+  provenance: string | null;
   workLog: WorkLogEntry[];
   accounts: Account[];
   syncStates: SyncState[];
@@ -226,7 +236,7 @@ function installBackend(setup: Setup) {
   const listeners = new Map<string, Array<(event: unknown) => void>>();
   let nextCallbackId = 1;
   let requestId: string | null = null;
-  let answerInFlight: ((answer: string) => void) | null = null;
+  let answerInFlight: ((answer: Answer) => void) | null = null;
 
   const emit = (event: string, payload: unknown) => {
     for (const listener of listeners.get(event) ?? []) {
@@ -237,7 +247,7 @@ function installBackend(setup: Setup) {
   const bridge: Bridge = {
     stream: (update) => emit('agent-stream', { requestId, ...update }),
     finish: (answer) => {
-      answerInFlight?.(answer);
+      answerInFlight?.({ content: answer, provenance: null });
       answerInFlight = null;
     },
     scroller: () => {
@@ -292,9 +302,14 @@ function installBackend(setup: Setup) {
 
         case 'ask_agent': {
           requestId = (args?.requestId as string | undefined) ?? null;
-          if (!setup.holdAnswers) return Promise.resolve(setup.answer);
+          if (!setup.holdAnswers) {
+            return Promise.resolve({
+              content: setup.answer,
+              provenance: setup.provenance,
+            });
+          }
 
-          return new Promise<string>((resolve) => {
+          return new Promise<Answer>((resolve) => {
             answerInFlight = resolve;
           });
         }
@@ -433,6 +448,7 @@ function handleFor(page: Page, classicScrollbars: boolean): Chief {
     async open(backend: Backend = {}) {
       await page.addInitScript(installBackend, {
         answer: backend.answer ?? 'Two pull requests are waiting on review.',
+        provenance: backend.provenance ?? null,
         workLog: backend.workLog ?? [],
         accounts: backend.accounts ?? [],
         syncStates: backend.syncStates ?? [],

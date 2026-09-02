@@ -47,7 +47,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
 | —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7 / REC-50   | —         |
 | —     | DLE — monthly journal roll-up          | Shipped                        | DLE-8 / REC-51   | #65       |
-| —     | DLE — provenance footers               | Not started                    | DLE-9 / REC-52   | —         |
+| —     | DLE — provenance footers               | Shipped                        | DLE-9 / REC-52   | #65       |
 | —     | DLE — action links from the feed       | Shipped                        | DLE-10 / REC-53  | #65       |
 | —     | DLE — model-swap and concurrency       | Not started                    | DLE-11 / REC-54  | —         |
 
@@ -925,6 +925,16 @@ removes from it.**
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **The provenance footer is composed in Rust and rendered in its own element.** It is the only
+  thing left telling the reader how fresh an answer is, now that a read is a query rather than a
+  call somebody else's API times, so it is the one piece of text on the screen that has to be true —
+  a line the model wrote could be wrong in the way nothing else would catch. Keeping it out of the
+  answer body is what makes that checkable: a model that writes its own `Sources:` line produces
+  text in the body and leaves the footer untouched. It replaced the count of tool names the frontend
+  inferred from the stream, which showed zero for an answer built entirely from the work log.
+- **No footer where nothing local was read.** A tool answer reaches services live, and `/brief`
+  reads a file the user can open; an empty footer claiming a work log behind either would be worse
+  than none.
 - **The journal is a second rendering, never a move.** The DLE specification asked for 30-day
   retention — summarise, then prune. Chief reports nothing anywhere, so the row is the only copy by
   construction, and a hand-written entry cannot be re-fetched from anything. The roll-up is

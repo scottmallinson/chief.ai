@@ -12,11 +12,25 @@ export interface ChatMessage {
   /** When the turn joined the transcript, for its `you · 14:02` label. */
   at: string;
   /**
-   * How many tools the answer drew on, so the transcript can say `local · 3
-   * sources` rather than asking the reader to take the answer on trust. Zero
-   * for a question, and for an answer the model wrote from what it already had.
+   * Where the answer came from, as a line to put under it.
+   *
+   * **Composed in Rust from the rows the read path returned, never written by
+   * the model.** It is the only thing left telling the reader how fresh an
+   * answer is, now that a read is a query rather than a call somebody else's
+   * API times — so it is the one piece of text here that has to be true, and a
+   * line a model composed could be wrong in the way nothing else would catch.
+   *
+   * Null when nothing local was read: a question the tool loop answered, or a
+   * brief, which is a file the user can open rather than rows Chief assembled.
+   * An empty footer claiming otherwise would be worse than none.
    */
-  sources: number;
+  provenance: string | null;
+}
+
+/** What `ask_agent` resolves with: the answer, and where it came from. */
+export interface Answer {
+  content: string;
+  provenance: string | null;
 }
 
 /** A turn as the backend expects it. */
@@ -69,14 +83,14 @@ export async function askAgent(
   messages: ChatTurn[],
   requestId: string,
   onUpdate: (update: AgentUpdate) => void,
-): Promise<string> {
+): Promise<Answer> {
   // Subscribed before the question is asked, so the opening words are not lost.
   const stopListening = await listen<StreamEvent>(STREAM_EVENT, ({ payload }) => {
     if (payload.requestId === requestId) onUpdate(payload);
   });
 
   try {
-    return await invoke<string>('ask_agent', { messages, requestId });
+    return await invoke<Answer>('ask_agent', { messages, requestId });
   } finally {
     stopListening();
   }
