@@ -19,6 +19,7 @@ mod ical;
 mod ingest;
 mod integrations;
 mod intent;
+mod journal;
 mod linear;
 mod microsoft;
 // OAuth machinery shared by every provider. Part of the crate's library API,

@@ -46,7 +46,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | DLE — local directory permissions      | Shipped                        | DLE-5 / REC-48   | #65       |
 | —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
 | —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7 / REC-50   | —         |
-| —     | DLE — monthly journal roll-up          | Not started                    | DLE-8 / REC-51   | —         |
+| —     | DLE — monthly journal roll-up          | Shipped                        | DLE-8 / REC-51   | #65       |
 | —     | DLE — provenance footers               | Not started                    | DLE-9 / REC-52   | —         |
 | —     | DLE — action links from the feed       | Shipped                        | DLE-10 / REC-53  | #65       |
 | —     | DLE — model-swap and concurrency       | Not started                    | DLE-11 / REC-54  | —         |
@@ -925,6 +925,14 @@ removes from it.**
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **The journal is a second rendering, never a move.** The DLE specification asked for 30-day
+  retention — summarise, then prune. Chief reports nothing anywhere, so the row is the only copy by
+  construction, and a hand-written entry cannot be re-fetched from anything. The roll-up is
+  therefore _rolling_ rather than monthly: rows older than thirty days go in, so early September
+  rewrites `2026-08.md` several times as the rest of August crosses the line. That is why a month
+  file is replaced rather than appended to, and why the rows are ordered by timestamp _and then by
+  id_ — two rows written in the same millisecond are ordinary, and leaving their order to SQLite
+  would make a rerun's bytes depend on the page layout.
 - **A link is rendered from `work_logs.url` and never from a model.** The retrieval context omits
   links because a GitHub URL is 13–15 tokens and more than half a row; the interface putting one
   back from the column is the other half of that trade, and a model that has never seen a link

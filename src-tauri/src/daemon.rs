@@ -23,6 +23,7 @@ use crate::db;
 use crate::github::{self, Involvement, PullRequest, State};
 use crate::ingest;
 use crate::integrations;
+use crate::journal;
 use crate::llama;
 use crate::propose;
 use crate::recipe;
@@ -133,6 +134,7 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
             }
 
             brief_if_the_day_has_none(&app).await;
+            roll_up_old_work(&app).await;
             propose_for_one_thing(&app).await;
 
             // The engine is free to go idle again from here.
@@ -218,6 +220,36 @@ async fn wait_until_due(interval: Duration) {
         if is_due(interval, monotonic.elapsed(), wall) {
             return;
         }
+    }
+}
+
+/// Roll work older than thirty days into a monthly file in the corpus.
+///
+/// One call line rather than a body: [`journal::run_once`] takes its own
+/// `Context`, following this module's, so a whole pass is testable against an
+/// in-memory database and a scratch directory.
+///
+/// **Nothing is deleted.** The roll-up is a second rendering of rows that stay
+/// exactly where they are, so a failure here costs a file that will be written
+/// again next time and nothing else. That is why it is not fatal and why it
+/// runs after the brief: the brief is what somebody is waiting to read.
+async fn roll_up_old_work<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(context) = recipe::context(app).await else {
+        return;
+    };
+
+    let journal = journal::Context {
+        pool: context.pool,
+        corpus: context.corpus,
+        attention: app.state::<Attention>().inner().clone(),
+    };
+
+    if !journal::due(&journal.corpus, chrono::Utc::now()).await {
+        return;
+    }
+
+    if let Err(error) = journal::run_once(&journal).await {
+        eprintln!("the journal could not be written: {error}");
     }
 }
 
