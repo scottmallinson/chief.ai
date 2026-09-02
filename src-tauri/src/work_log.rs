@@ -25,8 +25,19 @@ pub struct WorkLogEntry {
     /// Where the entry came from, e.g. `github` or `calendar`.
     pub source: String,
     pub content: String,
-    /// A one-line achievement, written by the local model.
+    /// A one line summary of what happened. Written deterministically from
+    /// what the provider said (see `ingest`), not generated.
     pub summary: Option<String>,
+    /// Where the thing this describes actually is, canonical and ready to
+    /// open. `None` for an entry the user wrote by hand, and for everything
+    /// logged before migration 8.
+    ///
+    /// **Rendered from this column and never from a model.** The retrieval
+    /// context deliberately omits links — a GitHub URL is 13–15 tokens, more
+    /// than half a row, and a model that has never seen one cannot invent one.
+    /// The interface putting it back from here is the other half of that
+    /// trade.
+    pub url: Option<String>,
     /// Identifies the thing this entry describes, for entries written by the
     /// background daemon. `None` for entries the user wrote themselves.
     pub external_id: Option<String>,
@@ -37,7 +48,7 @@ pub struct WorkLogEntry {
 }
 
 /// The columns that make up a [`WorkLogEntry`], so every query agrees.
-const ENTRY_COLUMNS: &str = "id, timestamp, source, content, summary, external_id, account_id";
+const ENTRY_COLUMNS: &str = "id, timestamp, source, content, summary, url, external_id, account_id";
 
 /// A new entry. `timestamp` defaults to now, `summary` to nothing.
 #[derive(Debug, Clone, Deserialize)]

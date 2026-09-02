@@ -25,7 +25,10 @@ export interface WorkLogEntry {
   source: string;
   content: string;
   summary: string | null;
+  /** Where the thing is, or null when there is nowhere to go. */
+  url: string | null;
   externalId: string | null;
+  accountId: number;
 }
 
 /** A brief, as `todays_brief` and `generate_brief` return it. */
@@ -565,6 +568,11 @@ export function longWorkLog(entries = 40): WorkLogEntry[] {
     source: 'github',
     content: `Merged pull request #${index} in scottmallinson/chief.ai`,
     summary: `Shipped something, number ${index}.`,
+    // Every other one has somewhere to go, so a list mixes rows that carry an
+    // affordance with rows that carry none — which is what the feed actually
+    // holds, since a hand-written entry has no URL.
+    url: index % 2 === 0 ? `https://github.com/scottmallinson/chief.ai/pull/${index}` : null,
     externalId: `scottmallinson/chief.ai#${index}`,
+    accountId: 1,
   }));
 }

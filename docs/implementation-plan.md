@@ -48,7 +48,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7 / REC-50   | —         |
 | —     | DLE — monthly journal roll-up          | Not started                    | DLE-8 / REC-51   | —         |
 | —     | DLE — provenance footers               | Not started                    | DLE-9 / REC-52   | —         |
-| —     | DLE — action links from the feed       | Not started                    | DLE-10 / REC-53  | —         |
+| —     | DLE — action links from the feed       | Shipped                        | DLE-10 / REC-53  | #65       |
 | —     | DLE — model-swap and concurrency       | Not started                    | DLE-11 / REC-54  | —         |
 
 **Step 22 was built before step 14**, out of the numbered order and on the plan's own advice: an
@@ -925,6 +925,11 @@ removes from it.**
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **A link is rendered from `work_logs.url` and never from a model.** The retrieval context omits
+  links because a GitHub URL is 13–15 tokens and more than half a row; the interface putting one
+  back from the column is the other half of that trade, and a model that has never seen a link
+  cannot invent one. The target is the stored value verbatim — canonicalisation happened once, at
+  ingestion, and re-deriving it at render time would mean two places deciding where a link goes.
 - **The app-config directory matters more than the corpus.** The DLE specification asked for `0700`
   on the corpus and never mentioned the directory holding `chief.db`, which is where the OAuth
   tokens actually are. Both are restricted, and the database file is restricted as well as its
