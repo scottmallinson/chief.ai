@@ -122,6 +122,87 @@ pub async fn insert_new(
     Ok(stored)
 }
 
+/// A structured entry from a connected service, ready to be written.
+///
+/// Unused until DLE-2's ingestion pass calls it; see the note in `lib.rs`
+/// beside `mod retrieval`.
+///
+/// Separate from [`NewWorkLogEntry`], which is what the *user* submits by hand
+/// and carries no `url` and no category. This is what ingestion builds: the
+/// fields a feed row and a retrieved search hit need, filled in
+/// deterministically from the provider's own response rather than by asking
+/// the model to write prose about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct WorkLogRecord {
+    /// ISO-8601, UTC.
+    pub timestamp: String,
+    pub source: String,
+    /// What kind of thing this is: `pr`, `issue`, `calendar`, `message`.
+    pub category: String,
+    /// One line, and the field search ranks most heavily.
+    pub title: String,
+    /// The fuller text, kept because the work log view renders it.
+    pub content: String,
+    /// One or two sentences. Written deterministically, not generated.
+    pub summary: Option<String>,
+    /// The canonical link a person would open, with tracking parameters
+    /// already stripped. Never put in a prompt — see `retrieval`.
+    pub url: Option<String>,
+    /// Optional path to a corpus file holding the detail.
+    pub raw_ref: Option<String>,
+    /// The provider's identifier for the thing, which is half the dedupe key.
+    pub external_id: String,
+    pub account_id: i64,
+}
+
+/// Write a record, replacing the one that account already stored for it.
+///
+/// The conflict target has to name the *partial* index migration 3 built, so
+/// the `WHERE external_id IS NOT NULL` is repeated here rather than omitted:
+/// SQLite matches an upsert target against the index definition, and without
+/// the predicate it finds no unique index to use and rejects the statement.
+///
+/// This is `DO UPDATE` where [`insert_new`] is `DO NOTHING`, and that is the
+/// difference between a log and a mirror. A pull request that was open when it
+/// was first seen and is merged by the next pass has to change; an entry the
+/// daemon can never revise would leave the feed asserting something that has
+/// stopped being true.
+///
+/// `account_id` is deliberately not updated: it is part of the key, so a row
+/// that matched already has it.
+#[allow(dead_code)]
+pub async fn upsert(pool: &SqlitePool, record: WorkLogRecord) -> Result<(), Error> {
+    sqlx::query(
+        "INSERT INTO work_logs
+             (timestamp, source, category, title, content, summary, url, raw_ref,
+              external_id, account_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT (source, account_id, external_id) WHERE external_id IS NOT NULL
+         DO UPDATE SET timestamp = excluded.timestamp,
+                       category  = excluded.category,
+                       title     = excluded.title,
+                       content   = excluded.content,
+                       summary   = excluded.summary,
+                       url       = excluded.url,
+                       raw_ref   = excluded.raw_ref",
+    )
+    .bind(record.timestamp)
+    .bind(record.source)
+    .bind(record.category)
+    .bind(record.title)
+    .bind(record.content)
+    .bind(record.summary)
+    .bind(record.url)
+    .bind(record.raw_ref)
+    .bind(record.external_id)
+    .bind(record.account_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 /// Whether this account has already logged that thing.
 pub async fn has_logged(
     pool: &SqlitePool,
@@ -441,5 +522,141 @@ mod deduplication_tests {
         assert!(!has_logged(&pool, "github", 3, "owner/repo#7")
             .await
             .expect("should read"));
+    }
+
+    fn record(account_id: i64, title: &str, state: &str) -> WorkLogRecord {
+        WorkLogRecord {
+            timestamp: "2026-09-01T09:00:00.000Z".to_string(),
+            source: "github".to_string(),
+            category: "pr".to_string(),
+            title: title.to_string(),
+            content: format!("{title} is {state}"),
+            summary: Some(state.to_string()),
+            url: Some("https://github.com/o/r/pull/7".to_string()),
+            raw_ref: None,
+            external_id: "owner/repo#7".to_string(),
+            account_id,
+        }
+    }
+
+    async fn titles(pool: &SqlitePool) -> Vec<String> {
+        sqlx::query_scalar("SELECT title FROM work_logs ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .expect("should read")
+    }
+
+    /// The difference between `upsert` and `insert_new`: a pull request that
+    /// was open when it was first seen and is merged by the next pass has to
+    /// change, or the feed keeps asserting something that stopped being true.
+    #[tokio::test]
+    async fn upserting_the_same_thing_revises_it_rather_than_repeating_it() {
+        let pool = migrated_pool().await;
+
+        upsert(&pool, record(1, "Add PKCE auth handler", "open"))
+            .await
+            .expect("should store");
+        upsert(&pool, record(1, "Add PKCE auth handler", "merged"))
+            .await
+            .expect("should store");
+
+        assert_eq!(titles(&pool).await.len(), 1, "one row, not two");
+
+        let summary: Option<String> = sqlx::query_scalar("SELECT summary FROM work_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("should read");
+
+        assert_eq!(
+            summary.as_deref(),
+            Some("merged"),
+            "the second call's values should win"
+        );
+    }
+
+    /// Two people's accounts legitimately see the same pull request number.
+    ///
+    /// This is why the dedupe index carries `account_id` and why the
+    /// specification's `external_id TEXT UNIQUE NOT NULL` would have been
+    /// wrong: it would have made the second account's copy unstorable.
+    #[tokio::test]
+    async fn two_accounts_can_each_hold_the_same_item() {
+        let pool = migrated_pool().await;
+
+        upsert(&pool, record(1, "Add PKCE auth handler", "open"))
+            .await
+            .expect("should store");
+        upsert(&pool, record(2, "Add PKCE auth handler", "open"))
+            .await
+            .expect("should store");
+
+        assert_eq!(
+            titles(&pool).await.len(),
+            2,
+            "the same external id under a different account is different work"
+        );
+    }
+
+    /// The other half of the same index: entries the user typed have no
+    /// external id, and SQLite does not consider two NULLs equal, so the
+    /// partial index exempts them and repetition is allowed.
+    #[tokio::test]
+    async fn two_hand_written_entries_never_collide() {
+        let pool = migrated_pool().await;
+
+        for _ in 0..2 {
+            insert(
+                &pool,
+                NewWorkLogEntry {
+                    source: "note".to_string(),
+                    content: "Spoke to Dana".to_string(),
+                    timestamp: None,
+                    summary: None,
+                    external_id: None,
+                    account_id: None,
+                },
+            )
+            .await
+            .expect("a hand-written entry is never a duplicate of another");
+        }
+
+        assert_eq!(titles(&pool).await.len(), 2);
+    }
+
+    /// An upsert has to keep the index in step, which it only does if the
+    /// update trigger fires — the reason the `DO UPDATE` writes through the
+    /// table rather than anywhere else.
+    ///
+    /// **This is the guard on migration 8's update trigger**, and it is the
+    /// only one: removing the `'delete'` half of that trigger leaves a full
+    /// FTS5 `'integrity-check'` passing, and fails here. So a search index
+    /// test that lives beside the schema proves less than one that asks the
+    /// question a reader would — which is why the integrity check that used to
+    /// be in `db.rs` was taken out rather than kept for reassurance.
+    ///
+    /// ```text
+    /// the superseded title should be out of the index
+    ///   left: 1
+    ///  right: 0
+    /// ```
+    #[tokio::test]
+    async fn revising_an_entry_revises_what_search_will_find() {
+        let pool = migrated_pool().await;
+
+        upsert(&pool, record(1, "Add PKCE auth handler", "open"))
+            .await
+            .expect("should store");
+        upsert(&pool, record(1, "Add device flow handler", "merged"))
+            .await
+            .expect("should store");
+
+        let stale: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM work_logs_fts WHERE work_logs_fts MATCH '\"pkce\"'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("the index should be searchable");
+
+        assert_eq!(stale, 0, "the superseded title should be out of the index");
     }
 }
