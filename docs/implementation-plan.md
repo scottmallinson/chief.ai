@@ -40,7 +40,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | "What is waiting on me?"               | Shipped                        | REC-41           | #62       |
 | —     | DLE — structured log, FTS5, sync state | Shipped                        | DLE-0 / REC-43   | #65       |
 | —     | DLE — zero-network read path           | Shipped                        | DLE-1 / REC-44   | #65       |
-| —     | DLE — deterministic ingestion          | Not started                    | DLE-2 / REC-45   | —         |
+| —     | DLE — deterministic ingestion          | Shipped                        | DLE-2 / REC-45   | #65       |
 | —     | DLE — freshness in the interface       | Not started                    | DLE-3 / REC-46   | —         |
 | —     | DLE — unlinking deletes its data       | Not started                    | DLE-4 / REC-47   | —         |
 | —     | DLE — local directory permissions      | Not started                    | DLE-5 / REC-48   | —         |
@@ -918,12 +918,20 @@ removes from it.**
 | **Reviewers in `team_structure.md`**   | GitHub's search response carries none, so it is a call per pull request                                                                   | REC-16      |
 | **`glib` GHSA-wrw7-89jp-8q8g**         | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                      | SECURITY.md |
 | **AC/battery polling cadence**         | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                              | DLE-2       |
+| **A control for the pass interval**    | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. It belongs with the rest of the settings screen                | DLE-3       |
 | **Whether `work_logs` is ever pruned** | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                   | DLE-8       |
 | **`busy_timeout` through the plugin**  | `tauri-plugin-sql` owns the pool and `busy_timeout` is per-connection, so it may not be reachable without patching. `sqlx` defaults to 5s | DLE-11      |
 | **FTS5 query semantics**               | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                             | DLE-0       |
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **A pass is due when either clock says so, never when both do.** `Instant` does not advance
+  across a suspend on Linux, so a laptop closed for four hours wakes believing four minutes passed;
+  the wall clock does advance, but it also moves when NTP steps it backwards, and requiring both
+  would let a correction postpone the pass for as long as it lasted. Taking the earlier of the two
+  means a wrong clock can make a pass early and can never stop one happening. It answers _whether_,
+  never _how many_: a machine suspended across four scheduled passes runs one, because the other
+  three would read the same page and upsert the same unchanged rows.
 - **A file the user edited is judged by content, not mtime** (`profile::is_untouched`). mtime moves
   on a checkout, a sync or a restored backup without a byte changing.
 - **A routed intent that finds nothing steps aside** rather than answering "you have nothing",
