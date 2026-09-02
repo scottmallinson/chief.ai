@@ -4,10 +4,11 @@ A synthesis of the **Enterprise Blueprint**, the **PRD** and **The Hybrid Model 
 Chat")**, reconciled against the code in this repository — including the work on
 `feature/integration-roadmap-priority-5cb1bc` — and written to be executed autonomously.
 
-**Revision 5.** Revision 1 was written against `main` and did not account for the integration
+**Revision 6.** Revision 1 was written against `main` and did not account for the integration
 branch. Revision 2 reconciled with it. Revision 3 took all eight decisions. Revision 4 was the first to
-live on `main`. **Revision 5 is the first written in the same pull request as the code it
-describes** — see §0 for the ledger and §6 for what changed.
+live on `main`. Revision 5 was the first written in the same pull request as the code it
+describes. **Revision 6 reconciles the plan with the Decoupled Local Engine specification** — see
+§0 for the ledger, §2's D9 for the decision it turns on, and §6 for what changed.
 
 > **This is a living document.** It is updated in the same pull request as the work it describes,
 > not afterwards. §8 says how. A plan that records what was intended, and never what happened, is
@@ -20,23 +21,35 @@ describes** — see §0 for the ledger and §6 for what changed.
 
 The current state of every step. **Update this table in the pull request that changes it.**
 
-| Step  | What                                 | State                          | Issue            | Landed as |
-| ----- | ------------------------------------ | ------------------------------ | ---------------- | --------- |
-| 1–6   | Scaffolding through work log         | Shipped                        | —                | pre-plan  |
-| 7     | Generic integration layer            | Shipped                        | —                | pre-plan  |
-| 8     | Model revert, probe, tiering, thrift | Shipped                        | —                | —         |
-| 9     | Outlook Mail and Calendar            | Shipped                        | —                | —         |
-| 10    | Corpus layer and context budget      | Shipped                        | REC-10 (watcher) | #57       |
-| 11    | Recipe engine and the first brief    | Shipped                        | —                | —         |
-| 12    | Executive Feed and the chat drawer   | Shipped                        | REC-14           | #52       |
-| 13    | Deterministic intent routing         | Shipped                        | REC-15           | #53       |
-| 14    | Proposed Actions, drafted            | Shipped                        | REC-17           | #55       |
-| 15    | The send path                        | **Not started — deliberately** | REC-18           | —         |
-| 16–21 | Integration fan-out                  | Not started                    | —                | —         |
-| 22    | Bootstrapping the corpus             | Shipped                        | REC-16           | #54       |
-| —     | Calendar by .ics subscription        | Shipped                        | REC-39           | #60       |
-| —     | Linear by pasted API key             | Shipped                        | REC-40           | #61       |
-| —     | "What is waiting on me?"             | Shipped                        | REC-41           | #62       |
+| Step  | What                                   | State                          | Issue            | Landed as |
+| ----- | -------------------------------------- | ------------------------------ | ---------------- | --------- |
+| 1–6   | Scaffolding through work log           | Shipped                        | —                | pre-plan  |
+| 7     | Generic integration layer              | Shipped                        | —                | pre-plan  |
+| 8     | Model revert, probe, tiering, thrift   | Shipped                        | —                | —         |
+| 9     | Outlook Mail and Calendar              | Shipped                        | —                | —         |
+| 10    | Corpus layer and context budget        | Shipped                        | REC-10 (watcher) | #57       |
+| 11    | Recipe engine and the first brief      | Shipped                        | —                | —         |
+| 12    | Executive Feed and the chat drawer     | Shipped                        | REC-14           | #52       |
+| 13    | Deterministic intent routing           | Shipped                        | REC-15           | #53       |
+| 14    | Proposed Actions, drafted              | Shipped                        | REC-17           | #55       |
+| 15    | The send path                          | **Not started — deliberately** | REC-18           | —         |
+| 16–21 | Integration fan-out                    | Not started                    | —                | —         |
+| 22    | Bootstrapping the corpus               | Shipped                        | REC-16           | #54       |
+| —     | Calendar by .ics subscription          | Shipped                        | REC-39           | #60       |
+| —     | Linear by pasted API key               | Shipped                        | REC-40           | #61       |
+| —     | "What is waiting on me?"               | Shipped                        | REC-41           | #62       |
+| —     | DLE — structured log, FTS5, sync state | Not started                    | DLE-0 / REC-43   | —         |
+| —     | DLE — zero-network read path           | Not started                    | DLE-1 / REC-44   | —         |
+| —     | DLE — deterministic ingestion          | Not started                    | DLE-2 / REC-45   | —         |
+| —     | DLE — freshness in the interface       | Not started                    | DLE-3 / REC-46   | —         |
+| —     | DLE — unlinking deletes its data       | Not started                    | DLE-4 / REC-47   | —         |
+| —     | DLE — local directory permissions      | Not started                    | DLE-5 / REC-48   | —         |
+| —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
+| —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7 / REC-50   | —         |
+| —     | DLE — monthly journal roll-up          | Not started                    | DLE-8 / REC-51   | —         |
+| —     | DLE — provenance footers               | Not started                    | DLE-9 / REC-52   | —         |
+| —     | DLE — action links from the feed       | Not started                    | DLE-10 / REC-53  | —         |
+| —     | DLE — model-swap and concurrency       | Not started                    | DLE-11 / REC-54  | —         |
 
 **Step 22 was built before step 14**, out of the numbered order and on the plan's own advice: an
 empty corpus is step 14's failure mode, and a draft written against seven empty starter files is
@@ -54,6 +67,7 @@ the generic output that step exists to avoid.
 | D6       | Taken, built, **measured**     | `e2e/feed.spec.ts` asserts the detail width does not change |
 | D7       | Taken, built                   | `engine.rs`                                                 |
 | D8       | Acknowledged, **still open**   | A measurement on real hardware. See §9                      |
+| D9       | Taken, **not yet built**       | Reads from local storage. DLE-0 through DLE-11              |
 
 ---
 
@@ -176,6 +190,18 @@ being pre-emptively distrusted.
 The precision problem is answered elsewhere and better: **step 13's intent router** takes the
 questions that should never have reached a tool at all, at zero token cost.
 
+#### Proposed a second time, and refused again — revision 6
+
+The DLE specification asks for a `ModelAdapter` carrying `supports_native_tools()`. That is this
+flag, under a different name, and it is refused for the reasons above rather than re-argued.
+Recorded here so it is not proposed a third time.
+
+Its sibling, `ExecutionStrategy::GrammarConstrainedJson`, is refused on a different ground: **it
+would have no users.** `weights.rs`'s catalogue holds two models and both are Llama, which
+llama.cpp lists as natively tool-calling. A code path no catalogue entry reaches cannot be tested
+against anything real, and a test that only exercises a stub is how a guard comes to assert
+nothing. Build it on the day a model that needs it enters the catalogue.
+
 ### D2 — Keep the tool loop, demote it below recipes, cap it with a test. ✅
 
 Recipes become the primary path for everything Chief does on its own initiative. The loop remains the
@@ -275,6 +301,34 @@ maths is right; it cannot assert the numbers.
 when the harness ships and its unit tests pass — not when the table in §3 is filled in. Filling that
 table is a separate, manual act, and the plan does not block on it.
 
+### D9 — A read question is answered from local storage, never from a live API. ✅
+
+The Decoupled Local Engine specification's first tier is right, and Chief does not meet it today.
+`intent::prep` — _"what are my meetings?"_, which is the specification's own example of a read —
+calls Microsoft Graph while the user waits (`intent.rs:145-158`), and all three tools in the
+catalogue reach the network (`tools.rs:219-236`). So **every read question that falls through the
+router leaves the machine**, and its latency is a third party's to decide.
+
+The decision: the daemon ingests into `work_logs`; a read question is answered from an FTS5 index
+over that table; the model, when it is called at all, sees only what SQLite returned. Reads become
+sub-second and work offline.
+
+**What it costs, stated plainly. An answer is only as fresh as the last sync.** Chief used to be
+wrong slowly; it can now be stale quickly, and staleness is invisible in a way a spinner is not.
+That is the whole reason `sync_state` is surfaced in the interface (DLE-3) rather than kept as an
+implementation detail — the trade is only honest if the user can see it.
+
+Three consequences worth naming before they are discovered:
+
+- **The tool catalogue's budget stops binding.** Tools that fetch become tools that query, or stop
+  being tools at all. The 515-of-600 figure in §9 is measured against the current three and will
+  move; measure it again rather than assuming which way.
+- **Two ceilings, and neither absorbs the other.** `context::RETRIEVAL_CEILING` (300 tokens) governs
+  the snippet a read question injects; `context::DEFAULT_CEILING` (2,400) still governs recipe and
+  brief assembly. Collapsing them to one number would gut the brief — see §3.
+- **The write path is untouched.** D4 and step 15 are unaffected: an action still reaches the
+  network, deliberately and once, and that boundary stays exactly where it is.
+
 ---
 
 ## 3. The governing constraint: the hardware budget
@@ -329,6 +383,44 @@ to the blueprint's own thesis than the blueprint's own recommendation.
 | -------- | ------------------- | ---- | ------------- | ------------ | --------- |
 | Standard | Llama 3.2 3B Q4_K_M | 8192 | _pending_     | _pending_    | _pending_ |
 | Light    | _1B-class fallback_ | 4096 | _pending_     | _pending_    | _pending_ |
+
+### Three numbers the DLE specification asked for, corrected — revision 6
+
+Recorded here rather than argued again each time somebody proposes them.
+
+**Time to first token is not a number you can pick.** The specification asks for **≤ 1.5s at ≤ 2,000
+prompt tokens** on CPU prefill. At the 18–34 tokens a second this section describes, 2,000 tokens is
+**60 to 110 seconds**; even 300 tokens is 9 to 17. The target is off by roughly two orders of
+magnitude against a cold prefill, and it is only meaningful for the **volatile suffix past a cached
+prefix** — which is lever 2 above, and the reason lever 2 is worth building. So the gate reads
+_"≤ 1.5s for the suffix on a warm prefix"_, it is filled in by `chief doctor` on real hardware, and
+**CI never asserts it**: a runner cannot answer that question, which is the whole of D8.
+
+**Resident memory is chosen, not capped.** The specification asks to "cap runtime allocations" to
+≤ 4 GB. llama.cpp has no such cap; the number is the model plus its KV cache, and both are decided
+before the server starts. Llama 3.2 3B is 28 layers × 8 KV heads × 128 head dim, so **112 KiB per
+token** of f16 KV — **0.875 GiB at ctx 8192**, on top of ~2.0 GB of weights, ≈ **2.9 GB**. That fits
+under 4 GB with less room than the specification implies. The three levers that actually move it are
+the tier (`probe.rs`), `--ctx-size` (D7) and **KV quantisation** (`--cache-type-k/v q8_0`, roughly
+halving the KV term), which Chief does not currently use. Enforcement is selection plus measurement.
+
+**Two ceilings, not one.** The specification asks for ≤ 300 tokens of injected context. That is
+right for a read question and wrong for a brief. Measured on its own example line, a row carrying an
+inline GitHub link costs 34–38 tokens — **the URL alone is 13–15 of them** — so 300 tokens buys 8 or
+9 rows. Drop the URL, which the model has no use for and which the interface renders from
+`work_logs.url` anyway, and the same row costs 14–16 tokens: **19 to 21 rows in the same 300**. Eight
+rows is not an answer to "what did I ship this week?"; twenty is. So:
+
+| Ceiling                      | Value | Governs                                           |
+| ---------------------------- | ----- | ------------------------------------------------- |
+| `context::RETRIEVAL_CEILING` | 300   | the FTS5 snippet a read question injects (new)    |
+| `context::DEFAULT_CEILING`   | 2,400 | recipe and brief assembly (unchanged, D7)         |
+| assembled prompt             | 2,000 | hard truncation of **chat history**, oldest first |
+
+One caveat that belongs beside the 300 rather than in a footnote: it is measured with
+`context::BYTES_PER_TOKEN`, which is 3 and still uncalibrated (§9). The gate therefore has to use
+the **same estimator as the truncator**, so it is at least self-consistent, and be written against
+the estimate rather than a true token count.
 
 ---
 
@@ -600,6 +692,80 @@ has edited — `mtime` against the step-10 index.
 
 **Risk.** Low-medium. The privacy story needs stating plainly in the UI.
 
+### The Decoupled Local Engine — D9, as twelve issues
+
+_Not a step. The spine's steps are strictly ordered because each one's substrate is the one before
+it; these are deliberately not, and the shape is the point._
+
+**Delivers.** D9: a read question answered from SQLite, in the time a query takes, with the network
+untouched.
+
+**One issue blocks, eleven do not.** The single genuine coupling in this work is the schema, so it
+is confined to **DLE-0** — migration **v8** (the next free version; v7 is `proposed_actions`), plus
+the seams the rest fill in: `retrieval::search`, `work_log::upsert`, and the `sync_state` accessors.
+`scripts/check-migrations.mjs` requires contiguous versions, so two branches each writing v8 would
+collide on merge — which is exactly why there is only one. After DLE-0 lands, each remaining issue
+owns its own module and the only shared file is `lib.rs`, which gains one registration line each.
+
+| Issue     | Owns                                                    | Note                                      |
+| --------- | ------------------------------------------------------- | ----------------------------------------- |
+| **DLE-0** | `db.rs`, `retrieval.rs`, `sync_state.rs`, `work_log.rs` | Blocks the other eleven                   |
+| DLE-1     | `intent.rs`, `retrieval.rs`, `context.rs`               | The zero-network read path                |
+| DLE-2     | `ingest.rs`, `daemon.rs`, `settings.rs`                 | Deterministic minification, no model call |
+| DLE-3     | `sync_state.rs`, `SettingsView.tsx`, `Layout.tsx`       | D9's cost, made visible                   |
+| DLE-4     | `connect.rs`, `integrations.rs`, `proposed.rs`          | Unlinking deletes its data                |
+| DLE-5     | `perms.rs`, `corpus.rs`                                 | `0700` on the corpus **and** app config   |
+| DLE-6     | `adapter.rs`                                            | The seam, not the capability flag         |
+| DLE-7     | `llama.rs`, `engine.rs`, `probe.rs`                     | Truncation; TTFT measured, not asserted   |
+| DLE-8     | `journal.rs`                                            | Roll up, delete nothing                   |
+| DLE-9     | `ChatView.tsx`, `agent.rs`                              | **blockedBy DLE-1** — the one edge left   |
+| DLE-10    | `TodayView.tsx`, `work_log.rs`                          | Links from `work_logs.url`, no model      |
+| DLE-11    | `db.rs` tests, `weights.rs` tests                       | Model-swap isolation; WAL concurrency     |
+
+The twelve are **REC-43 through REC-54** in Linear, in that order, each carrying
+`agent-executable`; DLE-0 and DLE-4 also carry `risk:high`. Every one is `blockedBy` REC-43 except
+DLE-5, DLE-6 and DLE-7, which touch no schema, and DLE-9, which is `blockedBy` DLE-1.
+
+Three mechanics make that table true rather than aspirational. A command lives in the module that
+owns it, never in `connect.rs`, which DLE-4 rewrites. DLE-8's monthly pass is a `journal::run_once`
+taking a `Context`, following `daemon::run_once`, so `daemon.rs` gains a call and not a body. And
+DLE-2 removes the model call from ingestion, which is what lets the cadence move at all — a pass
+that wakes the engine every 15 minutes against a 10-minute `IDLE_TIMEOUT` would mean the engine
+never idles, which is §3's third lever undone.
+
+**In scope, against what is already built.** Migration v8 is **additive**: `content` and `account_id`
+stay, and `external_id` stays nullable behind the partial index migration v3 rebuilt
+(`(source, account_id, external_id) WHERE external_id IS NOT NULL`). The specification's
+`external_id TEXT UNIQUE NOT NULL` would break both a hand-written entry and a second account on the
+same service. `sync_state` is keyed on `account_id`, not on `source`, for the same reason: a person
+with a work and a personal GitHub has two. The FTS5 table is external-content over `work_logs` with
+Porter stemming, and its migration **must** end in
+`INSERT INTO work_logs_fts(work_logs_fts) VALUES('rebuild')` — without it every existing install
+searches an empty index and returns nothing while looking perfectly healthy.
+
+**Verified by.** Guard tests, every one of them through the `proving-a-guard-test` skill: the
+rebuild, the ceiling, the "no non-loopback request", the "nothing was deleted", the "no duplicate
+row". Two of the specification's own five acceptance criteria do not survive contact and are
+restated rather than copied. **"0 outgoing HTTP requests" is impossible** — every answer talks to
+`127.0.0.1:11435` — so it reads _no request to a non-loopback host_, built the way
+`propose::never_reaches_the_network_to_draft` is, with the request list asserted non-empty before it
+is asserted clean. **The stemming test fails as written**: FTS5 `MATCH` is AND across terms, so
+`"login refactor"` against _"Refactored OAuth handler"_ matches `refactor` and not `login`, and
+returns nothing on a correct implementation. It becomes a real stem pair, and the AND-versus-OR
+choice is written down instead of inherited.
+
+**Risk.** Medium. The schema is live and populated, which is why the migration is one issue and
+carries `risk:high`. The rest is additive.
+
+**Two things the specification asked for and this does not build.** Neither is a scoping accident.
+**Pruning `work_logs` after 30 days** deletes the only copy of the user's history — "what did I ship
+last quarter?" stops working, and a hand-written entry cannot be re-fetched — so DLE-8 writes the
+monthly roll-up and keeps every row; whether pruning is ever wanted is in §9. **Battery-aware
+polling** (15 minutes on AC, 45 on battery) needs a new crate and platform-conditional code, which
+CLAUDE.md records as where the last two bugs on `main` came from, and Tauri raises no sleep event
+to pause on; the cadence becomes a `settings` value defaulting to 30 minutes, a missed pass is
+detected from monotonic-versus-wall-clock drift, and the AC/battery split is in §9.
+
 ---
 
 ## 5. Out of scope
@@ -647,6 +813,22 @@ has edited — `mtime` against the step-10 index.
 | ------------------------------------------ | -------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | Step 10 partial; watcher tracked as REC-10 | Step 10 complete                                   | The watcher landed. `watcher.rs`, `notify`, a pure debounce                            |
 | A watcher must not react to Chief's writes | It cannot loop, and needs no mechanism to avoid it | Reindexing writes only to SQLite, so the cycle has no closing edge. Asserted by a test |
+
+### Revision 5 → revision 6
+
+Prompted by the Decoupled Local Engine specification, reconciled against the code rather than
+adopted.
+
+| Revision 5 said                             | Revision 6 says                                                     | Why                                                                                                                                           |
+| ------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Eight decisions                             | Nine. **D9** — a read is answered from local storage                | The specification's first tier is right, and Chief does not meet it: `intent::prep` calls Graph while the user waits                          |
+| One injected-context ceiling of 2,400       | Two, named separately: 300 retrieval, 2,400 assembly                | 300 is right for a read row and would gut the brief. Measured: dropping the URL takes a row from 34–38 tokens to 14–16, so 300 buys 20 not 8  |
+| —                                           | TTFT is a **warm-prefix** measurement, never a CI assertion         | ≤1.5s at 2,000 prompt tokens is 60–110s at this machine's prefill rate. The target only means anything past a cached prefix. D8               |
+| —                                           | Resident memory is chosen, not capped                               | llama.cpp has no allocation cap. 112 KiB/token of KV → 0.875 GiB at ctx 8192 on ~2.0 GB of weights. KV quantisation is the unused lever       |
+| D1: `supports_tools` was refused once       | Refused again, and `GrammarConstrainedJson` with it                 | The specification proposes the same flag as `supports_native_tools`. Both catalogue models are Llama, so the grammar path would have no users |
+| Steps are strictly ordered within the spine | The DLE work is twelve issues, one of which blocks the other eleven | The only real coupling is migration v8. Confining it to one issue is what lets the rest be worked at once                                     |
+| Daemon interval fixed at 30 minutes         | A `settings` value, default 30. AC/battery split deferred           | A 15-minute pass fights the 10-minute `IDLE_TIMEOUT`; battery state needs a crate and platform code. §9                                       |
+| —                                           | Old work is rolled up, never pruned                                 | The specification deletes rows after 30 days. That is the only copy, and a hand-written entry cannot be re-fetched. User decision             |
 
 ---
 
@@ -718,11 +900,15 @@ removes from it.**
 
 ### Unclaimed engineering
 
-| What                                 | Note                                                                    | Where       |
-| ------------------------------------ | ----------------------------------------------------------------------- | ----------- |
-| **Tokens in the OS keychain**        | Stored as plain text, protected by the OS user account                  | —           |
-| **Reviewers in `team_structure.md`** | GitHub's search response carries none, so it is a call per pull request | REC-16      |
-| **`glib` GHSA-wrw7-89jp-8q8g**       | Accepted, not fixed. Linux-only and unreachable from a shipped build    | SECURITY.md |
+| What                                   | Note                                                                                                                                      | Where       |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| **Tokens in the OS keychain**          | Stored as plain text, protected by the OS user account                                                                                    | —           |
+| **Reviewers in `team_structure.md`**   | GitHub's search response carries none, so it is a call per pull request                                                                   | REC-16      |
+| **`glib` GHSA-wrw7-89jp-8q8g**         | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                      | SECURITY.md |
+| **AC/battery polling cadence**         | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                              | DLE-2       |
+| **Whether `work_logs` is ever pruned** | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                   | DLE-8       |
+| **`busy_timeout` through the plugin**  | `tauri-plugin-sql` owns the pool and `busy_timeout` is per-connection, so it may not be reachable without patching. `sqlx` defaults to 5s | DLE-11      |
+| **FTS5 query semantics**               | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                             | DLE-0       |
 
 ### Settled during implementation, recorded so it is not re-litigated
 
@@ -734,7 +920,7 @@ removes from it.**
 - **A dismissed proposal keeps its dedupe slot**, or the next pass drafts it again.
 - **A calendar subscription address is a credential, not a setting.** It grants read access to a
   whole calendar to anyone holding it, so it is stored like a token and never displayed.
-- **A new integration does not get a new tool.** The catalogue is at 477 of D2's 600-token cap, so
+- **A new integration does not get a new tool.** The catalogue is at 515 of D2's 600-token cap, so
   the fourth breaks it. New sources feed the recipes and the router, which cost nothing per turn.
 - **A pasted key or URL is a credential, not a setting.** Both Linear and the calendar store one the
   way an OAuth token is stored, and neither is ever shown again.
@@ -748,3 +934,14 @@ removes from it.**
   to SQLite, so a self-triggered loop has no closing edge. The debounce is the whole mechanism.
 - **The watcher is an optimisation, not a dependency.** Reindex-on-command still runs, so a machine
   where the watch could not be established is exactly as correct as one from before it existed.
+- **The URL is the expensive half of a retrieved row, and the model has no use for it.** 13–15 of a
+  row's 34–38 tokens. It is stripped from the injected context and re-attached by Rust from
+  `work_logs.url` afterwards, which also means a link cannot be hallucinated.
+- **A provenance footer is written by Rust, never by the model.** A footer the model composes is a
+  footer it can get wrong, which is the one thing a provenance footer may not be.
+- **`purge` keys on `account_id`, never on `source`.** Migration v3 made the account the unit;
+  unlinking one of two GitHub accounts must not take the other's history with it.
+- **`0700` on the corpus is not enough on its own.** The corpus holds markdown; the database and the
+  OAuth tokens live in the app-config directory, and that is the one the specification omitted.
+- **An external-content FTS5 migration ends in `'rebuild'`.** Without it the index is empty on every
+  existing install and search returns nothing while looking healthy.
