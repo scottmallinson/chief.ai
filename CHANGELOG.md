@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.0 (2026-09-03)
+
+### Features
+
+- **agent:** give the prompt path a seam, without a capability flag ([31cd9d3](https://github.com/scottmallinson/chief.ai/commit/31cd9d33d76cf9fdf960957e6cef22a57c5bf45a))
+- **agent:** cap the chat prompt, and measure the figure the target meant ([7d8bbf3](https://github.com/scottmallinson/chief.ai/commit/7d8bbf335e0e67f7a690dc84bdace29a8b64868d))
+- **agent:** say where an answer came from, in words Rust wrote ([798589a](https://github.com/scottmallinson/chief.ai/commit/798589ac8d681c33c9f91a2e92798d230ca465e2))
+- **corpus:** roll old work into a monthly journal, deleting nothing ([87a1510](https://github.com/scottmallinson/chief.ai/commit/87a1510f4e28a89f004649ba658e28684fdb540b))
+- **ui:** let the feed open the thing an entry is about ([cd58712](https://github.com/scottmallinson/chief.ai/commit/cd58712005903d46d26d5febb7e5346cc40f4d2c))
+- **tauri:** restrict the local data directories to their owner ([6be8c1c](https://github.com/scottmallinson/chief.ai/commit/6be8c1c32fc984a3888d6d0b1ed393ce8da7c695))
+- **ui:** say how fresh each connection is, and which one needs you ([8b997b6](https://github.com/scottmallinson/chief.ai/commit/8b997b603f8d7f5ebe2013f79e98c47121b80833))
+- **daemon:** take the pass interval from settings, and read two clocks ([b6632ab](https://github.com/scottmallinson/chief.ai/commit/b6632ab722da4197c8b747217bdfb34de34cddb4))
+- **daemon:** ingest deterministically, and record what each account is doing ([c812eb6](https://github.com/scottmallinson/chief.ai/commit/c812eb6e6d415040c0a6add8438cac3c8058123c))
+- **agent:** answer read questions from the work log, not the network ([a2ead2e](https://github.com/scottmallinson/chief.ai/commit/a2ead2eb11c08b234c89b3a02af81f1158f31c8f))
+- **db:** structure the work log and index it for search ([2a1ccd8](https://github.com/scottmallinson/chief.ai/commit/2a1ccd8e24f31999cb9537055cde6d37e7313dec))
+- **agent:** answer the question the composer has been offering all along ([4dc0d6d](https://github.com/scottmallinson/chief.ai/commit/4dc0d6d77354d757af3fc405f257fe98d7c38c7f))
+- **integrations:** read what Linear says is assigned to you ([69146dc](https://github.com/scottmallinson/chief.ai/commit/69146dccc249ba2b6b488c3f806c76d43f15e360))
+- **corpus:** read a calendar the user subscribed to, with nothing to register ([3889248](https://github.com/scottmallinson/chief.ai/commit/388924844e72aa77ac1369ae37240f22682f7dab))
+- **db:** notice the file the user edited in their own editor ([58d5a21](https://github.com/scottmallinson/chief.ai/commit/58d5a216bbc73ede2b0b2c7efa00530e5f14e9b5))
+- **agent:** draft the thing before the user asks, and send none of it ([f8aed24](https://github.com/scottmallinson/chief.ai/commit/f8aed249e9e0e6de433a2db08920884ddecc4c27))
+- **agent:** seed the profile from the user's own work, with their consent ([1687dfc](https://github.com/scottmallinson/chief.ai/commit/1687dfcd0b848aaa108a07d6d37c2ee366dfef97))
+- **agent:** answer the questions this machine already knows, without a model ([e0d238e](https://github.com/scottmallinson/chief.ai/commit/e0d238e99266391563332592764fafe61ea78965))
+- **ui:** put the brief on screen, and move chat into a drawer over it ([deaf9fb](https://github.com/scottmallinson/chief.ai/commit/deaf9fb875cb05e5fc1ce1513ef096f37b5333a5))
+
+### Fixes
+
+- **integrations:** make disconnecting an account delete its data ([8083e93](https://github.com/scottmallinson/chief.ai/commit/8083e93f42e78f299a0c7b22f7b5e5e964ebd34b))
+- **ui:** stop a regex lookbehind opening the app as a white screen (#59) ([fb50b0d](https://github.com/scottmallinson/chief.ai/commit/fb50b0de02e1ae12a293c65d8b811006d9c484fa))
+- **agent:** stop a long answer being killed, and thrown away, at five minutes ([93ee3b0](https://github.com/scottmallinson/chief.ai/commit/93ee3b0d1305d2d549f77bda58df1756224a5f25))
+
 ## 0.3.1 (2026-08-29)
 
 ### Fixes
