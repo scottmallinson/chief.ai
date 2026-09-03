@@ -7,7 +7,7 @@ import { Dots } from '@/components/ui/activity';
 import { Freshness } from '@/components/Freshness';
 import { useSync } from '@/hooks/use-sync';
 import { useWorkLog } from '@/hooks/use-work-log';
-import type { WorkLogEntry } from '@/lib/work-log';
+import { readEntry, type WorkLogEntry } from '@/lib/work-log';
 
 const timeFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: 'medium',
@@ -20,23 +20,21 @@ function formatTimestamp(timestamp: string): string {
 }
 
 function Entry({ entry }: { entry: WorkLogEntry }) {
+  const { headline, detail } = readEntry(entry);
+
   return (
     <li className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center gap-2.5">
         <Chip tone="machine">{entry.source}</Chip>
+        {detail !== null && <Chip tone="machine">{detail}</Chip>}
         <time className="font-mono text-xs text-muted-foreground" dateTime={entry.timestamp}>
           {formatTimestamp(entry.timestamp)}
         </time>
-        <OpenSource url={entry.url} label={entry.summary ?? entry.content} />
+        <OpenSource url={entry.url} label={headline} />
       </div>
       <p className="mt-2.5 text-sm leading-relaxed" data-selectable>
-        {entry.summary ?? entry.content}
+        {headline}
       </p>
-      {entry.summary !== null && (
-        <p className="mt-1 text-xs text-muted-foreground" data-selectable>
-          {entry.content}
-        </p>
-      )}
     </li>
   );
 }

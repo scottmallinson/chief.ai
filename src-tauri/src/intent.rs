@@ -348,11 +348,19 @@ fn between<Tz: chrono::TimeZone>(
 /// the same way wherever it appears — and, like `prep`, touches nothing but
 /// this machine's own disk.
 async fn log(context: &recipe::Context, window: Window) -> Option<Answered> {
+    // **Shipped work only.** "What did I ship" is a question about what
+    // landed, and once the pass started reading the user's open pull requests
+    // too, an unfiltered read answered it with work in flight — measured
+    // against the real repository, an open pull request was reported as that
+    // day's shipped work. `ingest::SHIPPED` is what merged rows are filed
+    // under, and what every row written before open ones existed already is.
     let hits = match window.bounds(&chrono::Local::now()) {
-        Some((from, to)) => retrieval::in_window(&context.pool, &from, &to, None, LOG_ENTRIES)
+        Some((from, to)) => retrieval::shipped_in_window(&context.pool, &from, &to, LOG_ENTRIES)
             .await
             .ok()?,
-        None => retrieval::latest(&context.pool, LOG_ENTRIES).await.ok()?,
+        None => retrieval::shipped_latest(&context.pool, LOG_ENTRIES)
+            .await
+            .ok()?,
     };
 
     retrieval::to_context(&hits, RETRIEVAL_CEILING).map(|body| Answered {
@@ -889,6 +897,99 @@ mod delivery {
             Vec::<String>::new(),
             "and it must cost zero model calls"
         );
+    }
+
+    /// The guard on a false answer found by running the real thing.
+    ///
+    /// Measured against scottmallinson/chief.ai on 2026-09-03: the pass had
+    /// ingested pull request #66, opened that morning and still open, and
+    /// "what did I ship today" listed it as that day's shipped work beside
+    /// #65, which really had merged. `Log` filtered by window and not by
+    /// state, which was accidentally correct for as long as the pass read only
+    /// merged work and stopped being correct the moment it read more.
+    ///
+    /// Proved by passing `None` as the category:
+    ///
+    /// ```text
+    /// an open pull request is work in flight, not work shipped
+    /// ```
+    #[tokio::test]
+    async fn shipped_means_merged_and_never_merely_open() {
+        let (context, _scratch, _server) = silent("shipped").await;
+
+        for (category, external_id, title, summary) in [
+            (
+                crate::ingest::SHIPPED,
+                "o/r#65",
+                "Landed the work log",
+                "merged",
+            ),
+            (
+                crate::ingest::IN_FLIGHT,
+                "o/r#66",
+                "Still open today",
+                "open",
+            ),
+            (
+                crate::ingest::REVIEW,
+                "o/r#71",
+                "Somebody else's ask",
+                "review requested",
+            ),
+            (crate::ingest::MEETING, "cal:1", "Standup", "09:30"),
+            // Migration 8's default, which is what an entry the user typed
+            // into their own work log carries. It is their work and it counts:
+            // filtering to `SHIPPED` alone dropped it, which an existing test
+            // caught before this one did.
+            ("note", "note:1", "Wrote the release notes by hand", "done"),
+        ] {
+            work_log::upsert(
+                &context.pool,
+                work_log::WorkLogRecord {
+                    timestamp: bump(&day_window(&chrono::Local::now()).0),
+                    source: "github".to_string(),
+                    category: category.to_string(),
+                    title: title.to_string(),
+                    content: title.to_string(),
+                    summary: Some(summary.to_string()),
+                    url: None,
+                    raw_ref: None,
+                    external_id: external_id.to_string(),
+                    account_id: 1,
+                },
+            )
+            .await
+            .expect("should store");
+        }
+
+        for window in [Window::Today, Window::ThisWeek, Window::Recent] {
+            let answered = answer(Intent::Log(window), &context)
+                .await
+                .unwrap_or_else(|| panic!("{window:?} should have the merged one to report"));
+
+            assert!(
+                answered.markdown.contains("Landed the work log"),
+                "{window:?} should report what merged: {}",
+                answered.markdown
+            );
+            assert!(
+                answered
+                    .markdown
+                    .contains("Wrote the release notes by hand"),
+                "{window:?} should count what the user logged themselves: {}",
+                answered.markdown
+            );
+
+            for excluded in ["Still open today", "Somebody else's ask", "Standup"] {
+                assert!(
+                    !answered.markdown.contains(excluded),
+                    "an open pull request is work in flight, not work shipped, and \
+                     neither a review request nor a meeting is either — {excluded:?} \
+                     in {window:?}: {}",
+                    answered.markdown
+                );
+            }
+        }
     }
 
     /// Nothing waiting steps aside rather than saying "nothing".

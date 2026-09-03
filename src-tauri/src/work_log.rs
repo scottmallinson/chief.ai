@@ -24,6 +24,20 @@ pub struct WorkLogEntry {
     pub timestamp: String,
     /// Where the entry came from, e.g. `github` or `calendar`.
     pub source: String,
+    /// What the entry is *about*: the repository, number and title of a pull
+    /// request, or the subject of a meeting.
+    ///
+    /// **Selected because the interface had nothing else to show.** Migration 8
+    /// added this column and `ENTRY_COLUMNS` never listed it, so every screen
+    /// fell back to `summary` — which deterministic ingestion turned from a
+    /// model-written sentence into a bare state word. Measured in the running
+    /// app, the Today feed read `merged`, `merged`, `open` five rows deep, with
+    /// nothing saying what had been merged.
+    ///
+    /// Empty for an entry the user typed by hand: migration 8 gave the column
+    /// a default rather than inventing one, so the interface falls back to
+    /// `content` for those.
+    pub title: String,
     pub content: String,
     /// A one line summary of what happened. Written deterministically from
     /// what the provider said (see `ingest`), not generated.
@@ -48,7 +62,8 @@ pub struct WorkLogEntry {
 }
 
 /// The columns that make up a [`WorkLogEntry`], so every query agrees.
-const ENTRY_COLUMNS: &str = "id, timestamp, source, content, summary, url, external_id, account_id";
+const ENTRY_COLUMNS: &str =
+    "id, timestamp, source, title, content, summary, url, external_id, account_id";
 
 /// A new entry. `timestamp` defaults to now, `summary` to nothing.
 #[derive(Debug, Clone, Deserialize)]

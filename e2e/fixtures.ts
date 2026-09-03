@@ -23,6 +23,8 @@ export interface WorkLogEntry {
   id: number;
   timestamp: string;
   source: string;
+  /** What the row is about, which is what a feed row leads with. */
+  title: string;
   content: string;
   summary: string | null;
   /** Where the thing is, or null when there is nowhere to go. */
@@ -582,8 +584,10 @@ export function longWorkLog(entries = 40): WorkLogEntry[] {
     id: index + 1,
     timestamp: '2026-08-19T14:00:00Z',
     source: 'github',
+    title: `scottmallinson/chief.ai #${index}: Ship something, number ${index}`,
     content: `Merged pull request #${index} in scottmallinson/chief.ai`,
-    summary: `Shipped something, number ${index}.`,
+    // The state word deterministic ingestion writes, not a sentence.
+    summary: 'merged',
     // Every other one has somewhere to go, so a list mixes rows that carry an
     // affordance with rows that carry none — which is what the feed actually
     // holds, since a hand-written entry has no URL.

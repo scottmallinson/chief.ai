@@ -21,6 +21,7 @@ const shipped: WorkLogEntry = {
   id: 1,
   timestamp: '2026-08-28T16:00:00Z',
   source: 'github',
+  title: 'scottmallinson/chief.ai #44: Stop a long answer being thrown away',
   content: 'Merged pull request #44',
   summary: 'Stopped a long answer being thrown away at five minutes.',
   url: 'https://github.com/scottmallinson/chief.ai/pull/44',
@@ -80,13 +81,23 @@ describe('TodayView', () => {
     expect(screen.getByText('github')).toBeInTheDocument();
   });
 
-  it('shows what was recently shipped beside it', async () => {
+  /**
+   * The feed leads with what happened, not with the word for its state.
+   *
+   * Proved by leading with `summary` again:
+   *
+   * ```text
+   * Unable to find an element with the text:
+   * scottmallinson/chief.ai #44: Stop a long answer being thrown away
+   * ```
+   */
+  it('shows what was recently shipped beside it, by name', async () => {
     invoke.mockResolvedValue([shipped]);
 
     show();
 
     expect(
-      await screen.findByText('Stopped a long answer being thrown away at five minutes.'),
+      await screen.findByText('scottmallinson/chief.ai #44: Stop a long answer being thrown away'),
     ).toBeInTheDocument();
   });
 
@@ -99,24 +110,22 @@ describe('TodayView', () => {
     // it goes.
     expect(
       await screen.findByRole('button', {
-        name: 'Open Stopped a long answer being thrown away at five minutes.',
+        name: 'Open scottmallinson/chief.ai #44: Stop a long answer being thrown away',
       }),
     ).toBeInTheDocument();
   });
 
   it('offers nothing on a feed row the user typed themselves', async () => {
-    invoke.mockResolvedValue([{ ...shipped, url: null }]);
+    invoke.mockResolvedValue([{ ...shipped, title: '', url: null }]);
 
     show();
 
-    expect(
-      await screen.findByText('Stopped a long answer being thrown away at five minutes.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('Merged pull request #44')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument();
   });
 
-  it('falls back to the raw entry when nothing has summarised it yet', async () => {
-    invoke.mockResolvedValue([{ ...shipped, summary: null }]);
+  it('falls back to the raw entry when there is no title to lead with', async () => {
+    invoke.mockResolvedValue([{ ...shipped, title: '', summary: null }]);
 
     show();
 

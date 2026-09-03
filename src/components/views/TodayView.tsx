@@ -8,7 +8,7 @@ import { useWorkLog } from '@/hooks/use-work-log';
 import type { Proposal } from '@/lib/proposals';
 import { readBrief, type Brief, type BriefBlock } from '@/lib/brief';
 import { OpenSource } from '@/components/OpenSource';
-import type { WorkLogEntry } from '@/lib/work-log';
+import { readEntry, type WorkLogEntry } from '@/lib/work-log';
 
 interface TodayViewProps {
   /** The brief on screen: today's, or whichever day the list pane selected. */
@@ -77,16 +77,19 @@ function Block({ block }: { block: BriefBlock }) {
 }
 
 function Shipped({ entry }: { entry: WorkLogEntry }) {
+  const { headline, detail } = readEntry(entry);
+
   return (
     <li className="border-l-2 border-border pl-3.5">
       <p className="flex items-center gap-2 micro text-muted-foreground">
         <span>
           {entry.source} · {formatTimestamp(entry.timestamp)}
+          {detail === null ? '' : ` · ${detail}`}
         </span>
-        <OpenSource url={entry.url} label={entry.summary ?? entry.content} />
+        <OpenSource url={entry.url} label={headline} />
       </p>
       <p className="mt-1.5 text-[13px] leading-snug" data-selectable>
-        {entry.summary ?? entry.content}
+        {headline}
       </p>
     </li>
   );

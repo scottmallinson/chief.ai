@@ -37,12 +37,49 @@ pub enum Kind {
     Review,
 }
 
+/// What a row is filed under, which is what every read question filters on.
+///
+/// **Three categories, because there are three questions.** "What did I ship"
+/// wants [`SHIPPED`], "what is waiting on me" wants [`REVIEW`], and the feed
+/// wants all of it. Getting this wrong is not a thin answer but a false one:
+/// when the pass started reading open pull requests, they landed under the same
+/// category as merged ones and "what did I ship today" began reporting work in
+/// flight as shipped — measured against the real repository, an open pull
+/// request opened today was listed as that day's shipped work.
+///
+/// `SHIPPED` keeps the name `pr` deliberately. Every row an installed copy
+/// already holds under it was written by the old pass, which read
+/// `author:@me is:merged` and nothing else — so every one of them is merged,
+/// and the meaning carries over without a migration.
+pub const SHIPPED: &str = "pr";
+/// The user's own work that has not landed yet.
+pub const IN_FLIGHT: &str = "open";
+/// A review somebody has asked the user for.
+pub const REVIEW: &str = "review";
+/// A meeting, from any calendar.
+pub const MEETING: &str = "calendar";
+
+/// The categories that are never an answer to "what did I ship".
+///
+/// An **exclusion**, not an inclusion, and the difference is a regression an
+/// existing test caught: an entry the user typed into their own work log
+/// carries migration 8's default category, and a question about their work has
+/// to count it. What must not count is work that has not landed, somebody
+/// else's request, and a meeting — each of which is a different question with
+/// a heading of its own.
+pub const NOT_SHIPPED: [&str; 3] = [IN_FLIGHT, REVIEW, MEETING];
+
 impl Kind {
-    /// What the row is filed under. `intent` and `retrieval` filter on this.
-    const fn category(self) -> &'static str {
+    /// What the row is filed under, given what state the item is in.
+    fn category(self, pull_request: &PullRequest) -> &'static str {
         match self {
-            Self::Mine => "pr",
-            Self::Review => "review",
+            Self::Review => REVIEW,
+            // Merged is the only thing that counts as shipped. A draft and an
+            // open pull request are both work in flight, and `merged_at` is the
+            // only field that separates them from work that landed — GitHub
+            // reports a merged pull request as `closed`, so `state` cannot.
+            Self::Mine if pull_request.merged_at.is_some() => SHIPPED,
+            Self::Mine => IN_FLIGHT,
         }
     }
 }
@@ -130,7 +167,7 @@ pub fn from_pull_request(pull_request: &PullRequest, account_id: i64, kind: Kind
             .clone()
             .unwrap_or_else(|| pull_request.updated_at.clone()),
         source: "github".to_string(),
-        category: kind.category().to_string(),
+        category: kind.category(pull_request).to_string(),
         title: format!(
             "{} #{}: {}",
             pull_request.repository, pull_request.number, pull_request.title

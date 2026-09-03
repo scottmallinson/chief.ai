@@ -17,8 +17,10 @@ const entry: WorkLogEntry = {
   id: 1,
   timestamp: '2026-08-19T09:00:00.000Z',
   source: 'github',
+  title: 'scottmallinson/chief.ai #4: Ship the app shell',
   content: 'Merged pull request #4',
-  summary: 'Shipped the app shell',
+  // The state word deterministic ingestion writes, not a sentence.
+  summary: 'merged',
   url: 'https://github.com/scottmallinson/chief.ai/pull/44',
   externalId: 'octocat/chief#4',
   accountId: 1,
@@ -79,18 +81,62 @@ describe('WorkLogView', () => {
     openUrl.mockResolvedValue(undefined);
   });
 
-  it('renders entries from the local database', async () => {
+  /**
+   * A row leads with what it is about, not with what state it is in.
+   *
+   * **These tests used to assert the opposite** — that the headline was
+   * `summary` — which was right while `summary` was a model-written sentence
+   * and wrong from the moment deterministic ingestion made it the single word
+   * "merged". Measured in the running app, this screen's sibling feed read
+   * `merged`, `merged`, `open` five rows deep with nothing saying what had
+   * been merged.
+   *
+   * Proved by leading with `summary` again:
+   *
+   * ```text
+   * Unable to find an element with the text:
+   * scottmallinson/chief.ai #4: Ship the app shell
+   * ```
+   */
+  it('leads with what the entry is about, and keeps the state beside it', async () => {
     answering({ list_work_logs: [entry] });
 
     render(<WorkLogView />);
 
-    expect(await screen.findByText('Shipped the app shell')).toBeInTheDocument();
-    expect(screen.getByText('Merged pull request #4')).toBeInTheDocument();
+    expect(
+      await screen.findByText('scottmallinson/chief.ai #4: Ship the app shell'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('merged')).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith('list_work_logs', { limit: undefined });
   });
 
-  it('falls back to the raw content when there is no summary', async () => {
-    answering({ list_work_logs: [{ ...entry, summary: null }] });
+  /**
+   * A row missing its title renders rather than taking the screen down.
+   *
+   * The column is `NOT NULL DEFAULT ''`, so Rust always sends a string — but
+   * this renderer runs over every row of two feeds, and CLAUDE.md records
+   * three separate occasions where a view received a shape it did not expect
+   * and a render threw. Proved by reading `entry.title.trim()` unguarded:
+   *
+   * ```text
+   * TypeError: Cannot read properties of undefined (reading 'trim')
+   * ```
+   */
+  it('renders a row that arrived without a title, rather than throwing', async () => {
+    const untitled = { ...entry } as Partial<WorkLogEntry>;
+    delete untitled.title;
+
+    answering({ list_work_logs: [untitled] });
+
+    render(<WorkLogView />);
+
+    expect(await screen.findByText('Merged pull request #4')).toBeInTheDocument();
+  });
+
+  it('falls back to the raw content for an entry the user typed themselves', async () => {
+    // No title: migration 8 gave the column a default rather than inventing
+    // one, so a hand-written entry has nothing but what was typed.
+    answering({ list_work_logs: [{ ...entry, title: '', summary: null }] });
 
     render(<WorkLogView />);
 
@@ -116,7 +162,9 @@ describe('WorkLogView', () => {
     answering({ list_work_logs: [entry] });
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
 
-    expect(await screen.findByText('Shipped the app shell')).toBeInTheDocument();
+    expect(
+      await screen.findByText('scottmallinson/chief.ai #4: Ship the app shell'),
+    ).toBeInTheDocument();
   });
 
   describe('refreshing', () => {
@@ -151,7 +199,9 @@ describe('WorkLogView', () => {
       });
       await userEvent.click(screen.getByRole('button', { name: 'Refresh work log' }));
 
-      expect(await screen.findByText('Shipped the app shell')).toBeInTheDocument();
+      expect(
+        await screen.findByText('scottmallinson/chief.ai #4: Ship the app shell'),
+      ).toBeInTheDocument();
       expect(
         commands().includes('sync_now'),
         'Refresh has to ask the services, not just re-read the rows',
@@ -246,7 +296,9 @@ describe('WorkLogView', () => {
 
       render(<WorkLogView />);
 
-      expect(await screen.findByText('Shipped the app shell')).toBeInTheDocument();
+      expect(
+        await screen.findByText('scottmallinson/chief.ai #4: Ship the app shell'),
+      ).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument();
     });
 
@@ -255,7 +307,9 @@ describe('WorkLogView', () => {
 
       render(<WorkLogView />);
 
-      expect(await screen.findByText('Shipped the app shell')).toBeInTheDocument();
+      expect(
+        await screen.findByText('scottmallinson/chief.ai #4: Ship the app shell'),
+      ).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument();
     });
 
@@ -268,7 +322,9 @@ describe('WorkLogView', () => {
 
       await userEvent.click(await screen.findByRole('button', { name: /^Open / }));
 
-      expect(screen.getByText('Shipped the app shell')).toBeInTheDocument();
+      expect(
+        screen.getByText('scottmallinson/chief.ai #4: Ship the app shell'),
+      ).toBeInTheDocument();
     });
   });
 });
