@@ -23,9 +23,6 @@ export function useChat(): UseChat {
   const [activity, setActivity] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const nextId = useRef(0);
-  // The tools this answer reached for, counted once each however often the
-  // model called them.
-  const sources = useRef(new Set<string>());
 
   const identify = useCallback((kind: string) => {
     nextId.current += 1;
@@ -48,7 +45,7 @@ export function useChat(): UseChat {
         role: 'user',
         content: question,
         at: new Date().toISOString(),
-        sources: 0,
+        provenance: null,
       };
       const transcript = [...messages, asked];
 
@@ -57,7 +54,6 @@ export function useChat(): UseChat {
       setPartial('');
       setActivity(null);
       setError(null);
-      sources.current = new Set();
 
       askAgent(
         transcript.map(({ role, content: text }) => ({ role, content: text })),
@@ -74,7 +70,6 @@ export function useChat(): UseChat {
               break;
             case 'tool':
               setPartial('');
-              sources.current.add(update.name);
               setActivity(describeTool(update.name));
               break;
             case 'waking':
@@ -89,17 +84,19 @@ export function useChat(): UseChat {
         .then((reply) => {
           // Cleared in the same update as the finished message, so the answer
           // is never on screen twice.
-          const drawnOn = sources.current.size;
-
           settle();
           setMessages((current) => [
             ...current,
             {
               id: identify('message'),
               role: 'assistant',
-              content: reply,
+              content: reply.content,
               at: new Date().toISOString(),
-              sources: drawnOn,
+              // Taken from the answer rather than inferred from the tool names
+              // seen on the stream. The stream said which tools ran; it could
+              // not say what rows were read, and once a read is a query rather
+              // than a tool call it stopped being able to say anything at all.
+              provenance: reply.provenance,
             },
           ]);
         })

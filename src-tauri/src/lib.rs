@@ -5,6 +5,7 @@
 //! persistence is local SQLite. No component of this crate may talk to a remote
 //! service on its own.
 
+mod adapter;
 mod agent;
 mod calendar;
 mod clock;
@@ -16,21 +17,26 @@ mod db;
 mod engine;
 mod github;
 mod ical;
+mod ingest;
 mod integrations;
 mod intent;
+mod journal;
 mod linear;
 mod microsoft;
 // OAuth machinery shared by every provider. Part of the crate's library API,
 // the same as `llama` below.
 pub mod oauth;
+mod perms;
 mod probe;
 mod profile;
 mod propose;
 mod proposed;
 mod recipe;
+mod retrieval;
 mod session;
 mod settings;
 mod setup;
+mod sync_state;
 mod tools;
 mod watcher;
 mod weights;
@@ -78,6 +84,10 @@ pub fn run() {
             // is written for is most of the room there is.
             engine::supervise(&app.handle().clone());
 
+            // Nobody else on this machine needs to be able to read the
+            // database the tokens are in. Before anything else touches it.
+            perms::prepare(&app.handle().clone());
+
             // The folder of markdown the user can edit themselves.
             corpus::prepare(&app.handle().clone());
 
@@ -93,9 +103,11 @@ pub fn run() {
             connect::add_linear_key,
             connect::start_login,
             connect::finish_login,
+            connect::account_data,
             connect::connections,
             connect::disconnect,
             connect::label_account,
+            sync_state::sync_status,
             corpus::corpus_location,
             corpus::list_corpus,
             corpus::read_corpus_file,

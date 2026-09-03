@@ -158,6 +158,15 @@ UPDATE integration_accounts SET account_key = ?2
 ///
 /// Adoption and the write are one transaction, so a daemon pass reading
 /// accounts alongside cannot see the moment between them.
+///
+/// **A new credential voids what was recorded about the old one**, so the
+/// account's `sync_state` row goes in the same transaction. Reconnecting
+/// adopts the existing account row rather than making a second one, so without
+/// this the settings screen would still be amber and still be telling somebody
+/// to sign in, moments after they did — the exact false alarm that having a
+/// separate `AuthRequired` status was for. It deletes rather than writing `Ok`
+/// because no pass has run yet: absent reads as "never synced", which is true,
+/// where `Ok` would claim a successful read that never happened.
 pub async fn save(pool: &SqlitePool, account: NewAccount<'_>) -> Result<Account, Error> {
     let mut transaction = pool.begin().await?;
 
@@ -196,6 +205,13 @@ pub async fn save(pool: &SqlitePool, account: NewAccount<'_>) -> Result<Account,
     .bind(account.client_secret)
     .fetch_one(&mut *transaction)
     .await?;
+
+    // `row.0` is `id`: `ACCOUNT_COLUMNS` leads with it and `AccountRow` is a
+    // tuple, so the account's own row is what names the state to throw away.
+    sqlx::query("DELETE FROM sync_state WHERE account_id = ?1")
+        .bind(row.0)
+        .execute(&mut *transaction)
+        .await?;
 
     transaction.commit().await?;
 
@@ -335,6 +351,55 @@ mod tests {
             client_id: None,
             client_secret: None,
         }
+    }
+
+    /// Signing in again is the fix Chief offers for `AuthRequired`, so it has
+    /// to actually clear it.
+    ///
+    /// Reconnecting adopts the existing account row rather than making a
+    /// second one — which is what makes the stale state possible in the first
+    /// place, since a new row would carry no state at all. Both halves are
+    /// asserted here: the same `id` comes back, and the state that was on it
+    /// has gone.
+    ///
+    /// Proved by removing the `DELETE` from `save`'s transaction:
+    ///
+    /// ```text
+    /// reconnecting must not leave the account still asking to be signed in
+    /// ```
+    #[tokio::test]
+    async fn reconnecting_reuses_the_account_and_clears_what_was_wrong_with_it() {
+        let pool = migrated_pool().await;
+
+        let first = save(&pool, github_account("octocat", "gho_first"))
+            .await
+            .expect("should save");
+
+        crate::sync_state::record(
+            &pool,
+            first.id,
+            GITHUB,
+            crate::sync_state::Status::AuthRequired,
+            Some("the credential was refused"),
+        )
+        .await
+        .expect("should record");
+
+        let again = save(&pool, github_account("octocat", "gho_second"))
+            .await
+            .expect("should save");
+
+        assert_eq!(
+            again.id, first.id,
+            "the same account signing in again is the same account"
+        );
+        assert!(
+            crate::sync_state::for_account(&pool, first.id)
+                .await
+                .expect("should read")
+                .is_none(),
+            "reconnecting must not leave the account still asking to be signed in"
+        );
     }
 
     #[tokio::test]

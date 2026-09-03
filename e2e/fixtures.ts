@@ -25,7 +25,10 @@ export interface WorkLogEntry {
   source: string;
   content: string;
   summary: string | null;
+  /** Where the thing is, or null when there is nowhere to go. */
+  url: string | null;
   externalId: string | null;
+  accountId: number;
 }
 
 /** A brief, as `todays_brief` and `generate_brief` return it. */
@@ -48,6 +51,15 @@ export interface Proposal {
   body: string;
 }
 
+/** One account's freshness, as `sync_status` returns it. */
+export interface SyncState {
+  accountId: number;
+  source: string;
+  status: 'ok' | 'syncing' | 'authRequired' | 'error';
+  lastSyncedAt: string | null;
+  errorMessage: string | null;
+}
+
 /** One connected account, as `connections` returns it. */
 export interface Account {
   id: number;
@@ -58,18 +70,33 @@ export interface Account {
   connectedAt: string;
 }
 
+/** What `ask_agent` resolves with: the answer, and where it came from. */
+export interface Answer {
+  content: string;
+  /** Null when nothing local was read — a tool answer, or a brief. */
+  provenance: string | null;
+}
+
 /** A step in an answer, as `agent::Update` serialises it. */
 export type AgentUpdate =
   { kind: 'delta'; text: string } | { kind: 'restart' } | { kind: 'tool'; name: string };
 
 /** What the Rust side should answer for one test. */
 export interface Backend {
-  /** What `ask_agent` resolves with. */
+  /** What `ask_agent` answers with. A string is the content and no footer. */
   answer?: string;
+  /** The provenance line under the answer, when the read path found rows. */
+  provenance?: string;
   /** What the work log is filled with. */
   workLog?: WorkLogEntry[];
   /** Which accounts the settings screen finds connected. */
   accounts?: Account[];
+  /**
+   * How fresh each account is. An account with no entry here has never been
+   * read, which is a legitimate state and reads as "Never synced" — so the
+   * default is an empty list rather than one fabricated row per account.
+   */
+  syncStates?: SyncState[];
   /** Today's brief, or null when none has been written. */
   brief?: Brief | null;
   /** What `list_corpus` finds, which is where the day list comes from. */
@@ -158,8 +185,10 @@ export interface Chief {
 
 interface Setup {
   answer: string;
+  provenance: string | null;
   workLog: WorkLogEntry[];
   accounts: Account[];
+  syncStates: SyncState[];
   brief: Brief | null;
   corpus: string[];
   proposals: Proposal[];
@@ -207,7 +236,7 @@ function installBackend(setup: Setup) {
   const listeners = new Map<string, Array<(event: unknown) => void>>();
   let nextCallbackId = 1;
   let requestId: string | null = null;
-  let answerInFlight: ((answer: string) => void) | null = null;
+  let answerInFlight: ((answer: Answer) => void) | null = null;
 
   const emit = (event: string, payload: unknown) => {
     for (const listener of listeners.get(event) ?? []) {
@@ -218,7 +247,7 @@ function installBackend(setup: Setup) {
   const bridge: Bridge = {
     stream: (update) => emit('agent-stream', { requestId, ...update }),
     finish: (answer) => {
-      answerInFlight?.(answer);
+      answerInFlight?.({ content: answer, provenance: null });
       answerInFlight = null;
     },
     scroller: () => {
@@ -273,9 +302,14 @@ function installBackend(setup: Setup) {
 
         case 'ask_agent': {
           requestId = (args?.requestId as string | undefined) ?? null;
-          if (!setup.holdAnswers) return Promise.resolve(setup.answer);
+          if (!setup.holdAnswers) {
+            return Promise.resolve({
+              content: setup.answer,
+              provenance: setup.provenance,
+            });
+          }
 
-          return new Promise<string>((resolve) => {
+          return new Promise<Answer>((resolve) => {
             answerInFlight = resolve;
           });
         }
@@ -285,6 +319,13 @@ function installBackend(setup: Setup) {
 
         case 'connections':
           return Promise.resolve(setup.accounts);
+
+        // Dispatched on the command name, and answering with a list of
+        // `SyncState` rather than with whatever `answers[command] ?? []`
+        // would have produced. CLAUDE.md calls the stub that answers `[]` to
+        // everything the most expensive shortcut in this repository.
+        case 'sync_status':
+          return Promise.resolve(setup.syncStates);
 
         case 'todays_brief':
           return Promise.resolve(setup.brief);
@@ -407,8 +448,10 @@ function handleFor(page: Page, classicScrollbars: boolean): Chief {
     async open(backend: Backend = {}) {
       await page.addInitScript(installBackend, {
         answer: backend.answer ?? 'Two pull requests are waiting on review.',
+        provenance: backend.provenance ?? null,
         workLog: backend.workLog ?? [],
         accounts: backend.accounts ?? [],
+        syncStates: backend.syncStates ?? [],
         brief: backend.brief ?? null,
         corpus: backend.corpus ?? [],
         proposals: backend.proposals ?? [],
@@ -541,6 +584,11 @@ export function longWorkLog(entries = 40): WorkLogEntry[] {
     source: 'github',
     content: `Merged pull request #${index} in scottmallinson/chief.ai`,
     summary: `Shipped something, number ${index}.`,
+    // Every other one has somewhere to go, so a list mixes rows that carry an
+    // affordance with rows that carry none — which is what the feed actually
+    // holds, since a hand-written entry has no URL.
+    url: index % 2 === 0 ? `https://github.com/scottmallinson/chief.ai/pull/${index}` : null,
     externalId: `scottmallinson/chief.ai#${index}`,
+    accountId: 1,
   }));
 }

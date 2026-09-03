@@ -4,6 +4,7 @@ import { act } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatView } from '@/components/views/ChatView';
+import type { Answer } from '@/lib/agent';
 import { useChat } from '@/hooks/use-chat';
 
 /** The view as `App` composes it: the conversation is owned outside it. */
@@ -36,12 +37,24 @@ function requestId(): string {
   return call?.[1].requestId ?? '';
 }
 
-/** Answer the question that is in flight, as the backend eventually would. */
-function answer(reply: string) {
-  resolve?.(reply);
+/**
+ * What `ask_agent` actually resolves with.
+ *
+ * The shape, not a bare string: a stub that answers one thing to everything is
+ * what CLAUDE.md calls the most expensive shortcut in this repository, and the
+ * provenance footer is exactly the kind of field a view reaches for and finds
+ * `undefined`.
+ */
+function replied(content: string, provenance: string | null = null): Answer {
+  return { content, provenance };
 }
 
-let resolve: ((reply: string) => void) | undefined;
+/** Answer the question that is in flight, as the backend eventually would. */
+function answer(reply: string, provenance: string | null = null) {
+  resolve?.(replied(reply, provenance));
+}
+
+let resolve: ((reply: Answer) => void) | undefined;
 
 describe('ChatView', () => {
   beforeEach(() => {
@@ -63,7 +76,7 @@ describe('ChatView', () => {
   function holdTheAnswer() {
     invoke.mockImplementation(
       () =>
-        new Promise<string>((settle) => {
+        new Promise<Answer>((settle) => {
           resolve = settle;
         }),
     );
@@ -83,7 +96,7 @@ describe('ChatView', () => {
   });
 
   it('sends the question to the local model and shows the reply', async () => {
-    invoke.mockResolvedValue('You merged two pull requests.');
+    invoke.mockResolvedValue(replied('You merged two pull requests.'));
 
     render(<Chat />);
     await userEvent.type(
@@ -168,7 +181,9 @@ describe('ChatView', () => {
   });
 
   it('sends the whole transcript so the model keeps context', async () => {
-    invoke.mockResolvedValueOnce('Two.').mockResolvedValueOnce('Both were merged.');
+    invoke
+      .mockResolvedValueOnce(replied('Two.'))
+      .mockResolvedValueOnce(replied('Both were merged.'));
 
     render(<Chat />);
     const composer = screen.getByRole('textbox', { name: 'Message your chief of staff' });
@@ -190,7 +205,7 @@ describe('ChatView', () => {
   });
 
   it('clears the composer once a question is sent', async () => {
-    invoke.mockResolvedValue('Answered.');
+    invoke.mockResolvedValue(replied('Answered.'));
 
     render(<Chat />);
     const composer = screen.getByRole('textbox', { name: 'Message your chief of staff' });
@@ -216,7 +231,7 @@ describe('ChatView', () => {
   });
 
   it('stops listening once a question is answered', async () => {
-    invoke.mockResolvedValue('Answered.');
+    invoke.mockResolvedValue(replied('Answered.'));
 
     render(<Chat />);
     await userEvent.type(
@@ -228,27 +243,77 @@ describe('ChatView', () => {
     expect(handlers).toHaveLength(0);
   });
 
-  it('says how many sources an answer drew on, so it is not taken on trust', async () => {
-    holdTheAnswer();
+  describe('where an answer came from', () => {
+    /**
+     * The footer replaced a count of the tool names seen on the stream. That
+     * count stopped meaning anything once a read became a query: an answer
+     * built entirely from the user's own work log would have shown zero.
+     */
+    it('says where an answer came from, under the answer', async () => {
+      invoke.mockResolvedValue(
+        replied('You merged two pull requests.', 'Sources: work log · GitHub (to 14:02)'),
+      );
 
-    render(<Chat />);
-    await ask('What is waiting on me?');
+      render(<Chat />);
+      await ask('What did I ship?');
 
-    stream({ requestId: requestId(), kind: 'tool', name: 'fetch_github_prs' });
-    // The same tool twice is still one source.
-    stream({ requestId: requestId(), kind: 'tool', name: 'fetch_github_prs' });
-    answer('Two are waiting on you.');
+      expect(await screen.findByText('Sources: work log · GitHub (to 14:02)')).toBeInTheDocument();
+    });
 
-    expect(await screen.findByText('chief · local · 1 source')).toBeInTheDocument();
-  });
+    /**
+     * **The one piece of text on the screen that has to be true.**
+     *
+     * The provenance line is the only thing left telling the reader how fresh
+     * an answer is, now that a read no longer takes as long as somebody else's
+     * API decides — so a model that writes its own `Sources:` line must not be
+     * able to pass it off as this one. Rust composes the footer from the rows
+     * and the renderer puts it in its own element.
+     *
+     * Proved by rendering `message.content` where the footer goes:
+     *
+     *   Unable to find an element with the text: Sources: work log · GitHub
+     */
+    it('cannot be made to say something the model wrote', async () => {
+      invoke.mockResolvedValue(
+        replied(
+          'Everything is fine.\n\nSources: every system, fully verified',
+          'Sources: work log · GitHub',
+        ),
+      );
 
-  it('claims no sources for an answer the model wrote unaided', async () => {
-    invoke.mockResolvedValue('Nothing is waiting on you.');
+      render(<Chat />);
+      await ask('What did I ship?');
 
-    render(<Chat />);
-    await ask('What is waiting on me?');
+      // The real footer is on screen, in its own element…
+      expect(await screen.findByText('Sources: work log · GitHub')).toBeInTheDocument();
+      // …and the model's imitation is nowhere but inside the answer's body.
+      expect(screen.queryByText('Sources: every system, fully verified')).not.toBeInTheDocument();
+    });
 
-    expect(await screen.findByText('chief · local')).toBeInTheDocument();
+    /**
+     * An answer the tool loop produced read no stored rows, so there is
+     * nothing to name and no "to" that would mean anything. An empty footer
+     * claiming otherwise would be worse than none.
+     */
+    it('shows no footer at all when nothing local was read', async () => {
+      invoke.mockResolvedValue(replied('Nothing is waiting on you.'));
+
+      render(<Chat />);
+      await ask('What is waiting on me?');
+
+      expect(await screen.findByText('Nothing is waiting on you.')).toBeInTheDocument();
+      expect(screen.queryByText(/^Sources:/)).not.toBeInTheDocument();
+    });
+
+    /** The label above the answer is unchanged: it says where it ran. */
+    it('still says the answer was produced on this machine', async () => {
+      invoke.mockResolvedValue(replied('Nothing is waiting on you.'));
+
+      render(<Chat />);
+      await ask('What is waiting on me?');
+
+      expect(await screen.findByText('chief · local')).toBeInTheDocument();
+    });
   });
 
   /**

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
+use crate::adapter;
 use crate::clock;
 use crate::context;
 use crate::db;
@@ -247,8 +248,28 @@ impl serde::Serialize for Error {
 ///
 /// `present` is what the clock says right now, worked out fresh for every
 /// question so an app left open overnight does not still think it is yesterday.
+/// Test-only since the adapter took over choosing the ceiling.
+///
+/// Production assembles through `adapter::Adapter::assemble`, which picks the
+/// budget from the tier; on both tiers today that picks exactly
+/// [`context::PROMPT_CEILING`], so this and the production path are the same
+/// call with the same argument. Keeping it means every orchestration test
+/// below is untouched by the seam, which is the point of the seam — and the
+/// adapter's own test is what asserts the budget follows the tier rather than
+/// this constant.
+#[cfg(test)]
 fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
-    let mut budget = context::Budget::new();
+    conversation_within(turns, present, context::PROMPT_CEILING)
+}
+
+/// The same, under a ceiling the caller chose.
+///
+/// `adapter::Adapter` picks that ceiling from the tier, so a machine whose
+/// engine was started with a narrower window than Chief is willing to spend
+/// gets the narrower of the two. The trimming and the system prompt stay here:
+/// the adapter decides *how much*, never *what*.
+pub(crate) fn conversation_within(turns: Vec<Turn>, present: &str, ceiling: u32) -> Vec<Message> {
+    let mut budget = context::Budget::with_ceiling(ceiling);
     let opening = format!("{SYSTEM_PROMPT}\n\n{present}");
 
     // The system prompt and the clock are not negotiable and are added first,
@@ -458,6 +479,22 @@ where
     Ok(reply.content)
 }
 
+/// An answer, and the line under it saying where it came from.
+///
+/// Two fields rather than one string, because the footer is **not part of the
+/// answer**: it is composed in Rust from the rows the read path returned, and
+/// keeping it separate is what makes that checkable. A model that writes
+/// `Sources: everything, verified` into its reply produces text in the body
+/// and leaves this field exactly as it was.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Answer {
+    pub content: String,
+    /// `None` when nothing local was read — a tool answer, or a brief, which is
+    /// a file the user can open rather than rows Chief assembled.
+    pub provenance: Option<String>,
+}
+
 /// Ask the local model to answer the conversation so far.
 ///
 /// The answer is returned whole, and also emitted piece by piece on
@@ -473,7 +510,7 @@ pub async fn ask_agent<R: Runtime>(
     messages: Vec<Turn>,
     model: Option<String>,
     request_id: String,
-) -> Result<String, Error> {
+) -> Result<Answer, Error> {
     let model = model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let context = tools::Context {
         pool: db::pool(&app).await?,
@@ -489,21 +526,34 @@ pub async fn ask_agent<R: Runtime>(
     // Before the engine, not after it. A question this machine can answer from
     // its own disk should not wait several seconds for a couple of gigabytes of
     // weights to be read in order to say something already written down.
+    //
+    // Which of the two paths a question takes is `adapter::strategy_for`'s to
+    // say, from the intent alone. It is the same branch this always made; what
+    // the seam adds is that the decision has a name and a home, so "a read is
+    // answered from local storage" is a property of one function rather than
+    // an emergent fact about an `if let`.
     if let Some(question) = messages.iter().rev().find(|turn| turn.role == Role::User) {
-        if let Ok(recipe) = recipe::context(&app).await {
-            let answered = intent::deliver(&question.content, &recipe, |update| {
-                let _ = app.emit(
-                    STREAM_EVENT,
-                    StreamEvent {
-                        request_id: request_id.clone(),
-                        update,
-                    },
-                );
-            })
-            .await;
+        let strategy = adapter::strategy_for(intent::route(&question.content));
 
-            if let Some(markdown) = answered {
-                return Ok(markdown);
+        if strategy == adapter::ExecutionStrategy::DirectContextInjection {
+            if let Ok(recipe) = recipe::context(&app).await {
+                let answered = intent::deliver(&question.content, &recipe, |update| {
+                    let _ = app.emit(
+                        STREAM_EVENT,
+                        StreamEvent {
+                            request_id: request_id.clone(),
+                            update,
+                        },
+                    );
+                })
+                .await;
+
+                if let Some(answered) = answered {
+                    return Ok(Answer {
+                        content: answered.markdown,
+                        provenance: answered.provenance,
+                    });
+                }
             }
         }
     }
@@ -524,9 +574,10 @@ pub async fn ask_agent<R: Runtime>(
 
     engine.start_and_wait(client.inner()).await?;
 
-    let conversation = conversation(messages, &clock::present());
+    let conversation =
+        adapter::Adapter::for_tier(engine.tier()).assemble(messages, &clock::present());
 
-    respond(&client, &context, &model, conversation, |update| {
+    let content = respond(&client, &context, &model, conversation, |update| {
         // A dropped update costs a frame of the answer, nothing more: the whole
         // reply is returned from this command regardless.
         let _ = app.emit(
@@ -537,7 +588,15 @@ pub async fn ask_agent<R: Runtime>(
             },
         );
     })
-    .await
+    .await?;
+
+    // No provenance on the tool path. The tools reach services live, so there
+    // are no stored rows to name and no "to" that would mean anything — and a
+    // footer that appeared on every answer regardless would stop being read.
+    Ok(Answer {
+        content,
+        provenance: None,
+    })
 }
 
 /// Build a transcript turn, shared by the test modules below.
@@ -551,7 +610,7 @@ fn turn(role: Role, content: &str) -> Turn {
 
 /// A stand-in for the clock, so the prompt tests do not depend on the date.
 #[cfg(test)]
-const PRESENT: &str = "The current date and time is 14:32 on Thursday 20 August 2026.";
+pub(crate) const PRESENT: &str = "The current date and time is 14:32 on Thursday 20 August 2026.";
 
 #[cfg(test)]
 mod tests {
@@ -652,6 +711,111 @@ mod tests {
         );
         assert_eq!(messages[1].content, "first question\n\nfollow-up question");
         assert_eq!(messages[2].content, "answer\n\nadditional detail");
+    }
+
+    /// The whole prompt, capped.
+    ///
+    /// The DLE specification's `≤2,000 tokens total prompt` is this, and it is
+    /// the half of that requirement that is real — the ≤1.5 s that came with
+    /// it is two orders of magnitude off on a cold prefill and is measured
+    /// rather than asserted.
+    ///
+    /// Proved by handing `conversation` the recipe ceiling instead:
+    ///
+    /// ```text
+    /// a prompt must never exceed PROMPT_CEILING: 2313 tokens
+    /// ```
+    #[test]
+    fn an_assembled_prompt_never_exceeds_the_prompt_ceiling() {
+        // Far more conversation than fits, so the ceiling is what decides.
+        let turns: Vec<Turn> = (0..40)
+            .map(|index| {
+                turn(
+                    Role::User,
+                    &format!("{index}: {}", "a question. ".repeat(40)),
+                )
+            })
+            .collect();
+
+        let messages = conversation(turns, PRESENT);
+        let cost: u32 = messages
+            .iter()
+            .map(|message| context::estimate_tokens(&message.content))
+            .sum();
+
+        assert!(
+            cost <= context::PROMPT_CEILING,
+            "a prompt must never exceed PROMPT_CEILING: {cost} tokens"
+        );
+    }
+
+    /// **Oldest first, and never the system prompt.**
+    ///
+    /// A conversation long enough to overrun the budget has to lose its
+    /// beginning rather than its end: what the user just asked is the part
+    /// that has to survive, and the instructions are not negotiable at all.
+    ///
+    /// Proved by dropping the `.rev()` that makes the loop walk backwards,
+    /// which fills the budget from the oldest turn instead:
+    ///
+    /// ```text
+    /// the newest turn is the one that has to survive: [… "ANSWERED-FIRST …",
+    ///   "FIRST …"]
+    /// ```
+    #[test]
+    fn trimming_drops_the_oldest_turns_and_never_the_instructions() {
+        // Big enough that the ceiling has to choose. Roles alternate, because
+        // adjacent same-role turns are merged after trimming and a transcript
+        // of one merged block would not exercise the choice.
+        let long = "a question. ".repeat(150);
+        let turns = vec![
+            turn(Role::User, &format!("FIRST {long}")),
+            turn(Role::Assistant, &format!("ANSWERED-FIRST {long}")),
+            turn(Role::User, &format!("SECOND {long}")),
+            turn(Role::Assistant, &format!("ANSWERED-SECOND {long}")),
+            turn(Role::User, "LAST: what did I ship?"),
+        ];
+
+        let messages = conversation(turns, PRESENT);
+        let rendered: Vec<&str> = messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect();
+
+        assert!(
+            rendered[0].starts_with(SYSTEM_PROMPT),
+            "the system prompt survives any trimming"
+        );
+        assert!(
+            rendered.iter().any(|content| content.contains("LAST:")),
+            "the newest turn is the one that has to survive: {rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|content| content.contains("FIRST")),
+            "the oldest turn is the first to go: {rendered:?}"
+        );
+    }
+
+    /// The stable parts lead, so llama.cpp's prefix cache has something to
+    /// match. `engine::arguments` passes `--cache-reuse`; this is the half of
+    /// that bargain the prompt has to keep, and without it the flag buys
+    /// nothing.
+    #[test]
+    fn puts_the_stable_parts_first_so_the_prefix_cache_can_pay() {
+        let first = conversation(vec![turn(Role::User, "What did I ship?")], PRESENT);
+        let second = conversation(
+            vec![
+                turn(Role::User, "What did I ship?"),
+                turn(Role::Assistant, "Two pull requests."),
+                turn(Role::User, "And this week?"),
+            ],
+            PRESENT,
+        );
+
+        assert_eq!(
+            first[0].content, second[0].content,
+            "two turns of the same conversation must share a prefix, byte for byte"
+        );
     }
 
     #[test]
@@ -1407,5 +1571,24 @@ mod orchestration_tests {
         );
 
         github_server.await.expect("GitHub stub should finish");
+    }
+}
+
+#[cfg(test)]
+mod catalogue_cost {
+    use super::*;
+
+    /// What the catalogue actually costs, printed rather than asserted.
+    ///
+    /// `keeps_the_tool_catalogue_within_its_budget` is the gate; this exists so
+    /// the number can be read off without breaking something to see it, since
+    /// the plan asks for it in the pull request each time it moves.
+    #[test]
+    #[ignore = "prints the catalogue's token cost rather than asserting anything"]
+    fn prints_what_the_catalogue_costs() {
+        println!(
+            "the tool catalogue costs about {} tokens",
+            catalog_cost(&tools::catalog())
+        );
     }
 }

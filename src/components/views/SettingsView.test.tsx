@@ -45,11 +45,23 @@ const deviceLogin = {
  */
 const NO_PLAN = { reads: [], writes: [], keeps: [] };
 
-/** Answer `profile_plan` properly, and everything else with `value`. */
-function answering(value: unknown) {
-  invoke.mockImplementation((command: string) =>
-    Promise.resolve(command === 'profile_plan' ? NO_PLAN : value),
-  );
+/**
+ * Answer `profile_plan` and `sync_status` in their own shapes, and everything
+ * else with `value`.
+ *
+ * Both are dispatched on the command name rather than being swept up by the
+ * catch-all, because neither returns a list of accounts: `sync_status` returns
+ * `SyncState[]` keyed on `accountId`, and answering it with the account list
+ * would key the map on `undefined` and quietly render nothing.
+ */
+function answering(value: unknown, syncStates: unknown[] = []) {
+  invoke.mockImplementation((command: string) => {
+    if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+    if (command === 'sync_status') return Promise.resolve(syncStates);
+    if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
+
+    return Promise.resolve(value);
+  });
 }
 
 describe('SettingsView', () => {
@@ -226,6 +238,9 @@ describe('SettingsView', () => {
 
     render(<SettingsView />);
     await userEvent.click(await screen.findByRole('button', { name: 'Disconnect octocat' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Delete octocat and everything it stored' }),
+    );
 
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
     // Keyed on the account, not the service: forgetting one of two GitHub
@@ -306,6 +321,7 @@ describe('SettingsView', () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
       if (command === 'connections') return Promise.resolve([octocat, hubot]);
+      if (command === 'account_data') return Promise.resolve({ entries: 3, proposals: 1 });
       return Promise.resolve([octocat]);
     });
 
@@ -313,6 +329,16 @@ describe('SettingsView', () => {
 
     const buttons = await screen.findAllByRole('button', { name: /^Disconnect/ });
     await userEvent.click(buttons[1]);
+
+    // The confirmation says what goes, and it is the second account's counts
+    // that are being read — the first row is untouched.
+    expect(await screen.findByText(/3 work log entries and 1 draft/)).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith('account_data', { accountId: 2 });
+    expect(invoke).not.toHaveBeenCalledWith('disconnect', { accountId: 2 });
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Delete Work and everything it stored' }),
+    );
 
     expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 2 });
   });
@@ -324,6 +350,7 @@ describe('SettingsView', () => {
       if (command === 'label_account') {
         return Promise.resolve([{ ...octocat, label: 'Personal' }, hubot]);
       }
+      if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
       return Promise.resolve([hubot]);
     });
 
@@ -333,6 +360,11 @@ describe('SettingsView', () => {
     // the click that follows. That write must not swallow the click.
     await userEvent.type(await screen.findByLabelText('Name for octocat'), 'Personal');
     await userEvent.click(screen.getByRole('button', { name: 'Disconnect octocat' }));
+    // The rename has landed by now, so the confirmation calls the account what
+    // the user just called it.
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Delete Personal and everything it stored' }),
+    );
 
     expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 1 });
   });
@@ -343,6 +375,7 @@ describe('SettingsView', () => {
       // Never settles: the write is still in flight when the click lands,
       // which is the whole of the race on a machine doing real work.
       if (command === 'label_account') return new Promise(() => {});
+      if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
       return Promise.resolve([{ ...octocat, label: 'Personal' }]);
     });
 
@@ -350,6 +383,9 @@ describe('SettingsView', () => {
 
     await userEvent.type(await screen.findByLabelText('Name for octocat'), 'Personal');
     await userEvent.click(screen.getByRole('button', { name: 'Disconnect Work' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Delete Work and everything it stored' }),
+    );
 
     expect(invoke).toHaveBeenCalledWith('disconnect', { accountId: 2 });
   });
@@ -473,5 +509,238 @@ describe('SettingsView', () => {
     // The row is a field beside a button in a 680px measure, so a name has to
     // end somewhere. What it does to the layout is measured in the browser.
     expect(field).toHaveValue('a'.repeat(40));
+  });
+  describe('confirming a disconnect', () => {
+    function withData(entries: number, proposals: number) {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'sync_status') return Promise.resolve([]);
+        if (command === 'account_data') return Promise.resolve({ entries, proposals });
+
+        return Promise.resolve([octocat]);
+      });
+    }
+
+    /**
+     * Disconnecting now deletes the account's work log entries, its drafts and
+     * their markdown along with the credential — because that is what the word
+     * means to somebody reading it. It is irreversible and removes something
+     * they may not know is there, so it is confirmed with counts read from the
+     * database rather than guessed at.
+     */
+    it('states what will go, in counts, before anything does', async () => {
+      withData(42, 3);
+
+      render(<SettingsView />);
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Disconnect octocat' }));
+
+      expect(
+        await screen.findByText(
+          '42 work log entries and 3 drafts will be deleted from this machine.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('counts in the singular when there is one of something', async () => {
+      withData(1, 1);
+
+      render(<SettingsView />);
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Disconnect octocat' }));
+
+      expect(
+        await screen.findByText('1 work log entry and 1 draft will be deleted from this machine.'),
+      ).toBeInTheDocument();
+    });
+
+    it('says so plainly when the account has left nothing behind', async () => {
+      withData(0, 0);
+
+      render(<SettingsView />);
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Disconnect octocat' }));
+
+      expect(
+        await screen.findByText('This account has left nothing on this machine.'),
+      ).toBeInTheDocument();
+    });
+
+    /**
+     * Asserted rather than assumed: this is the irreversible one.
+     *
+     * Proved by making Cancel confirm:
+     *
+     *   expected "spy" to not be called with arguments: [ 'disconnect', Anything ]
+     */
+    it('deletes nothing when the confirmation is cancelled', async () => {
+      withData(42, 3);
+
+      render(<SettingsView />);
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Disconnect octocat' }));
+      await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+      expect(invoke).not.toHaveBeenCalledWith('disconnect', expect.anything());
+      // And the row is back to offering it, rather than stuck mid-question.
+      expect(await screen.findByRole('button', { name: 'Disconnect octocat' })).toBeInTheDocument();
+    });
+
+    /**
+     * A count Chief could not read is not a reason to refuse to disconnect,
+     * and not a reason to claim there is nothing there either.
+     */
+    it('still offers the disconnect when the counts cannot be read', async () => {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'sync_status') return Promise.resolve([]);
+        if (command === 'account_data') return Promise.reject(new Error('the database is locked'));
+
+        return Promise.resolve([octocat]);
+      });
+
+      render(<SettingsView />);
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Disconnect octocat' }));
+
+      expect(
+        await screen.findByRole('button', { name: 'Delete octocat and everything it stored' }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('freshness', () => {
+    /**
+     * The crash class CLAUDE.md calls the most expensive shortcut in this
+     * repository: a view receiving a shape it did not expect. A fresh install
+     * has no `sync_state` rows at all, which is a legitimate state.
+     */
+    it('says never synced when nothing has been read yet, and throws nothing', async () => {
+      answering([octocat], []);
+
+      render(<SettingsView />);
+
+      expect(await screen.findByText('Never synced')).toBeInTheDocument();
+    });
+
+    it('says how long ago the last successful read was', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-09-02T09:30:00.000Z'));
+
+      try {
+        answering(
+          [octocat],
+          [
+            {
+              accountId: 1,
+              source: 'github',
+              status: 'ok',
+              lastSyncedAt: '2026-09-02T09:00:00.000Z',
+              errorMessage: null,
+            },
+          ],
+        );
+
+        render(<SettingsView />);
+
+        await vi.waitFor(() => {
+          expect(screen.getByText('Synced 30m ago')).toBeInTheDocument();
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    /**
+     * Amber is reserved for *you are needed*, and a revoked credential is the
+     * only one of the four states that is. A host that could not be reached is
+     * Chief's problem and will be tried again.
+     */
+    it('offers a way back in when the credential is gone', async () => {
+      answering(
+        [octocat],
+        [
+          {
+            accountId: 1,
+            source: 'github',
+            status: 'authRequired',
+            lastSyncedAt: '2026-09-01T09:00:00.000Z',
+            errorMessage: 'the credential was refused',
+          },
+        ],
+      );
+
+      render(<SettingsView />);
+
+      expect(await screen.findByText('Sign in again')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
+    });
+
+    it('does not offer a way back in, or use amber, for an account that is fine', async () => {
+      answering(
+        [octocat],
+        [
+          {
+            accountId: 1,
+            source: 'github',
+            status: 'ok',
+            lastSyncedAt: '2026-09-02T09:00:00.000Z',
+            errorMessage: null,
+          },
+        ],
+      );
+
+      render(<SettingsView />);
+
+      await screen.findByLabelText('Name for octocat');
+
+      expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Sign in again')).not.toBeInTheDocument();
+    });
+
+    /**
+     * The crash this hook was taught about the expensive way. Freshness is
+     * rendered per account across three cards, so one answer of the wrong
+     * shape took all three down at once — found by a test rather than by a
+     * user, which is the system working, but only because something rendered
+     * the real component.
+     *
+     * Proved by dropping the `Array.isArray` guard:
+     *
+     *   Uncaught [TypeError: all.map is not a function]
+     */
+    it('survives an answer that is not a list of states', async () => {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'sync_status') return Promise.resolve({ nothing: 'like a state' });
+
+        return Promise.resolve([octocat]);
+      });
+
+      render(<SettingsView />);
+
+      expect(await screen.findByLabelText('Name for octocat')).toBeInTheDocument();
+      expect(screen.getByText('Never synced')).toBeInTheDocument();
+    });
+
+    /**
+     * A failure reading freshness must not take the screen that carries it.
+     * Freshness is an annotation on a screen whose actual job is connecting
+     * accounts, and every row degrading to "Never synced" is the same thing a
+     * fresh install shows.
+     */
+    it('still lets an account be managed when freshness cannot be read', async () => {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'sync_status') return Promise.reject(new Error('the database is locked'));
+
+        return Promise.resolve([octocat]);
+      });
+
+      render(<SettingsView />);
+
+      expect(await screen.findByLabelText('Name for octocat')).toBeInTheDocument();
+      expect(screen.getByText('Never synced')).toBeInTheDocument();
+    });
   });
 });

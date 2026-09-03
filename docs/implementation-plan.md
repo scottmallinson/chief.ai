@@ -38,18 +38,18 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | Calendar by .ics subscription          | Shipped                        | REC-39           | #60       |
 | —     | Linear by pasted API key               | Shipped                        | REC-40           | #61       |
 | —     | "What is waiting on me?"               | Shipped                        | REC-41           | #62       |
-| —     | DLE — structured log, FTS5, sync state | Not started                    | DLE-0 / REC-43   | —         |
-| —     | DLE — zero-network read path           | Not started                    | DLE-1 / REC-44   | —         |
-| —     | DLE — deterministic ingestion          | Not started                    | DLE-2 / REC-45   | —         |
-| —     | DLE — freshness in the interface       | Not started                    | DLE-3 / REC-46   | —         |
-| —     | DLE — unlinking deletes its data       | Not started                    | DLE-4 / REC-47   | —         |
-| —     | DLE — local directory permissions      | Not started                    | DLE-5 / REC-48   | —         |
-| —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
-| —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7 / REC-50   | —         |
-| —     | DLE — monthly journal roll-up          | Not started                    | DLE-8 / REC-51   | —         |
-| —     | DLE — provenance footers               | Not started                    | DLE-9 / REC-52   | —         |
-| —     | DLE — action links from the feed       | Not started                    | DLE-10 / REC-53  | —         |
-| —     | DLE — model-swap and concurrency       | Not started                    | DLE-11 / REC-54  | —         |
+| —     | DLE — structured log, FTS5, sync state | Shipped                        | DLE-0 / REC-43   | #65       |
+| —     | DLE — zero-network read path           | Shipped                        | DLE-1 / REC-44   | #65       |
+| —     | DLE — deterministic ingestion          | Shipped                        | DLE-2 / REC-45   | #65       |
+| —     | DLE — freshness in the interface       | Shipped                        | DLE-3 / REC-46   | #65       |
+| —     | DLE — unlinking deletes its data       | Shipped                        | DLE-4 / REC-47   | #65       |
+| —     | DLE — local directory permissions      | Shipped                        | DLE-5 / REC-48   | #65       |
+| —     | DLE — model adapter seam               | Shipped                        | DLE-6 / REC-49   | #65       |
+| —     | DLE — prompt truncation and TTFT       | Shipped                        | DLE-7 / REC-50   | #65       |
+| —     | DLE — monthly journal roll-up          | Shipped                        | DLE-8 / REC-51   | #65       |
+| —     | DLE — provenance footers               | Shipped                        | DLE-9 / REC-52   | #65       |
+| —     | DLE — action links from the feed       | Shipped                        | DLE-10 / REC-53  | #65       |
+| —     | DLE — model-swap and concurrency       | Shipped                        | DLE-11 / REC-54  | #65       |
 
 **Step 22 was built before step 14**, out of the numbered order and on the plan's own advice: an
 empty corpus is step 14's failure mode, and a draft written against seven empty starter files is
@@ -67,7 +67,7 @@ the generic output that step exists to avoid.
 | D6       | Taken, built, **measured**     | `e2e/feed.spec.ts` asserts the detail width does not change |
 | D7       | Taken, built                   | `engine.rs`                                                 |
 | D8       | Acknowledged, **still open**   | A measurement on real hardware. See §9                      |
-| D9       | Taken, **not yet built**       | Reads from local storage. DLE-0 through DLE-11              |
+| D9       | Taken, built                   | Reads from local storage. DLE-0 through DLE-11, all shipped |
 
 ---
 
@@ -405,17 +405,29 @@ the tier (`probe.rs`), `--ctx-size` (D7) and **KV quantisation** (`--cache-type-
 halving the KV term), which Chief does not currently use. Enforcement is selection plus measurement.
 
 **Two ceilings, not one.** The specification asks for ≤ 300 tokens of injected context. That is
-right for a read question and wrong for a brief. Measured on its own example line, a row carrying an
-inline GitHub link costs 34–38 tokens — **the URL alone is 13–15 of them** — so 300 tokens buys 8 or
-9 rows. Drop the URL, which the model has no use for and which the interface renders from
-`work_logs.url` anyway, and the same row costs 14–16 tokens: **19 to 21 rows in the same 300**. Eight
-rows is not an answer to "what did I ship this week?"; twenty is. So:
+right for a read question and wrong for a brief. Dropping the URL — which the model has no use for
+and which the interface renders from `work_logs.url` anyway — is what makes 300 workable, because a
+link is a large part of what a row costs. So:
 
 | Ceiling                      | Value | Governs                                           |
 | ---------------------------- | ----- | ------------------------------------------------- |
 | `context::RETRIEVAL_CEILING` | 300   | the FTS5 snippet a read question injects (new)    |
 | `context::DEFAULT_CEILING`   | 2,400 | recipe and brief assembly (unchanged, D7)         |
 | assembled prompt             | 2,000 | hard truncation of **chat history**, oldest first |
+
+**The row counts this section first carried were wrong, twice — corrected against a measurement
+(REC-44).** It claimed 300 tokens bought 8–9 rows with links and 19–21 without, and therefore that
+leaving the link out roughly doubled what fits. Both figures came from reasoning about a real
+tokenizer. The gate is enforced by `context::estimate_tokens`, which is 3 bytes per token and
+**more pessimistic than that for this text**, and it is the one that decides. Measured through it:
+**15 rows without the link against 10 with** — half as many again, not double.
+
+The decision is unaffected and the ceiling stays at 300; only the arithmetic advertising it was
+fiction. `retrieval::leaving_the_link_out_is_what_makes_the_ceiling_workable` now asserts the
+**ratio** rather than either count, with both halves measured through the same estimator, so
+calibrating `BYTES_PER_TOKEN` later cannot quietly invalidate it. The lesson is narrow and worth
+keeping: a token count reasoned about is not a token count, and the only ruler that matters is the
+one the gate holds.
 
 One caveat that belongs beside the 300 rather than in a footnote: it is measured with
 `context::BYTES_PER_TOKEN`, which is 3 and still uncalibrated (§9). The gate therefore has to use
@@ -720,7 +732,7 @@ owns its own module and the only shared file is `lib.rs`, which gains one regist
 | DLE-8     | `journal.rs`                                            | Roll up, delete nothing                   |
 | DLE-9     | `ChatView.tsx`, `agent.rs`                              | **blockedBy DLE-1** — the one edge left   |
 | DLE-10    | `TodayView.tsx`, `work_log.rs`                          | Links from `work_logs.url`, no model      |
-| DLE-11    | `db.rs` tests, `weights.rs` tests                       | Model-swap isolation; WAL concurrency     |
+| DLE-11    | `db.rs` tests, `weights.rs` tests                       | Model-swap isolation; journal and locking |
 
 The twelve are **REC-43 through REC-54** in Linear, in that order, each carrying
 `agent-executable`; DLE-0 and DLE-4 also carry `risk:high`. Every one is `blockedBy` REC-43 except
@@ -900,18 +912,136 @@ removes from it.**
 
 ### Unclaimed engineering
 
-| What                                   | Note                                                                                                                                      | Where       |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| **Tokens in the OS keychain**          | Stored as plain text, protected by the OS user account                                                                                    | —           |
-| **Reviewers in `team_structure.md`**   | GitHub's search response carries none, so it is a call per pull request                                                                   | REC-16      |
-| **`glib` GHSA-wrw7-89jp-8q8g**         | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                      | SECURITY.md |
-| **AC/battery polling cadence**         | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                              | DLE-2       |
-| **Whether `work_logs` is ever pruned** | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                   | DLE-8       |
-| **`busy_timeout` through the plugin**  | `tauri-plugin-sql` owns the pool and `busy_timeout` is per-connection, so it may not be reachable without patching. `sqlx` defaults to 5s | DLE-11      |
-| **FTS5 query semantics**               | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                             | DLE-0       |
+| What                                   | Note                                                                                                                                                               | Where       |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
+| **Tokens in the OS keychain**          | Stored as plain text, protected by the OS user account                                                                                                             | —           |
+| **Reviewers in `team_structure.md`**   | GitHub's search response carries none, so it is a call per pull request                                                                                            | REC-16      |
+| **`glib` GHSA-wrw7-89jp-8q8g**         | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                                               | SECURITY.md |
+| **AC/battery polling cadence**         | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                                                       | DLE-2       |
+| **A control for the pass interval**    | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it                              | —           |
+| **Whether `work_logs` is ever pruned** | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                                            | DLE-8       |
+| **Chief is not on WAL, and cannot be** | Neither sqlx nor `tauri-plugin-sql` offers a seam, and a migration cannot do it — see the settled note below. It needs a patched plugin or an `after_connect` hook | DLE-11      |
+| **FTS5 query semantics**               | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                                                      | DLE-0       |
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **The adapter carries no capability flag, and the refusal is in the code.** The DLE specification's
+  `ModelAdapter::supports_native_tools()` is D1's `supports_tools` under another name — specified at
+  revision 3, rejected at revision 4, and rejected again here, with the reasoning in `adapter.rs` so
+  it is not proposed a third time. `GrammarConstrainedJson` is refused on different grounds: both
+  catalogue models are Llama and tool-call natively, so it would have no users, and a path nothing
+  reaches cannot be tested against anything real.
+- **The prompt is a `Vec<Message>` and the return type is the guard.** The specification's
+  `format_prompt(…) -> String` would bypass the model's own chat template, which is the only thing
+  that makes a tool call work under `--jinja`. `Adapter::max_prefill_tokens` wraps `Tier` rather than
+  introducing a second notion of the context window: it takes the lesser of the window and
+  `PROMPT_CEILING`, so a tier whose window fell below the ceiling would shrink the prompt instead of
+  silently overrunning itself.
+- **Chief runs on the rollback journal, not WAL — and the earlier claim that it did was wrong.**
+  This review recorded `PRAGMA journal_mode = WAL` as already satisfied because "sqlx's
+  `SqliteConnectOptions` defaults to WAL and a 5s busy timeout". Half of that is wrong, and it is the
+  half the specification cared about. **sqlx deliberately leaves `journal_mode` unset**, and says why
+  in its own source: _"WAL mode is a permanent setting for created databases and changing into or out
+  of it requires an exclusive lock that can't be waited on with `sqlite3_busy_timeout()`."_ So the
+  database is on SQLite's own default.
+
+  **And a migration cannot fix it.** `journal_mode` is persistent in the file header, so setting it
+  once would be enough — but `tauri-plugin-sql` hands every migration to sqlx with `no_tx: false`
+  hard-coded, and SQLite does not quietly ignore the pragma inside a transaction, it raises
+  `cannot change into wal mode from within a transaction`. A migration written to "just set WAL"
+  would fail on every installed copy on its first launch after the upgrade. Outside a transaction the
+  same statement works and persists, so the fix exists and needs a seam the plugin does not offer.
+
+  **What saves the background pass is the busy timeout, not the journal.** `busy_timeout` _is_ the
+  five seconds the specification wanted, by sqlx's default, so a reader that meets the daemon's short
+  upsert waits milliseconds rather than failing with `SQLITE_BUSY` — a latency cost rather than an
+  error, which is why nothing has ever noticed. `db::architecture_tests` asserts all three facts, so
+  the day any of them changes is the day a test goes red rather than the day somebody guesses.
+
+- **Model-swap isolation is now asserted rather than claimed.** Ingestion and `bm25()` ranking never
+  read which model is loaded, and the schema does not branch on the tier. Nothing would break visibly
+  on the day that stopped being true — a swap would simply return different rows — which is exactly
+  why it is worth a test.
+- **Three named ceilings, and the chat prompt is the tightest.** `PROMPT_CEILING` is 2,000 —
+  the half of the DLE specification's `≤2,000 tokens, TTFT ≤1.5 s` that is real. `DEFAULT_CEILING`
+  stays 2,400 for brief assembly, because `/brief` writes a file nobody is watching and a question
+  in the composer is somebody sitting still while prefill runs; on a CPU those 400 tokens are 12 to
+  22 seconds of it. `RETRIEVAL_CEILING` stays 300.
+- **Resident memory is chosen, not capped.** llama.cpp has no allocation cap, so the specification's
+  "≤4 GB by capping runtime allocations" is not a thing that can be built. What exists instead is
+  the arithmetic and its three levers: the tier, `--ctx-size`, and KV precision. Llama 3.2 3B costs
+  28 × 8 × 128 × 2 × 2 = **114,688 bytes — 112 KiB — per token**, so 896 MiB at ctx 8192 on top of
+  ~2,000 MiB of weights: about 2.9 GB, under 4 GB with less headroom than the specification implied.
+  `--cache-type-k/v q8_0` halves the KV term and Chief does not pass it yet; `chief doctor` reports
+  what it would save so the lever is visible before it is needed.
+- **The TTFT figure is measured warm and asserted nowhere.** Cold, 2,000 tokens at the 18–34 tokens
+  a second this machine manages is 60 to 110 seconds — two orders of magnitude off the target. The
+  number only means anything for the volatile suffix past a cached prefix, so `probe::measure` asks
+  the same question twice and reports both; the gap is what `--cache-reuse` and the
+  stable-parts-first assembly are worth here. No test asserts a wall clock: D8 is explicit that a CI
+  runner is not the machine the number is about.
+- **The provenance footer is composed in Rust and rendered in its own element.** It is the only
+  thing left telling the reader how fresh an answer is, now that a read is a query rather than a
+  call somebody else's API times, so it is the one piece of text on the screen that has to be true —
+  a line the model wrote could be wrong in the way nothing else would catch. Keeping it out of the
+  answer body is what makes that checkable: a model that writes its own `Sources:` line produces
+  text in the body and leaves the footer untouched. It replaced the count of tool names the frontend
+  inferred from the stream, which showed zero for an answer built entirely from the work log.
+- **No footer where nothing local was read.** A tool answer reaches services live, and `/brief`
+  reads a file the user can open; an empty footer claiming a work log behind either would be worse
+  than none.
+- **The journal is a second rendering, never a move.** The DLE specification asked for 30-day
+  retention — summarise, then prune. Chief reports nothing anywhere, so the row is the only copy by
+  construction, and a hand-written entry cannot be re-fetched from anything. The roll-up is
+  therefore _rolling_ rather than monthly: rows older than thirty days go in, so early September
+  rewrites `2026-08.md` several times as the rest of August crosses the line. That is why a month
+  file is replaced rather than appended to, and why the rows are ordered by timestamp _and then by
+  id_ — two rows written in the same millisecond are ordinary, and leaving their order to SQLite
+  would make a rerun's bytes depend on the page layout.
+- **A link is rendered from `work_logs.url` and never from a model.** The retrieval context omits
+  links because a GitHub URL is 13–15 tokens and more than half a row; the interface putting one
+  back from the column is the other half of that trade, and a model that has never seen a link
+  cannot invent one. The target is the stored value verbatim — canonicalisation happened once, at
+  ingestion, and re-deriving it at render time would mean two places deciding where a link goes.
+- **The app-config directory matters more than the corpus.** The DLE specification asked for `0700`
+  on the corpus and never mentioned the directory holding `chief.db`, which is where the OAuth
+  tokens actually are. Both are restricted, and the database file is restricted as well as its
+  directory: a mode on a directory says who may reach a path, a mode on the file says who may read
+  it, and SQLite created that file at whatever the umask allowed. This narrows the exposure and does
+  not close it — the tokens are still plain text, and REC-28 is the real fix.
+- **The Windows branch consumes its arguments rather than silencing a lint.** An `allow` or an
+  `expect` there would be a claim about a compiler warning on a platform the branch cannot be tested
+  on, which is the shape of mistake `#[cfg(windows)]` keeps producing.
+- **A purge is keyed on `account_id`, never on `source`.** The DLE specification proposed
+  `purge_integration_data(source)`, which would wipe both of a person's GitHub accounts when they
+  unlinked one; migration v3 made the account the unit precisely because holding a work and a
+  personal account is ordinary. Hand-written entries carry `account_id = 0`, the sentinel
+  `AUTOINCREMENT` never issues, so nothing the user typed is reachable by any purge.
+- **The credential goes last.** If deleting the data fails half way, the account is still connected
+  and still visible, which is a state the user can act on; the other order leaves orphaned rows
+  nothing can name.
+- **Work log rows are still not pruned by age.** Unlinking deletes an account's rows because the
+  user asked for that account to be gone. Time passing is not somebody asking — see the open
+  question on `work_logs` retention.
+- **The header shows the oldest sync across accounts, not the newest.** Showing the newest would
+  say everything was fresh while one account had been failing for a week, which is the reading D9
+  cannot afford: an answer assembled from local rows is only as good as its stalest source. An
+  account that has never been read makes the whole thing unknown for the same reason.
+- **Amber is only for a revoked credential.** `AuthRequired` is the one of the four sync states
+  that is _you are needed_; an unreachable host is Chief's problem and reads as a quiet line. Making
+  both amber turns the settings screen into an alarm every time somebody closes their laptop, at
+  which point neither gets read.
+- **Reconnecting clears an account's `sync_state` in the same transaction that stores the
+  credential.** Signing in again adopts the existing account row rather than making a second one, so
+  without this the screen would still be amber and still asking somebody to sign in, moments after
+  they did. It deletes rather than writing `Ok`, because no pass has run yet.
+- **A pass is due when either clock says so, never when both do.** `Instant` does not advance
+  across a suspend on Linux, so a laptop closed for four hours wakes believing four minutes passed;
+  the wall clock does advance, but it also moves when NTP steps it backwards, and requiring both
+  would let a correction postpone the pass for as long as it lasted. Taking the earlier of the two
+  means a wrong clock can make a pass early and can never stop one happening. It answers _whether_,
+  never _how many_: a machine suspended across four scheduled passes runs one, because the other
+  three would read the same page and upsert the same unchanged rows.
 - **A file the user edited is judged by content, not mtime** (`profile::is_untouched`). mtime moves
   on a checkout, a sync or a restored backup without a byte changing.
 - **A routed intent that finds nothing steps aside** rather than answering "you have nothing",

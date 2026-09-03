@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 
 import { Sidebar } from '@/components/Sidebar';
+import { useSyncState } from '@/hooks/use-sync-state';
+import { howLongAgo, oldest } from '@/lib/sync-state';
 import { NAV_ITEMS, type View } from '@/lib/navigation';
 
 interface LayoutProps {
@@ -10,6 +12,9 @@ interface LayoutProps {
   onOpenChat: () => void;
   /** The model answering on this machine, named for a person to read. */
   model?: string | undefined;
+  /** How many accounts are connected, so the header can tell "none" from
+   *  "some, and one of them has never been read". */
+  accounts?: number | undefined;
   /**
    * The 240px column between the rail and the detail, when the destination has
    * something to put in it. Left out entirely otherwise: an empty pane is 240px
@@ -32,8 +37,24 @@ interface LayoutProps {
  * The header says where the data is on every screen, which is the first thing
  * this product has to be able to state rather than imply.
  */
-export function Layout({ activeView, onNavigate, onOpenChat, model, list, children }: LayoutProps) {
+export function Layout({
+  activeView,
+  onNavigate,
+  onOpenChat,
+  model,
+  accounts = 0,
+  list,
+  children,
+}: LayoutProps) {
   const current = NAV_ITEMS.find((item) => item.id === activeView);
+  const { all } = useSyncState();
+
+  // The **oldest** successful read, not the newest. A header showing the
+  // newest would say everything was fresh while one account had been failing
+  // for a week, which is the reading D9 cannot afford to give: an answer
+  // assembled from local rows is only as good as its stalest source.
+  const since = oldest(all, accounts);
+  const freshness = since === null ? null : howLongAgo(since);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
@@ -53,6 +74,7 @@ export function Layout({ activeView, onNavigate, onOpenChat, model, list, childr
           <h1 className="truncate text-base font-semibold tracking-[-0.015em]">{current?.label}</h1>
           <p className="truncate font-mono text-[11px] text-muted-foreground">
             on-device{model === undefined ? '' : ` · ${model}`}
+            {freshness === null ? '' : ` · synced ${freshness}`}
           </p>
         </header>
 

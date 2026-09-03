@@ -9,7 +9,7 @@
  * second chance from a CDN.
  */
 
-import { expect, longAnswer, test, type Account } from './fixtures';
+import { expect, longAnswer, test, type Account, type SyncState } from './fixtures';
 
 const octocat: Account = {
   id: 1,
@@ -30,6 +30,29 @@ test.describe('shell metrics', () => {
     expect(rail, 'the rail should be on screen').not.toBeNull();
     expect(header, 'the header should be on screen').not.toBeNull();
     expect(Math.round(rail?.width ?? 0)).toBe(56);
+    expect(Math.round(header?.height ?? 0)).toBe(48);
+  });
+
+  test('still runs a 48px header once the sync time is in it', async ({ chief, page }) => {
+    // The header gained a third clause. It is one line of 11px mono in a
+    // 48px band, and the band is what the whole shell is hung off.
+    await chief.open({
+      accounts: [octocat],
+      syncStates: [
+        {
+          accountId: 1,
+          source: 'github',
+          status: 'ok',
+          lastSyncedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+          errorMessage: null,
+        },
+      ],
+    });
+
+    await expect(page.locator('header p')).toContainText('synced 30m ago');
+
+    const header = await page.locator('header').boundingBox();
+
     expect(Math.round(header?.height ?? 0)).toBe(48);
   });
 
@@ -124,5 +147,51 @@ test.describe('the bundled typefaces', () => {
     expect(faces.sans, 'Instrument Sans should be available').toBe(true);
     expect(faces.mono, 'IBM Plex Mono should be available').toBe(true);
     expect(faces.offOrigin, 'the app should fetch nothing off its own origin').toEqual([]);
+  });
+});
+
+test.describe('the one colour that means you are needed', () => {
+  const revoked: SyncState = {
+    accountId: 1,
+    source: 'github',
+    status: 'authRequired',
+    lastSyncedAt: '2026-09-01T09:00:00.000Z',
+    errorMessage: 'the credential was refused',
+  };
+
+  /**
+   * The design system reserves amber for *you are needed*, and only a revoked
+   * credential is that. A class name is not the assertion — what the browser
+   * actually paints is, because the tone is a token and a token can be
+   * redefined out from under the class that names it.
+   */
+  test('paints a revoked credential amber', async ({ chief, page }) => {
+    await chief.open({ accounts: [octocat], syncStates: [revoked] });
+    await chief.goTo('Settings');
+
+    const asking = page.getByTestId('freshness');
+    await expect(asking).toHaveText('Sign in again');
+
+    const filled = await asking.evaluate((node) => getComputedStyle(node).backgroundColor);
+
+    expect(filled, 'an amber chip is a tinted fill, not bare text').not.toBe('rgba(0, 0, 0, 0)');
+    await expect(page.getByRole('button', { name: 'Reconnect' })).toBeVisible();
+  });
+
+  /** A machine that is working is not somebody being asked for something. */
+  test('leaves a healthy account uncoloured', async ({ chief, page }) => {
+    await chief.open({
+      accounts: [octocat],
+      syncStates: [{ ...revoked, status: 'ok', lastSyncedAt: new Date().toISOString() }],
+    });
+    await chief.goTo('Settings');
+
+    const fine = page.getByTestId('freshness');
+    await expect(fine).toHaveText('Synced just now');
+
+    const painted = await fine.evaluate((node) => getComputedStyle(node).backgroundColor);
+
+    expect(painted, 'a working account is not a signal').toBe('rgba(0, 0, 0, 0)');
+    await expect(page.getByRole('button', { name: 'Reconnect' })).toHaveCount(0);
   });
 });

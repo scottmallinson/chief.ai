@@ -8,8 +8,19 @@ export interface WorkLogEntry {
   /** Where the entry came from, e.g. `github` or `calendar`. */
   source: string;
   content: string;
-  /** A one-line achievement, written by the local model in a later step. */
+  /** One line on what happened, written deterministically at ingestion. */
   summary: string | null;
+  /**
+   * Where the thing this describes actually is, or null when there is nowhere
+   * to go — an entry the user typed, or one logged before migration 8.
+   *
+   * **Rendered from here and never from a model.** The retrieval context
+   * deliberately omits links, because a GitHub URL is 13–15 tokens and more
+   * than half a row; the interface putting it back from this column is the
+   * other half of that trade, and a model that has never seen a link cannot
+   * invent one.
+   */
+  url: string | null;
   /** What the entry was traced back to, or null when the user wrote it. */
   externalId: string | null;
   /** Which connected account it came from, and 0 when it came from none. */

@@ -160,16 +160,20 @@ export function ChatView({ chat }: { chat: UseChat }) {
                 ) : (
                   <Answer
                     key={message.id}
-                    label={
-                      <p className="micro text-verified-text">
-                        chief · local
-                        {message.sources > 0 &&
-                          ` · ${message.sources} source${message.sources === 1 ? '' : 's'}`}
-                      </p>
-                    }
+                    label={<p className="micro text-verified-text">chief · local</p>}
                   >
                     <span className="sr-only">Chief said: </span>
                     {message.content}
+                    {/* Under the answer, not in it. The text above is what the
+                        model wrote; this line is what Rust knows, and keeping
+                        them in separate elements is what stops a model that
+                        writes its own "Sources:" line from being read as
+                        this one. */}
+                    {message.provenance !== null && (
+                      <span className="mt-2.5 block micro text-muted-foreground">
+                        {message.provenance}
+                      </span>
+                    )}
                   </Answer>
                 ),
               )}

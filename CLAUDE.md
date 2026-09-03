@@ -91,6 +91,15 @@ Runner time is the one cost this project has, so the workflows are written to sp
   pull request; Release calls it before it bundles anything. That is what makes "a release depends
   on CI being green" true by construction — a release runs the same jobs against the very commit
   it is about to ship, rather than trusting that some earlier run on some other commit was green.
+- **A draft pays for nothing.** `ci.yml`'s single job is skipped while the pull request is a
+  draft, which is the cheapest saving available: the checks it calls include the two paid
+  platforms, and nobody reads a red draft. The author runs `pnpm verify` instead — the same jobs
+  in the same order, on the machine they are already at. Two details make it work rather than
+  quietly break things. `ready_for_review` has to be added to the trigger's `types`, because it is
+  not one of the defaults and `Checks / Complete` is a required check: without it a pull request
+  marked ready would sit forever waiting for a run that never starts. And the guard tests
+  `github.event_name` as well as the flag, because `workflow_dispatch` carries no `pull_request`
+  object, `null == false` is false, and gating on the flag alone would disable the manual trigger.
 - **Cancel superseded runs.** Pushing again to a pull request cancels the run it replaced.
 - **Cache anything downloaded twice** — the pnpm store, the cargo registry and target directory,
   and Chromium for the layout tests.

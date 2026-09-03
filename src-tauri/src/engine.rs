@@ -891,6 +891,18 @@ mod tests {
         let standard = render(Tier::Standard);
         let light = render(Tier::Light);
 
+        // Tied to the tier rather than to a literal, so a hard-coded window
+        // fails here even if somebody hard-codes the one this tier happens to
+        // want. D7 makes the window a per-tier decision and this is what keeps
+        // it one.
+        assert_eq!(
+            value_after(&standard, "--ctx-size"),
+            Tier::Standard.context_size().to_string()
+        );
+        assert_eq!(
+            value_after(&light, "--ctx-size"),
+            Tier::Light.context_size().to_string()
+        );
         assert_eq!(value_after(&standard, "--ctx-size"), "8192");
         assert_eq!(value_after(&light, "--ctx-size"), "4096");
 

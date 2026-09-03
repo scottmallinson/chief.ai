@@ -1,6 +1,7 @@
 import { RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { OpenSource } from '@/components/OpenSource';
 import { Chip } from '@/components/ui/chip';
 import { Dots } from '@/components/ui/activity';
 import { useWorkLog } from '@/hooks/use-work-log';
@@ -24,6 +25,7 @@ function Entry({ entry }: { entry: WorkLogEntry }) {
         <time className="font-mono text-xs text-muted-foreground" dateTime={entry.timestamp}>
           {formatTimestamp(entry.timestamp)}
         </time>
+        <OpenSource url={entry.url} label={entry.summary ?? entry.content} />
       </div>
       <p className="mt-2.5 text-sm leading-relaxed" data-selectable>
         {entry.summary ?? entry.content}

@@ -45,7 +45,66 @@ pub struct Model {
     /// Roughly what it holds once loaded, in mebibytes: the weights plus a
     /// working KV cache. Shown to the user before a download starts, because
     /// "2 GB" is the number they need and "Q4_K_M" is not.
+    ///
+    /// A rounded figure for a screen, not the arithmetic. What it actually
+    /// costs at a given context window is [`resident_mb`], and a test keeps
+    /// the two from drifting apart.
     pub approx_resident_mb: u32,
+    /// The weights alone, in mebibytes. The fixed half of what the engine
+    /// holds; the other half is the KV cache, which the context window buys.
+    pub weights_mb: u32,
+    /// Transformer blocks. One KV cache entry per layer per token.
+    pub layers: u32,
+    /// Key/value heads — grouped-query attention, so fewer than the attention
+    /// heads, and it is this number the cache is sized by.
+    pub kv_heads: u32,
+    /// Width of one head.
+    pub head_dim: u32,
+}
+
+/// Bytes per KV element at the engine's default precision.
+///
+/// **This is the lever the DLE specification asked for and could not have.**
+/// It wanted runtime allocations capped at 4 GB; llama.cpp has no allocation
+/// cap, because resident memory is not capped, it is *chosen* — by the tier
+/// (which model), by `--ctx-size` (how many tokens of cache), and by this. The
+/// engine keeps K and V at f16; `--cache-type-k q8_0 --cache-type-v q8_0`
+/// roughly halves the KV term for a quality cost that has not been measured
+/// here, which is why Chief does not pass it yet and why the arithmetic below
+/// takes the precision as an argument rather than assuming it.
+pub const KV_BYTES_F16: u32 = 2;
+
+/// The same, at `q8_0`.
+pub const KV_BYTES_Q8: u32 = 1;
+
+/// What one token of context costs in KV cache, in bytes.
+///
+/// `layers × kv_heads × head_dim × 2` — the two being K and V — times the
+/// precision. For Llama 3.2 3B at f16 that is 28 × 8 × 128 × 2 × 2 =
+/// **114,688 bytes, or 112 KiB a token**, which is the figure the plan quotes.
+#[must_use]
+pub const fn kv_bytes_per_token(model: Model, kv_bytes: u32) -> u64 {
+    (model.layers as u64)
+        * (model.kv_heads as u64)
+        * (model.head_dim as u64)
+        * 2
+        * (kv_bytes as u64)
+}
+
+/// Roughly what the engine holds resident: the weights, plus a full KV cache
+/// at this context window.
+///
+/// Derived rather than remembered, so "does this fit" is arithmetic somebody
+/// can check rather than a number somebody once wrote down. At ctx 8192 the
+/// standard model's cache is 8192 × 112 KiB = **896 MiB**, on top of ~2,000 MiB
+/// of weights — about 2.9 GB, which fits under the 4 GB the specification asked
+/// for, with less headroom than it implied.
+#[must_use]
+pub const fn resident_mb(model: Model, context_size: u32, kv_bytes: u32) -> u32 {
+    let cache = kv_bytes_per_token(model, kv_bytes) * (context_size as u64);
+    let cache_mb = cache / (1024 * 1024);
+
+    model.weights_mb + (cache_mb as u32)
 }
 
 /// The model Chief would rather run, on a machine with room for it.
@@ -55,6 +114,10 @@ pub const STANDARD: Model = Model {
     file_name: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
     source: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/5ab33fa94d1d04e903623ae72c95d1696f09f9e8/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
     approx_resident_mb: 2400,
+    weights_mb: 2000,
+    layers: 28,
+    kv_heads: 8,
+    head_dim: 128,
 };
 
 /// The same family a third of the size, for a machine that cannot hold the
@@ -65,6 +128,10 @@ pub const LIGHT: Model = Model {
     file_name: "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
     source: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/067b946cf014b7c697f3654f621d577a3e3afd1c/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
     approx_resident_mb: 1100,
+    weights_mb: 800,
+    layers: 16,
+    kv_heads: 8,
+    head_dim: 64,
 };
 
 /// Everything Chief can run.
@@ -360,6 +427,72 @@ mod tests {
             assert!(
                 !url.path().contains("/resolve/main/"),
                 "{} is pinned to a branch rather than a revision",
+                model.name
+            );
+        }
+    }
+
+    /// The figure the plan quotes, derived rather than remembered.
+    ///
+    /// Llama 3.2 3B is 28 layers × 8 KV heads × 128 head dim, K and V, at two
+    /// bytes each: 114,688 bytes, or 112 KiB a token.
+    ///
+    /// Proved by dropping the factor of two — sizing the cache for K and
+    /// forgetting V, which is the mistake this arithmetic is most likely to
+    /// make and the one that would understate the window by half:
+    ///
+    /// ```text
+    ///   left: 57344
+    ///  right: 114688
+    /// ```
+    #[test]
+    fn one_token_of_context_costs_what_the_geometry_says() {
+        assert_eq!(kv_bytes_per_token(STANDARD, KV_BYTES_F16), 114_688);
+        assert_eq!(kv_bytes_per_token(STANDARD, KV_BYTES_F16) / 1024, 112);
+
+        // The smaller model is a quarter of that: half the layers, half the
+        // head width.
+        assert_eq!(kv_bytes_per_token(LIGHT, KV_BYTES_F16), 32_768);
+    }
+
+    /// **Resident memory is chosen, not capped.** The DLE specification asked
+    /// for allocations to be held under 4 GB; llama.cpp has no allocation cap,
+    /// so what there is instead is this arithmetic and the three levers that
+    /// move it — the tier, the context window, and KV precision.
+    ///
+    /// At the standard tier's 8192 the cache is 896 MiB on top of 2,000 MiB of
+    /// weights: about 2.9 GB, which fits under 4 GB with less headroom than
+    /// the specification implied.
+    #[test]
+    fn the_standard_tier_holds_about_two_point_nine_gigabytes() {
+        assert_eq!(resident_mb(STANDARD, 8192, KV_BYTES_F16), 2_896);
+    }
+
+    /// The lever Chief does not pull yet, reported so it is visible before it
+    /// is needed. `--cache-type-k/v q8_0` halves the KV term.
+    #[test]
+    fn quantising_the_cache_halves_what_the_window_costs() {
+        let f16 = resident_mb(STANDARD, 8192, KV_BYTES_F16) - STANDARD.weights_mb;
+        let q8 = resident_mb(STANDARD, 8192, KV_BYTES_Q8) - STANDARD.weights_mb;
+
+        assert_eq!(f16, 896);
+        assert_eq!(q8, f16 / 2);
+    }
+
+    /// The rounded figure on the setup screen and the arithmetic behind it are
+    /// two numbers about the same thing, so they are kept within sight of each
+    /// other rather than left to drift.
+    #[test]
+    fn the_number_shown_before_a_download_agrees_with_the_arithmetic() {
+        for (model, context_size) in [(STANDARD, 8192), (LIGHT, 4096)] {
+            let derived = resident_mb(model, context_size, KV_BYTES_F16);
+            let shown = model.approx_resident_mb;
+
+            let gap = derived.abs_diff(shown);
+
+            assert!(
+                gap * 4 <= derived,
+                "{} is shown as {shown} MiB and works out at {derived} MiB",
                 model.name
             );
         }

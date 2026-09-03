@@ -4,6 +4,8 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
+import { DisconnectAccount } from '@/components/DisconnectAccount';
+import { Freshness } from '@/components/Freshness';
 import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
 import { ProfileBootstrap } from '@/components/ProfileBootstrap';
 import { CalendarSubscriptions } from '@/components/CalendarSubscriptions';
@@ -12,6 +14,8 @@ import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
 import { useIntegrations } from '@/hooks/use-integrations';
+import { useSyncState } from '@/hooks/use-sync-state';
+import type { SyncState } from '@/lib/sync-state';
 import { accountName, CALENDAR, GITHUB, LINEAR, MICROSOFT, type Account } from '@/lib/integrations';
 
 interface SettingsSectionProps {
@@ -56,12 +60,17 @@ function ConnectedAccount({
   onRename,
   onDisconnect,
   leaving,
+  sync,
+  onReconnect,
 }: {
   account: Account;
   onRename: (accountId: number, label: string | null) => Promise<boolean>;
   onDisconnect: (accountId: number) => void;
   /** This account is being forgotten. Nothing else on the screen cares. */
   leaving: boolean;
+  /** How fresh it is, or undefined if it has never been read. */
+  sync: SyncState | undefined;
+  onReconnect: () => void;
 }) {
   const since = new Date(account.connectedAt);
   const identity = account.identity ?? account.accountKey;
@@ -95,23 +104,23 @@ function ConnectedAccount({
           onBlur={(event) => commit(event.target.value)}
           className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm font-medium transition-colors duration-[120ms] ease-instrument placeholder:font-normal placeholder:text-muted-foreground hover:border-ring"
         />
-        <p className="mt-1 px-[9px] micro text-muted-foreground">
-          {Number.isNaN(since.getTime())
-            ? 'Connected'
-            : `Connected ${connectedFormat.format(since)}`}
+        <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 px-[9px] micro text-muted-foreground">
+          <span>
+            {Number.isNaN(since.getTime())
+              ? 'Connected'
+              : `Connected ${connectedFormat.format(since)}`}
+          </span>
+          <span aria-hidden>·</span>
+          <Freshness state={sync} onReconnect={onReconnect} />
         </p>
       </div>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={leaving}
-        onClick={() => onDisconnect(account.id)}
-      >
-        {/* Bounded and truncated, so a long name ends in an ellipsis rather
-            than pushing the field that names it down to nothing. The button
-            keeps its full accessible name either way. */}
-        <span className="max-w-[9rem] truncate">Disconnect {accountName(account)}</span>
-      </Button>
+      <DisconnectAccount
+        accountId={account.id}
+        name={accountName(account)}
+        verb="Disconnect"
+        leaving={leaving}
+        onConfirm={onDisconnect}
+      />
     </div>
   );
 }
@@ -156,6 +165,8 @@ function Integration({
     rename,
   } = useIntegrations();
 
+  const { states } = useSyncState();
+
   const accounts = accountsFor(service);
   // Only the sign-in flow blocks, and only the sign-in button: a browser tab
   // the user has not come back from is no reason another account cannot be
@@ -195,6 +206,8 @@ function Integration({
               onRename={rename}
               onDisconnect={disconnect}
               leaving={disconnecting.includes(account.id)}
+              sync={states.get(account.id)}
+              onReconnect={() => connect(service)}
             />
           ))}
         </div>
@@ -436,10 +449,27 @@ function ThisMachine() {
           <dd className="font-mono text-[13px]">{report.cores}</dd>
           <dt className="pt-1 micro text-muted-foreground">Window</dt>
           <dd className="font-mono text-[13px]">{report.contextSize} tokens</dd>
+          {/* Stated rather than capped. llama.cpp has no allocation cap, so
+              what the engine holds is chosen by the tier, this window and KV
+              precision — and showing the arithmetic is what makes it a choice
+              rather than a surprise on a machine with 8 GB. */}
+          <dt className="pt-1 micro text-muted-foreground">Holds</dt>
+          <dd className="font-mono text-[13px]">
+            {gigabytes(report.residentMb)} · {report.kvCacheMb} MiB cache
+          </dd>
           {measurement && (
             <>
               <dt className="pt-1 micro text-muted-foreground">First reply</dt>
               <dd className="font-mono text-[13px]">{seconds(measurement.firstTokenMs)}</dd>
+              {measurement.warmFirstTokenMs !== null && (
+                <>
+                  {/* The number the specification's 1.5s target could sensibly
+                      have been about: only the part of the prompt that changed
+                      is read. Cold, 2,000 tokens is a minute or more. */}
+                  <dt className="pt-1 micro text-muted-foreground">Warm reply</dt>
+                  <dd className="font-mono text-[13px]">{seconds(measurement.warmFirstTokenMs)}</dd>
+                </>
+              )}
               <dt className="pt-1 micro text-muted-foreground">Writing</dt>
               <dd className="font-mono text-[13px]">
                 {Math.round(report.charactersPerSecond ?? 0)} chars/s

@@ -13,6 +13,7 @@ import { WorkLogView } from '@/components/views/WorkLogView';
 import { useBrief } from '@/hooks/use-brief';
 import { useChat } from '@/hooks/use-chat';
 import { useProposals } from '@/hooks/use-proposals';
+import { useIntegrations } from '@/hooks/use-integrations';
 import type { Proposal } from '@/lib/proposals';
 import { checkReadiness, isReady, type Readiness } from '@/lib/setup';
 import type { View } from '@/lib/navigation';
@@ -33,6 +34,9 @@ function App() {
   // Owned here so it survives the drawer closing. See `ChatView`.
   const chat = useChat();
   const proposals = useProposals();
+  // The header needs to know how many accounts exist to tell "nothing is
+  // connected" from "something is connected and has never been read".
+  const { accounts } = useIntegrations();
 
   useEffect(() => {
     let cancelled = false;
@@ -76,6 +80,7 @@ function App() {
         onNavigate={setActiveView}
         onOpenChat={() => setChatOpen(true)}
         model={readiness?.model}
+        accounts={accounts.length}
         list={
           activeView === 'today' ? (
             <BriefList

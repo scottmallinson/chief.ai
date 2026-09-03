@@ -232,6 +232,98 @@ CREATE UNIQUE INDEX IF NOT EXISTS proposed_actions_source_item
     ON proposed_actions (source, account_id, dedupe_key);
 ";
 
+/// Structure the work log, index it for search, and record how fresh each
+/// account is.
+///
+/// Three things at once, deliberately: they are the substrate D9 reads from,
+/// and putting them in one migration is what lets every other issue in the DLE
+/// batch be worked at the same time without two branches both claiming v8.
+///
+/// **Additive.** `content` stays, because the work log view renders it and an
+/// entry the user typed has nothing else. `external_id` stays *nullable*
+/// behind the partial index migration 3 rebuilt: a hand-written entry has no
+/// external id, and two accounts on one service legitimately see the same one.
+/// A `UNIQUE NOT NULL` here — which is what the specification asked for —
+/// would break both.
+///
+/// `work_logs_fts` is an **external content** table: it stores the index and
+/// not the text, so the rows are not duplicated and `work_logs` stays the only
+/// copy. That has two consequences worth stating, because both are silent when
+/// they go wrong.
+///
+/// The first is the `'rebuild'` at the end. An external content table starts
+/// **empty** — it indexes nothing that was already there, so without this line
+/// every existing install searches an empty index and gets no results while
+/// looking perfectly healthy. New installs would pass every test.
+///
+/// The second is that the triggers pass `new.summary` and `old.summary`
+/// **unmodified**, for agreement with what `'rebuild'` derives rather than for
+/// correctness: FTS5 tokenises NULL and `''` identically, into no tokens at
+/// all, so a `coalesce(…, '')` here changes nothing that can be observed. That
+/// was established by writing it and watching every test still pass, and it is
+/// recorded because the opposite is easy to assume — an earlier draft of this
+/// comment asserted the coalesce would desynchronise the index and be caught
+/// as corruption, and that was simply wrong.
+///
+/// What *does* desynchronise the index is a trigger that stops removing the
+/// row it supersedes, and **`'integrity-check'` does not detect that** on an
+/// external content table in this build of SQLite — verified by deleting the
+/// `'delete'` half of the update trigger and watching a full integrity check
+/// pass anyway. The guard that catches it is behavioural and lives with the
+/// code that relies on it: `work_log::revising_an_entry_revises_what_search_
+/// will_find` fails on exactly that breach. Anyone tempted to add an
+/// integrity-check test back here should breach it first.
+///
+/// `sync_state` is keyed on `account_id` rather than on `source`, for the same
+/// reason the dedupe index is: migration 3 made the account the unit, and a
+/// person can hold a work and a personal GitHub. Keying on the service would
+/// have one account's failure overwrite the other's state.
+const ADD_STRUCTURED_WORK_LOG: &str = r"
+ALTER TABLE work_logs ADD COLUMN category TEXT NOT NULL DEFAULT 'note';
+ALTER TABLE work_logs ADD COLUMN title    TEXT NOT NULL DEFAULT '';
+ALTER TABLE work_logs ADD COLUMN url      TEXT;
+ALTER TABLE work_logs ADD COLUMN raw_ref  TEXT;
+
+UPDATE work_logs
+   SET title = substr(content, 1, coalesce(nullif(instr(content, char(10)), 0) - 1, 200))
+ WHERE title = '';
+
+CREATE VIRTUAL TABLE work_logs_fts USING fts5(
+    title,
+    summary,
+    content='work_logs',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER work_logs_fts_insert AFTER INSERT ON work_logs BEGIN
+    INSERT INTO work_logs_fts (rowid, title, summary)
+    VALUES (new.id, new.title, new.summary);
+END;
+
+CREATE TRIGGER work_logs_fts_delete AFTER DELETE ON work_logs BEGIN
+    INSERT INTO work_logs_fts (work_logs_fts, rowid, title, summary)
+    VALUES ('delete', old.id, old.title, old.summary);
+END;
+
+CREATE TRIGGER work_logs_fts_update AFTER UPDATE ON work_logs BEGIN
+    INSERT INTO work_logs_fts (work_logs_fts, rowid, title, summary)
+    VALUES ('delete', old.id, old.title, old.summary);
+    INSERT INTO work_logs_fts (rowid, title, summary)
+    VALUES (new.id, new.title, new.summary);
+END;
+
+INSERT INTO work_logs_fts (work_logs_fts) VALUES ('rebuild');
+
+CREATE TABLE IF NOT EXISTS sync_state (
+    account_id     INTEGER PRIMARY KEY,
+    source         TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    last_synced_at TEXT,
+    error_message  TEXT
+);
+";
+
 /// Migrations applied to [`DB_URL`], in order.
 ///
 /// Migrations are append-only: once a version has shipped, add a new one rather
@@ -278,6 +370,12 @@ pub fn migrations() -> Vec<Migration> {
             version: 7,
             description: "keep the drafts Chief proposed",
             sql: ADD_PROPOSED_ACTIONS,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 8,
+            description: "structure the work log and index it for search",
+            sql: ADD_STRUCTURED_WORK_LOG,
             kind: MigrationKind::Up,
         },
     ]
@@ -335,6 +433,50 @@ pub(crate) mod test_support {
         migrate(&pool, version).await;
 
         pool
+    }
+
+    /// An empty database **in a file**, with every migration applied, and the
+    /// directory it lives in.
+    ///
+    /// `:memory:` is the right fixture for almost everything here and the
+    /// wrong one for two questions. **WAL does not apply to an in-memory
+    /// database** — `PRAGMA journal_mode` answers `memory` and setting it to
+    /// `wal` is quietly ignored — so neither the journal mode Chief relies on
+    /// nor the concurrency it buys can be observed without a real file.
+    ///
+    /// The returned [`Scratch`] deletes the directory when it drops, so the
+    /// caller has to keep it alive for as long as the pool: a test that binds
+    /// it to `_` deletes the database it is about to query.
+    pub async fn file_backed_pool() -> (SqlitePool, Scratch) {
+        let root = std::env::temp_dir().join(format!(
+            "chief-db-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).expect("should create a scratch directory");
+
+        let file = root.join("chief.db");
+        let pool = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.display()))
+            .await
+            .expect("failed to open a file-backed database");
+
+        migrate(&pool, EVERY_MIGRATION).await;
+
+        (pool, Scratch { root })
+    }
+
+    /// A temporary directory that goes when the test does.
+    pub struct Scratch {
+        root: std::path::PathBuf,
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
     }
 
     /// Apply every migration a [`pool_at_version`] database has not seen, the
@@ -655,6 +797,468 @@ mod tests {
         assert!(
             duplicate.is_err(),
             "the same merge should not be loggable twice after the upgrade"
+        );
+    }
+
+    /// Before anything is allowed to depend on FTS5, prove this build has it.
+    ///
+    /// `sqlx` compiles SQLite through `libsqlite3-sys`, and whether FTS5 is
+    /// enabled is a build flag of that crate rather than anything this
+    /// repository sets. If it were off, migration 8 would fail — at startup,
+    /// on every user's machine, with the database left half-migrated. That is
+    /// far too late to find out, and no other test in this file would say so
+    /// first: they would all fail at once with the same opaque error.
+    #[tokio::test]
+    async fn the_bundled_sqlite_has_fts5() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("failed to open in-memory database");
+
+        sqlx::raw_sql("CREATE VIRTUAL TABLE probe USING fts5(body)")
+            .execute(&pool)
+            .await
+            .expect("FTS5 is not compiled into this build of SQLite");
+    }
+
+    /// The `'rebuild'` at the end of migration 8, which is the whole reason an
+    /// upgrade differs from a fresh install here.
+    ///
+    /// An external content FTS5 table indexes **nothing that was already
+    /// there**. Without the rebuild an existing install searches an empty
+    /// index and gets no results, while every table, trigger and column is
+    /// present and correct — so the schema looks right and the feature is
+    /// silently dead. A fresh install would never notice, because its rows all
+    /// arrive through the insert trigger.
+    ///
+    /// Proved by deleting the `'rebuild'` line and watching this fail:
+    ///
+    /// ```text
+    /// the rebuild should have indexed the row that was already there
+    /// ```
+    #[tokio::test]
+    async fn upgrading_indexes_the_entries_that_were_already_there() {
+        // A database as it stood before migration 8 shipped.
+        let pool = pool_at_version(7).await;
+
+        sqlx::query(
+            "INSERT INTO work_logs (source, content, summary)
+             VALUES ('github', 'Refactored the OAuth handler', 'Landed the auth work')",
+        )
+        .execute(&pool)
+        .await
+        .expect("an entry should be storable before the upgrade");
+
+        upgrade(&pool).await;
+
+        let found: Option<i64> = sqlx::query_scalar(
+            "SELECT rowid FROM work_logs_fts WHERE work_logs_fts MATCH '\"refactored\"'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .expect("the index should be searchable");
+
+        assert!(
+            found.is_some(),
+            "the rebuild should have indexed the row that was already there"
+        );
+    }
+
+    /// The title backfill, which is what gives an upgraded row anything to
+    /// match on: `title` is the column FTS5 ranks most heavily, and every row
+    /// written before migration 8 has only `content`.
+    #[tokio::test]
+    async fn upgrading_takes_a_title_from_the_first_line_of_the_content() {
+        let pool = pool_at_version(7).await;
+
+        sqlx::query(
+            "INSERT INTO work_logs (source, content)
+             VALUES ('github', 'Merged PR #4' || char(10) || 'The body, which is not the title')",
+        )
+        .execute(&pool)
+        .await
+        .expect("an entry should be storable before the upgrade");
+
+        upgrade(&pool).await;
+
+        let title: String = sqlx::query_scalar("SELECT title FROM work_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("the entry should still be there");
+
+        assert_eq!(title, "Merged PR #4", "the first line, and not the body");
+    }
+
+    /// Deleting a row takes it out of the index, which is what lets DLE-4's
+    /// account purge rely on the trigger rather than clearing the index itself.
+    #[tokio::test]
+    async fn deleting_a_row_removes_it_from_the_index() {
+        let pool = migrated_pool().await;
+
+        sqlx::query(
+            "INSERT INTO work_logs (source, content, title)
+             VALUES ('github', 'body', 'Shipped the parser')",
+        )
+        .execute(&pool)
+        .await
+        .expect("should insert");
+
+        let matches = |pool: sqlx::SqlitePool| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM work_logs_fts WHERE work_logs_fts MATCH '\"parser\"'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("the index should be searchable")
+        };
+
+        assert_eq!(matches(pool.clone()).await, 1, "indexed on insert");
+
+        sqlx::query("DELETE FROM work_logs")
+            .execute(&pool)
+            .await
+            .expect("should delete");
+
+        assert_eq!(matches(pool.clone()).await, 0, "and gone again on delete");
+    }
+
+    /// An entry the user typed by hand still works after migration 8.
+    ///
+    /// Every insert in the tree predates the new columns and names only
+    /// `(source, content, …)`, so the defaults have to carry them. A
+    /// `NOT NULL` without a default here would break `create_work_log` and the
+    /// daemon at once.
+    #[tokio::test]
+    async fn an_entry_written_the_old_way_still_stores() {
+        let pool = migrated_pool().await;
+
+        sqlx::query("INSERT INTO work_logs (source, content) VALUES ('note', 'Thought this')")
+            .execute(&pool)
+            .await
+            .expect("the columns migration 8 added must all carry defaults");
+
+        let (category, title, url): (String, String, Option<String>) =
+            sqlx::query_as("SELECT category, title, url FROM work_logs")
+                .fetch_one(&pool)
+                .await
+                .expect("the entry should be there");
+
+        assert_eq!(category, "note");
+        assert_eq!(title, "", "nothing invents a title for an entry mid-flight");
+        assert_eq!(url, None);
+    }
+}
+
+/// The two properties the architecture rests on, asserted rather than assumed.
+///
+/// Both are claims about the *shape* of the thing rather than about a feature,
+/// which is why neither had a test: nothing breaks visibly when they stop being
+/// true. A decoupled local engine that quietly depends on which model it is
+/// running is not decoupled, and a background pass that blocks the question
+/// somebody is waiting on is not background.
+#[cfg(test)]
+mod architecture_tests {
+    use sqlx::SqlitePool;
+
+    use crate::db::test_support::{file_backed_pool, migrated_pool};
+    use crate::probe::Tier;
+    use crate::retrieval;
+    use crate::weights;
+    use crate::work_log::{self, WorkLogRecord};
+
+    /// The schema, as SQLite itself reports it — every table, index, trigger
+    /// and virtual table, in a stable order.
+    async fn schema(pool: &SqlitePool) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT type || ' ' || name FROM sqlite_master
+              WHERE name NOT LIKE 'sqlite_%'
+              ORDER BY type, name",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("should read the schema")
+    }
+
+    fn record(external_id: &str, title: &str, summary: &str) -> WorkLogRecord {
+        WorkLogRecord {
+            timestamp: "2026-09-01T09:00:00.000Z".to_string(),
+            source: "github".to_string(),
+            category: "pr".to_string(),
+            title: title.to_string(),
+            content: format!("{title} — {summary}"),
+            summary: Some(summary.to_string()),
+            url: Some("https://github.com/o/r/pull/1".to_string()),
+            raw_ref: None,
+            external_id: external_id.to_string(),
+            account_id: 1,
+        }
+    }
+
+    /// Ingest a fixed corpus and search it, on a database of its own.
+    ///
+    /// Takes the tier so the caller can say which configuration it is
+    /// exercising, and returns what came back. Nothing here reads the tier:
+    /// **that is the point.** If ingestion or ranking ever started depending on
+    /// the model, this function would have to change to let it, and the test
+    /// below would stop compiling rather than quietly start lying.
+    async fn ingest_and_search(tier: Tier) -> (Vec<String>, Vec<String>) {
+        let pool = migrated_pool().await;
+        let model = weights::for_tier(tier);
+
+        // Named so a reader can see the model was actually selected, and so a
+        // configuration that failed to load would be visible rather than
+        // silently skipped.
+        assert!(!model.name.is_empty(), "the tier must name a model");
+
+        for (external_id, title, summary) in [
+            ("owner/repo#1", "Refactored the OAuth handler", "merged"),
+            ("owner/repo#2", "Add the PKCE auth handler", "open"),
+            ("owner/repo#3", "Tidy the login form", "merged"),
+        ] {
+            work_log::upsert(&pool, record(external_id, title, summary))
+                .await
+                .expect("should store");
+        }
+
+        let stored: Vec<String> = sqlx::query_scalar("SELECT title FROM work_logs ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("should read");
+
+        let ranked = retrieval::search(&pool, "refactoring auth", 10)
+            .await
+            .expect("should search")
+            .into_iter()
+            .map(|hit| hit.title)
+            .collect();
+
+        (stored, ranked)
+    }
+
+    /// **The whole claim of a decoupled local engine**: the model is a
+    /// component, not the architecture.
+    ///
+    /// Ingestion derives its rows from what the provider said and search ranks
+    /// them with `bm25()`; neither has ever asked which model is loaded, and
+    /// this is what says so out loud. It is worth having precisely because
+    /// nothing would break visibly on the day it stopped being true — a model
+    /// swap would just quietly return different rows.
+    ///
+    /// Proved by making `ingest_and_search` prefix the title with the model's
+    /// name, which is the smallest way ingestion could come to depend on it:
+    ///
+    /// ```text
+    ///   left: ["Llama 3.2 3B Instruct: Refactored the OAuth handler", …]
+    ///  right: ["Llama 3.2 1B Instruct: Refactored the OAuth handler", …]
+    /// ```
+    #[tokio::test]
+    async fn swapping_the_model_changes_neither_the_rows_nor_the_ranking() {
+        let (standard_rows, standard_ranking) = ingest_and_search(Tier::Standard).await;
+        let (light_rows, light_ranking) = ingest_and_search(Tier::Light).await;
+
+        // The fixture has to have done something, or two empty lists match and
+        // this test proves nothing at all.
+        assert_eq!(standard_rows.len(), 3, "the fixture must have stored rows");
+        assert!(
+            !standard_ranking.is_empty(),
+            "the fixture must have matched something to rank"
+        );
+        assert_ne!(
+            weights::for_tier(Tier::Standard).name,
+            weights::for_tier(Tier::Light).name,
+            "the two tiers must actually be different models"
+        );
+
+        assert_eq!(
+            standard_rows, light_rows,
+            "swapping the model must not change what is stored"
+        );
+        assert_eq!(
+            standard_ranking, light_ranking,
+            "swapping the model must not change what search returns, or in what order"
+        );
+    }
+
+    /// The schema is the application's, not the model's.
+    ///
+    /// A migration that ever branched on the tier would put two installs of
+    /// the same release on different schemas, which is the failure
+    /// `check-migrations.mjs` guards the *numbering* against and nothing
+    /// guarded the *content* against.
+    ///
+    /// Two empty lists are equal, so the fixture is asserted to have built
+    /// something before the two are compared — raising that floor to 500 is
+    /// what shows the assertion is load-bearing rather than decorative.
+    #[tokio::test]
+    async fn the_schema_is_the_same_whichever_model_is_selected() {
+        let standard = migrated_pool().await;
+        let light = migrated_pool().await;
+
+        // Selected, so the test is about two configurations rather than about
+        // two calls that ignored their argument.
+        let _ = weights::for_tier(Tier::Standard);
+        let _ = weights::for_tier(Tier::Light);
+
+        let applied = schema(&standard).await;
+
+        assert!(
+            applied.len() > 5,
+            "the fixture must have applied a real schema, got {applied:?}"
+        );
+        assert_eq!(applied, schema(&light).await);
+    }
+
+    /// **Chief does not run on WAL, and this is where that was found out.**
+    ///
+    /// The plan recorded the DLE specification's `PRAGMA journal_mode = WAL` as
+    /// already true — "sqlx defaults to WAL and a 5-second busy timeout".
+    /// **Half of that is wrong**, and it is the half the specification cared
+    /// about. sqlx deliberately leaves `journal_mode` unset, and says why in
+    /// its own source:
+    ///
+    /// ```text
+    /// // Don't set `journal_mode` unless the user requested it.
+    /// // WAL mode is a permanent setting for created databases and changing
+    /// // into or out of it requires an exclusive lock that can't be waited on
+    /// // with `sqlite3_busy_timeout()`.
+    /// ```
+    ///
+    /// So a database sqlx creates is on the rollback journal, which is
+    /// SQLite's own default, and this test asserts that rather than the thing
+    /// everyone assumed.
+    ///
+    /// **And it cannot be fixed with a migration.** `journal_mode` is
+    /// persistent in the file header, so setting it once would be enough — but
+    /// `tauri-plugin-sql` hands every migration to sqlx with `no_tx: false`
+    /// hard-coded, so each one runs inside a transaction, and SQLite does not
+    /// quietly ignore the pragma there, it raises:
+    ///
+    /// ```text
+    /// sqlite3.OperationalError: cannot change into wal mode from within a
+    /// transaction
+    /// ```
+    ///
+    /// A migration written to "just set WAL" would therefore fail on every
+    /// installed copy on the first launch after the upgrade. Outside a
+    /// transaction the same statement works and persists, so the fix exists —
+    /// it needs a seam the plugin does not offer. Recorded in plan §9.
+    #[tokio::test]
+    async fn the_journal_mode_is_not_the_one_the_specification_asked_for() {
+        let (pool, _scratch) = file_backed_pool().await;
+
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .expect("should read the journal mode");
+
+        assert_eq!(
+            mode.to_lowercase(),
+            "delete",
+            "if this now reports wal, something gained a seam and plan §9 is out of date"
+        );
+    }
+
+    /// The daemon writes while somebody is reading, and neither may fail.
+    ///
+    /// **This is the property the background pass rests on, and it holds for a
+    /// different reason than anyone thought.** Under WAL a reader and a writer
+    /// pass each other; Chief is not on WAL (see above), so what saves it is
+    /// the five-second busy timeout — a reader that meets a writer waits a few
+    /// milliseconds for one short upsert rather than failing. That is a
+    /// latency cost rather than an error, which is why nothing has ever
+    /// noticed, and it is worth knowing that is what is happening.
+    ///
+    /// **The loops are asserted to have run.** A concurrency test whose work
+    /// never happened passes without concurrency, which the
+    /// `proving-a-guard-test` skill names as the exact shape of a test that
+    /// lies — so the counts are checked before the absence of failure is.
+    /// Proved by emptying the write loop:
+    ///
+    /// ```text
+    /// the write loop must actually have written
+    ///   left: 0
+    ///  right: 50
+    /// ```
+    #[tokio::test]
+    async fn a_background_write_does_not_shut_a_reader_out() {
+        let (pool, _scratch) = file_backed_pool().await;
+
+        let writing = pool.clone();
+        let writer = tokio::spawn(async move {
+            let mut written = 0;
+
+            for index in 0..50 {
+                work_log::upsert(
+                    &writing,
+                    record(
+                        &format!("owner/repo#{index}"),
+                        &format!("Row {index}"),
+                        "merged",
+                    ),
+                )
+                .await
+                .expect("a write must not be shut out by a reader");
+
+                written += 1;
+            }
+
+            written
+        });
+
+        let reading = pool.clone();
+        let reader = tokio::spawn(async move {
+            let mut read = 0;
+
+            for _ in 0..50 {
+                let _: i64 = sqlx::query_scalar("SELECT count(*) FROM work_logs")
+                    .fetch_one(&reading)
+                    .await
+                    .expect("a read must not be shut out by a write");
+
+                read += 1;
+            }
+
+            read
+        });
+
+        let written = writer.await.expect("the writer should finish");
+        let read = reader.await.expect("the reader should finish");
+
+        assert_eq!(written, 50, "the write loop must actually have written");
+        assert_eq!(read, 50, "the read loop must actually have read");
+
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM work_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("should count");
+
+        assert_eq!(rows, 50, "and every write must have landed");
+    }
+
+    /// `busy_timeout` is **per connection**, and the plugin owns the pool.
+    ///
+    /// This is the half of the specification's pragma pair that **is** already
+    /// true: sqlx defaults it to exactly the five seconds asked for. It is
+    /// also, given the journal mode above, the only thing keeping a background
+    /// write from turning a reader's question into an error — so it is worth
+    /// an assertion rather than an assumption, the more so because it is a
+    /// dependency default and not a decision anything here made.
+    ///
+    /// There is still no `after_connect` seam through `tauri-plugin-sql` to
+    /// set it deliberately. What that costs is now known to be nothing, since
+    /// the default is the wanted value; what it would cost if sqlx changed the
+    /// default is this test going red, which is the point.
+    #[tokio::test]
+    async fn the_busy_timeout_is_the_five_seconds_the_specification_wanted() {
+        let (pool, _scratch) = file_backed_pool().await;
+
+        let timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(&pool)
+            .await
+            .expect("should read the busy timeout");
+
+        assert_eq!(
+            timeout, 5_000,
+            "five seconds is sqlx's default and what the specification asked for"
         );
     }
 }

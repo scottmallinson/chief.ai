@@ -23,6 +23,7 @@ const shipped: WorkLogEntry = {
   source: 'github',
   content: 'Merged pull request #44',
   summary: 'Stopped a long answer being thrown away at five minutes.',
+  url: 'https://github.com/scottmallinson/chief.ai/pull/44',
   externalId: 'scottmallinson/chief.ai#44',
   accountId: 1,
 };
@@ -84,6 +85,31 @@ describe('TodayView', () => {
     expect(
       await screen.findByText('Stopped a long answer being thrown away at five minutes.'),
     ).toBeInTheDocument();
+  });
+
+  it('offers a way to open what a feed row is about', async () => {
+    invoke.mockResolvedValue([shipped]);
+
+    show();
+
+    // Named for the entry rather than "Open", so a row read aloud says where
+    // it goes.
+    expect(
+      await screen.findByRole('button', {
+        name: 'Open Stopped a long answer being thrown away at five minutes.',
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('offers nothing on a feed row the user typed themselves', async () => {
+    invoke.mockResolvedValue([{ ...shipped, url: null }]);
+
+    show();
+
+    expect(
+      await screen.findByText('Stopped a long answer being thrown away at five minutes.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument();
   });
 
   it('falls back to the raw entry when nothing has summarised it yet', async () => {

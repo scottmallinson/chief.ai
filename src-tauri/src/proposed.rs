@@ -133,6 +133,31 @@ pub async fn insert_new(
     Ok(stored)
 }
 
+/// Every proposal one account produced, whatever became of it.
+///
+/// Dismissed ones included: the row is what holds the slot so the item is not
+/// drafted again, and once the account is going there is nothing left for it
+/// to hold a slot against.
+pub async fn for_account(pool: &SqlitePool, account_id: i64) -> Result<Vec<Proposal>, Error> {
+    Ok(sqlx::query_as::<_, Proposal>(&format!(
+        "SELECT {COLUMNS} FROM proposed_actions WHERE account_id = ?1 ORDER BY id"
+    ))
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Forget every proposal one account produced. The bodies are files and are
+/// not this function's to delete — see `connect::purge_account_data`.
+pub async fn forget_account(pool: &SqlitePool, account_id: i64) -> Result<u64, Error> {
+    let done = sqlx::query("DELETE FROM proposed_actions WHERE account_id = ?1")
+        .bind(account_id)
+        .execute(pool)
+        .await?;
+
+    Ok(done.rows_affected())
+}
+
 /// Mark a proposal dismissed. The row stays, so it is never drafted again.
 pub async fn dismiss(pool: &SqlitePool, id: i64) -> Result<(), Error> {
     sqlx::query(&format!(

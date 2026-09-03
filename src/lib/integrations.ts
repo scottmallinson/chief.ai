@@ -94,6 +94,30 @@ export function addLinearKey(key: string): Promise<Account> {
   return invoke<Account>('add_linear_key', { key });
 }
 
+/**
+ * What unlinking an account would take with it.
+ *
+ * Read before the confirmation is shown, because a person unlinking an account
+ * is thinking about a credential and has no reason to know that months of
+ * their work log and a pile of drafts are behind it.
+ */
+export interface AccountData {
+  entries: number;
+  proposals: number;
+}
+
+export function accountData(accountId: number): Promise<AccountData> {
+  return invoke<AccountData>('account_data', { accountId });
+}
+
+/**
+ * Forget one account: its credential, and everything it put on this machine.
+ *
+ * **Irreversible, and it removes more than the word suggests** — which is why
+ * the interface confirms with the counts from {@link accountData} first. It
+ * used to delete the credential row alone, leaving the account's work log
+ * entries, its drafts and their markdown behind.
+ */
 export function disconnect(accountId: number): Promise<Account[]> {
   return invoke<Account[]>('disconnect', { accountId });
 }

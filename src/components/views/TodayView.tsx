@@ -7,6 +7,7 @@ import { ProposalCard } from '@/components/ProposalCard';
 import { useWorkLog } from '@/hooks/use-work-log';
 import type { Proposal } from '@/lib/proposals';
 import { readBrief, type Brief, type BriefBlock } from '@/lib/brief';
+import { OpenSource } from '@/components/OpenSource';
 import type { WorkLogEntry } from '@/lib/work-log';
 
 interface TodayViewProps {
@@ -72,8 +73,11 @@ function Block({ block }: { block: BriefBlock }) {
 function Shipped({ entry }: { entry: WorkLogEntry }) {
   return (
     <li className="border-l-2 border-border pl-3.5">
-      <p className="micro text-muted-foreground">
-        {entry.source} · {formatTimestamp(entry.timestamp)}
+      <p className="flex items-center gap-2 micro text-muted-foreground">
+        <span>
+          {entry.source} · {formatTimestamp(entry.timestamp)}
+        </span>
+        <OpenSource url={entry.url} label={entry.summary ?? entry.content} />
       </p>
       <p className="mt-1.5 text-[13px] leading-snug" data-selectable>
         {entry.summary ?? entry.content}

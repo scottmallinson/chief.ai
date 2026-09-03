@@ -1,6 +1,9 @@
 import { useState, type FormEvent } from 'react';
-import { KeyRound, X } from 'lucide-react';
+import { KeyRound } from 'lucide-react';
 
+import { DisconnectAccount } from '@/components/DisconnectAccount';
+import { Freshness } from '@/components/Freshness';
+import { useSyncState } from '@/hooks/use-sync-state';
 import { Button } from '@/components/ui/button';
 import { Dots } from '@/components/ui/activity';
 import { addLinearKey, disconnect, type Account } from '@/lib/integrations';
@@ -25,6 +28,7 @@ interface LinearKeyProps {
  * what GitHub's `repo` scope grants.
  */
 export function LinearKey({ accounts, onChanged }: LinearKeyProps) {
+  const { states } = useSyncState();
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState<number | 'adding' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -74,17 +78,20 @@ export function LinearKey({ accounts, onChanged }: LinearKeyProps) {
                 key={account.id}
                 className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2"
               >
-                <span className="min-w-0 flex-1 truncate text-sm">{name}</span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => forget(account)}
-                  disabled={busy !== null}
-                  aria-label={`Disconnect ${name}`}
-                >
-                  {busy === account.id ? <Dots /> : <X aria-hidden />}
-                  Disconnect
-                </Button>
+                <span className="flex min-w-0 flex-1 flex-col gap-1">
+                  <span className="truncate text-sm">{name}</span>
+                  {/* The card's own form below is the way back in, so no
+                      reconnect button here: the key or the address is
+                      re-entered where it was entered. */}
+                  <Freshness state={states.get(account.id)} />
+                </span>
+                <DisconnectAccount
+                  accountId={account.id}
+                  name={name}
+                  verb="Disconnect"
+                  leaving={busy !== null}
+                  onConfirm={() => forget(account)}
+                />
               </li>
             );
           })}
