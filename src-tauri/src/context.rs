@@ -96,6 +96,25 @@ pub const DEFAULT_CEILING: u32 = 2_400;
 /// later cannot quietly invalidate it.
 pub const RETRIEVAL_CEILING: u32 = 300;
 
+/// The most a **chat prompt** may cost, once assembled.
+///
+/// The third named ceiling, and the one a person waits behind. `/brief` writes
+/// a file nobody is watching, so [`DEFAULT_CEILING`]'s extra 400 tokens buys a
+/// better brief at no cost anyone feels; a question in the composer is somebody
+/// sitting still while prefill runs, and on a CPU each of those 400 tokens is
+/// somewhere between 12 and 22 seconds of it.
+///
+/// **The DLE specification's `≤2,000 tokens total prompt` is this number, and
+/// it is the half of that requirement that is real.** The other half — TTFT
+/// ≤1.5 s at 2,000 tokens — is off by roughly two orders of magnitude on a cold
+/// prefill: at the 18–34 tokens a second this machine manages, 2,000 tokens is
+/// 60 to 110 seconds. The figure only means anything for the volatile suffix
+/// past a cached prefix, which is why `agent::conversation` puts the stable
+/// parts first and why `engine::arguments` passes `--cache-reuse`. It is
+/// measured by `chief doctor` and asserted by nothing: a CI runner is not the
+/// machine the number is about.
+pub const PROMPT_CEILING: u32 = 2_000;
+
 /// A ledger for what a prompt is allowed to cost.
 ///
 /// Not an assembler: it records what has been spent and refuses the block that

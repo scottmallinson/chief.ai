@@ -221,6 +221,7 @@ mod tests {
         let pool = crate::db::test_support::migrated_pool().await;
         let taken = super::Measurement {
             first_token_ms: 1_200,
+            warm_first_token_ms: None,
             total_ms: 5_200,
             characters: 400,
         };
@@ -238,11 +239,13 @@ mod tests {
         let pool = crate::db::test_support::migrated_pool().await;
         let slow = super::Measurement {
             first_token_ms: 9_000,
+            warm_first_token_ms: None,
             total_ms: 20_000,
             characters: 100,
         };
         let quick = super::Measurement {
             first_token_ms: 300,
+            warm_first_token_ms: None,
             total_ms: 1_300,
             characters: 400,
         };
@@ -269,6 +272,7 @@ mod tests {
         // character: the rate is 400 characters over four seconds, not five.
         let measurement = super::Measurement {
             first_token_ms: 1_000,
+            warm_first_token_ms: None,
             total_ms: 5_000,
             characters: 400,
         };
@@ -280,6 +284,7 @@ mod tests {
     fn an_answer_that_never_started_reports_no_rate_rather_than_dividing_by_zero() {
         let measurement = super::Measurement {
             first_token_ms: 3_000,
+            warm_first_token_ms: None,
             total_ms: 3_000,
             characters: 0,
         };
@@ -298,6 +303,52 @@ mod tests {
             machine.memory_mb
         );
     }
+    /// `chief doctor` states the arithmetic rather than a guess, because the
+    /// specification asked for a cap llama.cpp does not have. No wall clock is
+    /// involved, so this cannot fail on a slow runner.
+    #[test]
+    fn reports_what_the_context_window_costs() {
+        use crate::weights::{KV_BYTES_F16, KV_BYTES_Q8, STANDARD};
+
+        assert_eq!(super::kv_cache_mb(STANDARD, 8192, KV_BYTES_F16), 896);
+        assert_eq!(super::kv_cache_mb(STANDARD, 4096, KV_BYTES_F16), 448);
+        assert_eq!(super::kv_cache_mb(STANDARD, 8192, KV_BYTES_Q8), 448);
+    }
+
+    /// A measurement stored before the warm figure existed must still read
+    /// back. The last one lives in `settings` as JSON, and an upgrade throwing
+    /// it away would make the settings screen re-measure for no reason.
+    #[test]
+    fn a_measurement_stored_before_the_warm_figure_still_reads() {
+        let stored = r#"{"firstTokenMs":1200,"totalMs":5000,"characters":300}"#;
+
+        let measurement: super::Measurement =
+            serde_json::from_str(stored).expect("an older measurement should still read");
+
+        assert_eq!(measurement.first_token_ms, 1_200);
+        assert_eq!(
+            measurement.warm_first_token_ms, None,
+            "absent is not zero: a figure never taken must not read as instant"
+        );
+    }
+
+    /// The two figures are separate on the way out as well as in, so the
+    /// interface can say which is which.
+    #[test]
+    fn the_warm_figure_survives_being_written_down() {
+        let taken = super::Measurement {
+            first_token_ms: 9_000,
+            warm_first_token_ms: Some(1_400),
+            total_ms: 20_000,
+            characters: 300,
+        };
+
+        let round_tripped: super::Measurement =
+            serde_json::from_str(&serde_json::to_string(&taken).expect("should write"))
+                .expect("should read");
+
+        assert_eq!(round_tripped, taken);
+    }
 }
 
 /// What this machine did when it was asked to answer something.
@@ -313,7 +364,25 @@ mod tests {
 pub struct Measurement {
     /// Milliseconds from asking to the first character coming back. This is the
     /// number a person experiences as "did it hear me".
+    ///
+    /// A **cold** prefix: nothing in the engine's cache matched, so this is the
+    /// whole prompt being read.
     pub first_token_ms: u64,
+    /// The same, asked a second time against the prefix the first left in the
+    /// cache.
+    ///
+    /// **This is the number the DLE specification's ≤1.5 s target could
+    /// sensibly be about.** Cold, 2,000 tokens at the 18–34 tokens a second a
+    /// CPU manages is 60 to 110 seconds — two orders of magnitude off. Warm,
+    /// only the part of the prompt that changed is read, which is what
+    /// `--cache-reuse` and the stable-parts-first assembly exist for. The gap
+    /// between the two is what those two things are worth on this machine.
+    ///
+    /// `None` for a measurement taken before this field existed, which is why
+    /// it is `serde(default)`: the last one is kept in `settings` as JSON, and
+    /// an upgrade must not throw it away.
+    #[serde(default)]
+    pub warm_first_token_ms: Option<u64>,
     /// Milliseconds for the whole answer.
     pub total_ms: u64,
     /// Characters written. A proxy for tokens that needs no tokenizer, and the
@@ -356,12 +425,32 @@ pub async fn measure(client: &llama::Client, model: &str) -> Result<Measurement,
     let request = ChatRequest::new(model, vec![Message::user(MEASURE_PROMPT)])
         .with_options(Options::new().with_answer_length(MEASURE_TOKENS));
 
+    let cold = time_one(client, &request).await?;
+
+    // The same prompt again, against the prefix the first pass left behind.
+    // Asking twice is what makes the warm figure exist at all: there is no way
+    // to observe a cache hit except by producing one, and the two together are
+    // what `--cache-reuse` is worth on this machine. It costs a second answer
+    // of at most `MEASURE_TOKENS`, which is the price of the only number the
+    // specification's target could sensibly have meant.
+    let warm = time_one(client, &request).await.ok();
+
+    Ok(Measurement {
+        first_token_ms: cold.first_token_ms,
+        warm_first_token_ms: warm.map(|warm| warm.first_token_ms),
+        total_ms: cold.total_ms,
+        characters: cold.characters,
+    })
+}
+
+/// One timed answer.
+async fn time_one(client: &llama::Client, request: &ChatRequest) -> Result<Timing, llama::Error> {
     let started = Instant::now();
     let mut first_token_at = None;
     let mut characters = 0usize;
 
     client
-        .chat_stream(&request, |token| {
+        .chat_stream(request, |token| {
             if first_token_at.is_none() {
                 first_token_at = Some(started.elapsed());
             }
@@ -371,12 +460,20 @@ pub async fn measure(client: &llama::Client, model: &str) -> Result<Measurement,
 
     let total = started.elapsed();
 
-    Ok(Measurement {
+    Ok(Timing {
         first_token_ms: u64::try_from(first_token_at.unwrap_or(total).as_millis())
             .unwrap_or(u64::MAX),
         total_ms: u64::try_from(total.as_millis()).unwrap_or(u64::MAX),
         characters,
     })
+}
+
+/// What one timed answer produced, before the two are folded together.
+#[derive(Debug, Clone, Copy)]
+struct Timing {
+    first_token_ms: u64,
+    total_ms: u64,
+    characters: usize,
 }
 
 /// The key the last measurement is stored under.
@@ -420,6 +517,18 @@ pub struct Report {
     /// Roughly how fast the answer was written, once it started. Derived here
     /// rather than in the interface, so the arithmetic has one home.
     pub characters_per_second: Option<f64>,
+    /// What the KV cache costs at this context window, in mebibytes.
+    ///
+    /// Shown because the DLE specification asked for resident memory to be
+    /// *capped* and llama.cpp has no such thing: it is chosen, and this is the
+    /// half of the choice the context window makes. `chief doctor` states the
+    /// arithmetic so the trade is somebody's to make rather than a surprise.
+    pub kv_cache_mb: u32,
+    /// Weights plus that cache — what the engine actually holds.
+    pub resident_mb: u32,
+    /// The same with `--cache-type-k/v q8_0`, which Chief does not pass yet.
+    /// Reported so the lever is visible before it is needed.
+    pub resident_mb_q8: u32,
 }
 
 /// Errors `chief doctor` surfaces.
@@ -479,14 +588,31 @@ pub async fn run_doctor<R: tauri::Runtime>(
         remembered(&pool).await?
     };
 
+    let context_size = tier.context_size();
+
     Ok(Report {
         tier: tier.to_string(),
         model: model.describe(),
         model_size_mb: model.approx_resident_mb,
-        context_size: tier.context_size(),
+        context_size,
         memory_mb: machine.memory_mb,
         cores: machine.cores,
         characters_per_second: measurement.map(Measurement::characters_per_second),
         measurement,
+        kv_cache_mb: kv_cache_mb(model, context_size, crate::weights::KV_BYTES_F16),
+        resident_mb: crate::weights::resident_mb(model, context_size, crate::weights::KV_BYTES_F16),
+        resident_mb_q8: crate::weights::resident_mb(
+            model,
+            context_size,
+            crate::weights::KV_BYTES_Q8,
+        ),
     })
+}
+
+/// What a full KV cache costs at this window, in mebibytes.
+#[must_use]
+pub const fn kv_cache_mb(model: crate::weights::Model, context_size: u32, kv_bytes: u32) -> u32 {
+    let bytes = crate::weights::kv_bytes_per_token(model, kv_bytes) * (context_size as u64);
+
+    (bytes / (1024 * 1024)) as u32
 }

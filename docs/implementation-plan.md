@@ -45,7 +45,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | DLE — unlinking deletes its data       | Shipped                        | DLE-4 / REC-47   | #65       |
 | —     | DLE — local directory permissions      | Shipped                        | DLE-5 / REC-48   | #65       |
 | —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
-| —     | DLE — prompt truncation and TTFT       | Not started                    | DLE-7 / REC-50   | —         |
+| —     | DLE — prompt truncation and TTFT       | Shipped                        | DLE-7 / REC-50   | #65       |
 | —     | DLE — monthly journal roll-up          | Shipped                        | DLE-8 / REC-51   | #65       |
 | —     | DLE — provenance footers               | Shipped                        | DLE-9 / REC-52   | #65       |
 | —     | DLE — action links from the feed       | Shipped                        | DLE-10 / REC-53  | #65       |
@@ -925,6 +925,24 @@ removes from it.**
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **Three named ceilings, and the chat prompt is the tightest.** `PROMPT_CEILING` is 2,000 —
+  the half of the DLE specification's `≤2,000 tokens, TTFT ≤1.5 s` that is real. `DEFAULT_CEILING`
+  stays 2,400 for brief assembly, because `/brief` writes a file nobody is watching and a question
+  in the composer is somebody sitting still while prefill runs; on a CPU those 400 tokens are 12 to
+  22 seconds of it. `RETRIEVAL_CEILING` stays 300.
+- **Resident memory is chosen, not capped.** llama.cpp has no allocation cap, so the specification's
+  "≤4 GB by capping runtime allocations" is not a thing that can be built. What exists instead is
+  the arithmetic and its three levers: the tier, `--ctx-size`, and KV precision. Llama 3.2 3B costs
+  28 × 8 × 128 × 2 × 2 = **114,688 bytes — 112 KiB — per token**, so 896 MiB at ctx 8192 on top of
+  ~2,000 MiB of weights: about 2.9 GB, under 4 GB with less headroom than the specification implied.
+  `--cache-type-k/v q8_0` halves the KV term and Chief does not pass it yet; `chief doctor` reports
+  what it would save so the lever is visible before it is needed.
+- **The TTFT figure is measured warm and asserted nowhere.** Cold, 2,000 tokens at the 18–34 tokens
+  a second this machine manages is 60 to 110 seconds — two orders of magnitude off the target. The
+  number only means anything for the volatile suffix past a cached prefix, so `probe::measure` asks
+  the same question twice and reports both; the gap is what `--cache-reuse` and the
+  stable-parts-first assembly are worth here. No test asserts a wall clock: D8 is explicit that a CI
+  runner is not the machine the number is about.
 - **The provenance footer is composed in Rust and rendered in its own element.** It is the only
   thing left telling the reader how fresh an answer is, now that a read is a query rather than a
   call somebody else's API times, so it is the one piece of text on the screen that has to be true —

@@ -248,7 +248,7 @@ impl serde::Serialize for Error {
 /// `present` is what the clock says right now, worked out fresh for every
 /// question so an app left open overnight does not still think it is yesterday.
 fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
-    let mut budget = context::Budget::new();
+    let mut budget = context::Budget::with_ceiling(context::PROMPT_CEILING);
     let opening = format!("{SYSTEM_PROMPT}\n\n{present}");
 
     // The system prompt and the clock are not negotiable and are added first,
@@ -679,6 +679,111 @@ mod tests {
         );
         assert_eq!(messages[1].content, "first question\n\nfollow-up question");
         assert_eq!(messages[2].content, "answer\n\nadditional detail");
+    }
+
+    /// The whole prompt, capped.
+    ///
+    /// The DLE specification's `≤2,000 tokens total prompt` is this, and it is
+    /// the half of that requirement that is real — the ≤1.5 s that came with
+    /// it is two orders of magnitude off on a cold prefill and is measured
+    /// rather than asserted.
+    ///
+    /// Proved by handing `conversation` the recipe ceiling instead:
+    ///
+    /// ```text
+    /// a prompt must never exceed PROMPT_CEILING: 2313 tokens
+    /// ```
+    #[test]
+    fn an_assembled_prompt_never_exceeds_the_prompt_ceiling() {
+        // Far more conversation than fits, so the ceiling is what decides.
+        let turns: Vec<Turn> = (0..40)
+            .map(|index| {
+                turn(
+                    Role::User,
+                    &format!("{index}: {}", "a question. ".repeat(40)),
+                )
+            })
+            .collect();
+
+        let messages = conversation(turns, PRESENT);
+        let cost: u32 = messages
+            .iter()
+            .map(|message| context::estimate_tokens(&message.content))
+            .sum();
+
+        assert!(
+            cost <= context::PROMPT_CEILING,
+            "a prompt must never exceed PROMPT_CEILING: {cost} tokens"
+        );
+    }
+
+    /// **Oldest first, and never the system prompt.**
+    ///
+    /// A conversation long enough to overrun the budget has to lose its
+    /// beginning rather than its end: what the user just asked is the part
+    /// that has to survive, and the instructions are not negotiable at all.
+    ///
+    /// Proved by dropping the `.rev()` that makes the loop walk backwards,
+    /// which fills the budget from the oldest turn instead:
+    ///
+    /// ```text
+    /// the newest turn is the one that has to survive: [… "ANSWERED-FIRST …",
+    ///   "FIRST …"]
+    /// ```
+    #[test]
+    fn trimming_drops_the_oldest_turns_and_never_the_instructions() {
+        // Big enough that the ceiling has to choose. Roles alternate, because
+        // adjacent same-role turns are merged after trimming and a transcript
+        // of one merged block would not exercise the choice.
+        let long = "a question. ".repeat(150);
+        let turns = vec![
+            turn(Role::User, &format!("FIRST {long}")),
+            turn(Role::Assistant, &format!("ANSWERED-FIRST {long}")),
+            turn(Role::User, &format!("SECOND {long}")),
+            turn(Role::Assistant, &format!("ANSWERED-SECOND {long}")),
+            turn(Role::User, "LAST: what did I ship?"),
+        ];
+
+        let messages = conversation(turns, PRESENT);
+        let rendered: Vec<&str> = messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect();
+
+        assert!(
+            rendered[0].starts_with(SYSTEM_PROMPT),
+            "the system prompt survives any trimming"
+        );
+        assert!(
+            rendered.iter().any(|content| content.contains("LAST:")),
+            "the newest turn is the one that has to survive: {rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|content| content.contains("FIRST")),
+            "the oldest turn is the first to go: {rendered:?}"
+        );
+    }
+
+    /// The stable parts lead, so llama.cpp's prefix cache has something to
+    /// match. `engine::arguments` passes `--cache-reuse`; this is the half of
+    /// that bargain the prompt has to keep, and without it the flag buys
+    /// nothing.
+    #[test]
+    fn puts_the_stable_parts_first_so_the_prefix_cache_can_pay() {
+        let first = conversation(vec![turn(Role::User, "What did I ship?")], PRESENT);
+        let second = conversation(
+            vec![
+                turn(Role::User, "What did I ship?"),
+                turn(Role::Assistant, "Two pull requests."),
+                turn(Role::User, "And this week?"),
+            ],
+            PRESENT,
+        );
+
+        assert_eq!(
+            first[0].content, second[0].content,
+            "two turns of the same conversation must share a prefix, byte for byte"
+        );
     }
 
     #[test]

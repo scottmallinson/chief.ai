@@ -449,10 +449,27 @@ function ThisMachine() {
           <dd className="font-mono text-[13px]">{report.cores}</dd>
           <dt className="pt-1 micro text-muted-foreground">Window</dt>
           <dd className="font-mono text-[13px]">{report.contextSize} tokens</dd>
+          {/* Stated rather than capped. llama.cpp has no allocation cap, so
+              what the engine holds is chosen by the tier, this window and KV
+              precision — and showing the arithmetic is what makes it a choice
+              rather than a surprise on a machine with 8 GB. */}
+          <dt className="pt-1 micro text-muted-foreground">Holds</dt>
+          <dd className="font-mono text-[13px]">
+            {gigabytes(report.residentMb)} · {report.kvCacheMb} MiB cache
+          </dd>
           {measurement && (
             <>
               <dt className="pt-1 micro text-muted-foreground">First reply</dt>
               <dd className="font-mono text-[13px]">{seconds(measurement.firstTokenMs)}</dd>
+              {measurement.warmFirstTokenMs !== null && (
+                <>
+                  {/* The number the specification's 1.5s target could sensibly
+                      have been about: only the part of the prompt that changed
+                      is read. Cold, 2,000 tokens is a minute or more. */}
+                  <dt className="pt-1 micro text-muted-foreground">Warm reply</dt>
+                  <dd className="font-mono text-[13px]">{seconds(measurement.warmFirstTokenMs)}</dd>
+                </>
+              )}
               <dt className="pt-1 micro text-muted-foreground">Writing</dt>
               <dd className="font-mono text-[13px]">
                 {Math.round(report.charactersPerSecond ?? 0)} chars/s
