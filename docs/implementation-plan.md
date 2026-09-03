@@ -67,7 +67,7 @@ the generic output that step exists to avoid.
 | D6       | Taken, built, **measured**     | `e2e/feed.spec.ts` asserts the detail width does not change |
 | D7       | Taken, built                   | `engine.rs`                                                 |
 | D8       | Acknowledged, **still open**   | A measurement on real hardware. See §9                      |
-| D9       | Taken, **not yet built**       | Reads from local storage. DLE-0 through DLE-11              |
+| D9       | Taken, built                   | Reads from local storage. DLE-0 through DLE-11, all shipped |
 
 ---
 
