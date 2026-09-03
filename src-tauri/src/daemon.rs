@@ -159,10 +159,23 @@ pub async fn sync_now<R: Runtime>(app: AppHandle<R>) -> Result<Pass, Error> {
 
     let context = context(&app).await?;
     let outcome = run_once(&context).await?;
+
+    // The calendars too, because "Refresh" on the work log means all of it. A
+    // failure to build the recipe context costs the meetings and not the pass:
+    // GitHub has already been read by this point and throwing that away would
+    // be the worse answer.
+    let meetings = match recipe::context(&app).await {
+        Ok(recipe) => ingest_calendar(&recipe).await,
+        Err(error) => {
+            eprintln!("the calendars could not be read: {error}");
+            0
+        }
+    };
+
     let accounts = sync_state::all(&context.pool).await?;
 
     Ok(Pass {
-        written: outcome.written,
+        written: outcome.written + meetings,
         accounts,
     })
 }
@@ -284,6 +297,11 @@ async fn one_pass<R: Runtime>(app: AppHandle<R>) -> Outcome {
                 Err(error) => eprintln!("work log pass failed: {error}"),
             },
             Err(error) => eprintln!("work log pass could not start: {error}"),
+        }
+
+        match recipe::context(&app).await {
+            Ok(recipe) => outcome.written += ingest_calendar(&recipe).await,
+            Err(error) => eprintln!("the calendars could not be read: {error}"),
         }
     }
 
@@ -630,22 +648,44 @@ async fn run_one_account(
         }
     }
 
-    let merged = session
-        .pull_requests(Involvement::Authored, State::Merged, BATCH)
-        .await?;
+    // **Three questions, not one.** This read `author:@me is:merged` and
+    // nothing else, so the log held only work that was already finished: an
+    // open pull request never appeared until the day it merged, and a review
+    // somebody had asked for never appeared at all. Which made "what is
+    // waiting on me" unanswerable from local storage — the question REC-41
+    // built the `whose` parameter for, still going out to the network on every
+    // ask because there was nothing here to answer it from.
+    //
+    // Merged first: it is the one a failure would be most missed on, and the
+    // reads below fail independently.
+    let asked = [
+        (Involvement::Authored, State::Merged, ingest::Kind::Mine),
+        (Involvement::Authored, State::Open, ingest::Kind::Mine),
+        (Involvement::Reviewing, State::Open, ingest::Kind::Review),
+    ];
 
     let mut written = 0;
 
-    for pull_request in merged {
-        // Summarising uses the same local model the user is talking to, and
-        // the engine decodes one request at a time: carrying on here would put
-        // their question behind ours. The rest keeps until the next pass.
+    for (involvement, state, kind) in asked {
+        // Stopping between reads as well as between items, so a pass the user
+        // interrupted does not spend a request it is about to abandon anyway.
         if context.attention.is_engaged() {
             break;
         }
 
-        if log_one(context, account.id, &pull_request).await? {
-            written += 1;
+        let found = session.pull_requests(involvement, state, BATCH).await?;
+
+        for pull_request in found {
+            // The engine decodes one request at a time, and the user's own
+            // question is worth more than the log being current. The rest keeps
+            // until the next pass.
+            if context.attention.is_engaged() {
+                break;
+            }
+
+            if log_one(context, account.id, &pull_request, kind).await? {
+                written += 1;
+            }
         }
     }
 
@@ -668,12 +708,73 @@ async fn log_one(
     context: &Context,
     account_id: i64,
     pull_request: &PullRequest,
+    kind: ingest::Kind,
 ) -> Result<bool, Error> {
     Ok(work_log::upsert(
         &context.pool,
-        ingest::from_pull_request(pull_request, account_id),
+        ingest::from_pull_request(pull_request, account_id, kind),
     )
     .await?)
+}
+
+/// Write today's meetings to the work log, from every calendar there is.
+///
+/// **The other half of D9, and the half that was never built.**
+/// `intent::prep` answers "what is on my calendar" by querying
+/// `category = 'calendar'` in `work_logs` — rows that, until now, nothing in
+/// production ever wrote. So the query matched nothing, `answer` returned
+/// `None`, and the question fell through to the tool loop and Microsoft Graph
+/// on every single ask, which is the network round trip D9 exists to remove.
+///
+/// Takes a [`recipe::Context`] rather than this module's, because it needs the
+/// calendar and Outlook clients the brief already assembles — and because
+/// `recipe::subscribed_events` is the merge of subscriptions and Graph that
+/// keeps a reader from ever having to know which kind a meeting came from.
+/// Reusing it is what keeps the two from drifting.
+///
+/// A calendar that will not load costs that calendar and nothing else, the
+/// rule every source in `recipe::gather` already follows.
+pub async fn ingest_calendar(context: &recipe::Context) -> usize {
+    let zone = chrono::Local::now().timezone();
+    let mut written = 0;
+
+    for (account_id, event) in todays_meetings(context).await {
+        let Some(record) = ingest::from_event(&event, account_id, &zone) else {
+            continue;
+        };
+
+        match work_log::upsert(&context.pool, record).await {
+            Ok(true) => written += 1,
+            Ok(false) => {}
+            Err(error) => eprintln!("a meeting could not be logged: {error}"),
+        }
+    }
+
+    written
+}
+
+/// Today's meetings, each with the account it was read from.
+///
+/// The account matters because the dedupe index is
+/// `(source, account_id, external_id)`: two people sharing a machine, or one
+/// person with a work and a personal calendar, legitimately hold the same
+/// meeting twice and neither copy should overwrite the other.
+async fn todays_meetings(context: &recipe::Context) -> Vec<(i64, crate::microsoft::Event)> {
+    let mut found = recipe::subscribed_events_by_account(context).await;
+
+    let (from, to) = recipe::today();
+
+    for account in recipe::outlook_accounts(context).await {
+        let session =
+            crate::session::OutlookSession::new(&context.pool, &context.microsoft, account);
+
+        match session.events(&from, &to, recipe::PER_SOURCE).await {
+            Ok(events) => found.extend(events.into_iter().map(|event| (account, event))),
+            Err(error) => eprintln!("an Outlook calendar could not be read: {error}"),
+        }
+    }
+
+    found
 }
 
 #[cfg(test)]
@@ -709,6 +810,37 @@ mod tests {
     }"#;
 
     const NO_PRS: &str = r#"{"total_count":0,"items":[]}"#;
+
+    /// One pull request somebody else opened and asked the user to review.
+    const REVIEW_REQUESTED: &str = r#"{
+        "total_count": 1,
+        "items": [
+            {
+                "number": 71,
+                "title": "Tighten the calendar parser",
+                "repository_url": "https://api.github.com/repos/scottmallinson/chief.ai",
+                "state": "open",
+                "draft": false,
+                "html_url": "https://github.com/scottmallinson/chief.ai/pull/71",
+                "updated_at": "2026-09-02T11:00:00Z",
+                "pull_request": {}
+            }
+        ]
+    }"#;
+
+    /// The three replies one account's pass now needs: merged, then the user's
+    /// open pull requests, then the reviews requested of them.
+    ///
+    /// A helper rather than three literals per test, because the count is the
+    /// thing that changes when a question is added to the pass and every stub
+    /// list would otherwise have to be found and counted by hand.
+    fn one_account(merged: &'static str) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("HTTP/1.1 200 OK", merged),
+            ("HTTP/1.1 200 OK", NO_PRS),
+            ("HTTP/1.1 200 OK", NO_PRS),
+        ]
+    }
 
     const VIEWER: &str = r#"{"login":"octocat","name":"The Octocat"}"#;
 
@@ -791,7 +923,7 @@ mod tests {
 
     #[tokio::test]
     async fn writes_a_row_per_merged_pull_request_without_asking_the_model() {
-        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", MERGED_PRS)]);
+        let (github_host, github_server) = serve(one_account(MERGED_PRS));
 
         let context = context_for(&github_host, true).await;
         let written = run_once(&context)
@@ -825,20 +957,88 @@ mod tests {
         github_server.await.expect("github stub should finish");
     }
 
+    /// The three questions a work log has to be able to answer.
+    ///
+    /// This used to assert the opposite — that a pass asked for merged work and
+    /// nothing else — and it was right about the code and wrong about the
+    /// product. A log holding only finished work cannot answer "what is waiting
+    /// on me", which is one of the three questions the composer offers, so that
+    /// question went to the network on every ask.
+    ///
+    /// Proved by dropping the last two entries from `asked`:
+    ///
+    /// ```text
+    /// a pass has to read the reviews requested of the user, or "what is
+    /// waiting on me" has nothing local to answer from
+    /// ```
     #[tokio::test]
-    async fn asks_github_only_for_merged_work() {
-        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", NO_PRS)]);
+    async fn asks_github_for_every_question_the_log_has_to_answer() {
+        let (github_host, github_server) = serve(one_account(NO_PRS));
         let context = context_for(&github_host, true).await;
 
         run_once(&context).await.expect("a pass should not fail");
 
-        let requests = github_server.await.expect("github stub should finish");
-        let (request_line, _) = crate::llama::test_support::split(&requests[0]);
+        // **Bounded.** `serve` blocks on `accept` once per scripted reply, so a
+        // pass that stopped making one of these reads would leave this await
+        // hanging for ever rather than failing — a guard that fails by hanging
+        // is a guard nobody can read the result of.
+        let requests = tokio::time::timeout(Duration::from_secs(5), github_server)
+            .await
+            .expect("a pass has to make all three reads; the stub is still waiting for one of them")
+            .expect("github stub should finish");
+        let asked: Vec<String> = requests
+            .iter()
+            .map(|request| crate::llama::test_support::split(request).0.to_string())
+            .collect();
 
         assert!(
-            request_line.contains("is%3Amerged"),
-            "unexpected request: {request_line}"
+            asked.iter().any(|line| line.contains("is%3Amerged")),
+            "a pass has to read what the user shipped: {asked:?}"
         );
+        assert!(
+            asked
+                .iter()
+                .any(|line| line.contains("author%3A%40me") && line.contains("is%3Aopen")),
+            "a pass has to read the user's work in flight: {asked:?}"
+        );
+        assert!(
+            asked
+                .iter()
+                .any(|line| line.contains("review-requested%3A%40me")),
+            "a pass has to read the reviews requested of the user, or \"what is \
+             waiting on me\" has nothing local to answer from: {asked:?}"
+        );
+    }
+
+    /// A review request is filed as a review, not as the user's own work.
+    ///
+    /// The categories are what let one table answer two questions: `retrieval`
+    /// and `intent` filter on it, so a review sitting under `pr` would read as
+    /// something the user had shipped.
+    #[tokio::test]
+    async fn a_review_request_is_filed_as_a_review() {
+        let (github_host, github_server) = serve(
+            vec![
+                ("HTTP/1.1 200 OK", NO_PRS),
+                ("HTTP/1.1 200 OK", NO_PRS),
+                ("HTTP/1.1 200 OK", REVIEW_REQUESTED),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let context = context_for(&github_host, true).await;
+
+        run_once(&context).await.expect("a pass should not fail");
+
+        let hits = crate::retrieval::latest(&context.pool, 10)
+            .await
+            .expect("should read");
+
+        assert_eq!(hits.len(), 1, "the review request should have been logged");
+        assert_eq!(hits[0].category, "review");
+        assert_eq!(hits[0].summary.as_deref(), Some("review requested"));
+
+        github_server.await.expect("github stub should finish");
     }
 
     /// A rejected credential is the user's to fix; anything else is not.
@@ -915,7 +1115,7 @@ mod tests {
     /// A pass that worked says so, and stamps the time.
     #[tokio::test]
     async fn a_pass_that_read_an_account_records_it_as_fresh() {
-        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", MERGED_PRS)]);
+        let (github_host, github_server) = serve(one_account(MERGED_PRS));
         let context = context_for(&github_host, true).await;
         let account = only_account(&context).await;
 
@@ -997,11 +1197,12 @@ mod tests {
 
     #[tokio::test]
     async fn running_again_logs_nothing_new() {
-        let (github_host, github_server) = serve(vec![
-            ("HTTP/1.1 200 OK", MERGED_PRS),
-            ("HTTP/1.1 200 OK", MERGED_PRS),
-        ]);
-        // Only two model replies: a second pass must not ask again.
+        let (github_host, github_server) = serve(
+            one_account(MERGED_PRS)
+                .into_iter()
+                .chain(one_account(MERGED_PRS))
+                .collect(),
+        );
 
         let context = context_for(&github_host, true).await;
 
@@ -1027,10 +1228,12 @@ mod tests {
         // Both accounts read the same stub, so both see the same two merges.
         // They are still four entries: whose work it was is part of what the
         // log records, and the dedupe key says so too.
-        let (github_host, github_server) = serve(vec![
-            ("HTTP/1.1 200 OK", MERGED_PRS),
-            ("HTTP/1.1 200 OK", MERGED_PRS),
-        ]);
+        let (github_host, github_server) = serve(
+            one_account(MERGED_PRS)
+                .into_iter()
+                .chain(one_account(MERGED_PRS))
+                .collect(),
+        );
 
         let context = context_for(&github_host, true).await;
         let second = connect(&context.pool, "hubot", Some("hubot")).await;
@@ -1064,13 +1267,14 @@ mod tests {
         // be read. Letting the first one end the pass would mean the log never
         // moves again, on the account they care about, until they notice the
         // other one and disconnect it.
-        let (github_host, github_server) = serve(vec![
-            (
+        let (github_host, github_server) = serve(
+            std::iter::once((
                 "HTTP/1.1 401 Unauthorized",
                 r#"{"message":"Bad credentials"}"#,
-            ),
-            ("HTTP/1.1 200 OK", MERGED_PRS),
-        ]);
+            ))
+            .chain(one_account(MERGED_PRS))
+            .collect(),
+        );
 
         // The refused account is the one read first, by id.
         let context = context_for(&github_host, true).await;
@@ -1102,10 +1306,11 @@ mod tests {
         // The row a v1 database was migrated from has no identity, because the
         // old table never stored one. A pass fills it in rather than asking the
         // user to reconnect for a name.
-        let (github_host, github_server) = serve(vec![
-            ("HTTP/1.1 200 OK", VIEWER),
-            ("HTTP/1.1 200 OK", NO_PRS),
-        ]);
+        let (github_host, github_server) = serve(
+            std::iter::once(("HTTP/1.1 200 OK", VIEWER))
+                .chain(one_account(NO_PRS))
+                .collect(),
+        );
         let context = context_for(&github_host, false).await;
         connect(&context.pool, "github", None).await;
 
@@ -1128,13 +1333,14 @@ mod tests {
         // Asking who an account is does not renew a rotated token, but reading
         // its work does. A refused name must therefore step aside for the read
         // rather than take the account down with it.
-        let (github_host, github_server) = serve(vec![
-            (
+        let (github_host, github_server) = serve(
+            std::iter::once((
                 "HTTP/1.1 401 Unauthorized",
                 r#"{"message":"Bad credentials"}"#,
-            ),
-            ("HTTP/1.1 200 OK", NO_PRS),
-        ]);
+            ))
+            .chain(one_account(NO_PRS))
+            .collect(),
+        );
         let context = context_for(&github_host, false).await;
         connect(&context.pool, "github", None).await;
 
@@ -1143,7 +1349,159 @@ mod tests {
             .expect("a name we could not read is not a failed pass");
 
         let requests = github_server.await.expect("github stub should finish");
-        assert_eq!(requests.len(), 2, "the read should still have happened");
+        assert_eq!(
+            requests.len(),
+            4,
+            "the refused name, and then the three reads a pass makes"
+        );
+    }
+}
+
+/// Ingesting the calendar, and the question it exists to make answerable.
+#[cfg(test)]
+mod calendar_tests {
+    use super::*;
+    use crate::corpus::Corpus;
+    use crate::db::test_support::migrated_pool;
+    use crate::intent::{self, Intent};
+    use crate::llama::test_support::serve;
+
+    /// One meeting today, as Graph returns it: a local wall-clock stamp with no
+    /// offset, which is the whole reason `ingest::as_utc` exists.
+    fn graph_calendar(start: &str) -> String {
+        format!(
+            r#"{{"value":[{{"subject":"Standup","start":{{"dateTime":"{start}","timeZone":"GMT Standard Time"}},"end":{{"dateTime":"{start}","timeZone":"GMT Standard Time"}},"organizer":{{"emailAddress":{{"name":"Dana Vance"}}}},"attendees":[{{"emailAddress":{{"name":"Dana Vance"}}}}],"isOnlineMeeting":true}}]}}"#
+        )
+    }
+
+    /// A scratch corpus that removes itself.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A recipe context with Outlook pointed at `graph_host` and everything
+    /// else pointed nowhere, so any other source failing is a failure to
+    /// connect rather than a stub answering by accident.
+    async fn context_for(graph_host: &str, name: &str) -> (recipe::Context, Scratch) {
+        let pool = migrated_pool().await;
+
+        crate::integrations::save(
+            &pool,
+            crate::integrations::NewAccount {
+                service: crate::integrations::MICROSOFT,
+                account_key: "dana@example.com",
+                identity: Some("dana@example.com"),
+                credential_kind: crate::integrations::OAUTH,
+                access_token: "graph_token",
+                refresh_token: None,
+                expires_at: None,
+                scopes: None,
+                client_id: None,
+                client_secret: None,
+            },
+        )
+        .await
+        .expect("should store a credential");
+
+        let root = std::env::temp_dir().join(format!("chief-daemon-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let corpus = Corpus::at(root.clone());
+        corpus.ensure_shape().await.expect("should create");
+
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+
+        let context = recipe::Context {
+            pool,
+            github: github::Client::against("127.0.0.1:1").expect("client"),
+            microsoft: crate::microsoft::Client::against(graph_host).expect("client"),
+            calendar: crate::calendar::Client::new().expect("client"),
+            linear: crate::linear::Client::new().expect("client"),
+            engine: llama::Client::with_base_url(&engine_host).expect("client"),
+            corpus,
+        };
+
+        (context, Scratch(root))
+    }
+
+    /// The guard REC-57 exists for, end to end.
+    ///
+    /// `intent::prep` has always queried `category = 'calendar'`, and until now
+    /// **nothing in production ever wrote a row with that category** — so the
+    /// query matched nothing, `answer` returned `None`, and "what is on my
+    /// calendar" fell through to the tool loop and Graph on every ask, which is
+    /// the network round trip D9 exists to remove. The existing test in
+    /// `intent` did not catch it because it writes the row itself; this one
+    /// makes a pass write it.
+    ///
+    /// Proved by removing the `ingest_calendar` call below:
+    ///
+    /// ```text
+    /// /prep has to answer from rows a pass wrote, not only from rows a test
+    /// wrote by hand
+    /// ```
+    #[tokio::test]
+    async fn a_pass_writes_the_rows_prep_has_always_queried_for() {
+        // Midday local, so the row lands inside today's window at any offset
+        // rather than on an edge of it.
+        let today = chrono::Local::now().format("%Y-%m-%dT12:00:00").to_string();
+        let (graph_host, graph) = serve(vec![("HTTP/1.1 200 OK", &graph_calendar(&today))]);
+
+        let (context, _scratch) = context_for(&graph_host, "prep").await;
+
+        let written = ingest_calendar(&context).await;
+        assert_eq!(written, 1, "the meeting should have been logged");
+
+        let answered = intent::answer(Intent::Prep, &context).await;
+
+        assert!(
+            answered.is_some(),
+            "/prep has to answer from rows a pass wrote, not only from rows a \
+             test wrote by hand"
+        );
+        assert!(
+            answered
+                .as_ref()
+                .is_some_and(|answered| answered.markdown.contains("Standup")),
+            "the answer should be the meeting the pass ingested: {answered:?}"
+        );
+
+        graph.await.expect("graph stub should finish");
+    }
+
+    /// Running twice writes one row, not two.
+    ///
+    /// `Event` carries no identifier of its own, so the dedupe key is built
+    /// from the start and the subject. If that were not stable, every pass
+    /// would add today's meetings again and the agenda would grow all day.
+    #[tokio::test]
+    async fn the_same_meeting_is_logged_once_however_many_passes_run() {
+        let today = chrono::Local::now().format("%Y-%m-%dT12:00:00").to_string();
+        let calendar = graph_calendar(&today);
+        let (graph_host, graph) = serve(vec![
+            ("HTTP/1.1 200 OK", calendar.as_str()),
+            ("HTTP/1.1 200 OK", calendar.as_str()),
+        ]);
+
+        let (context, _scratch) = context_for(&graph_host, "twice").await;
+
+        assert_eq!(ingest_calendar(&context).await, 1);
+        assert_eq!(
+            ingest_calendar(&context).await,
+            0,
+            "a meeting already in the log is not new work"
+        );
+
+        let hits = crate::retrieval::latest(&context.pool, 10)
+            .await
+            .expect("should read");
+
+        assert_eq!(hits.len(), 1, "one meeting, one row");
+
+        graph.await.expect("graph stub should finish");
     }
 }
 

@@ -236,6 +236,23 @@ async fn gather(context: &Context) -> Gathered {
 /// the same rule every other source in `gather` follows: a brief with the
 /// calendar and no mail is worth having.
 pub(crate) async fn subscribed_events(context: &Context) -> Vec<microsoft::Event> {
+    subscribed_events_by_account(context)
+        .await
+        .into_iter()
+        .map(|(_, event)| event)
+        .collect()
+}
+
+/// The same, keeping the account each event was read from.
+///
+/// The brief does not care — a reader must never have to know which calendar a
+/// meeting came from — but ingestion does: the work log's dedupe index is
+/// `(source, account_id, external_id)`, so a person with a work and a personal
+/// calendar holding the same meeting keeps both rows rather than having one
+/// overwrite the other.
+pub(crate) async fn subscribed_events_by_account(
+    context: &Context,
+) -> Vec<(i64, microsoft::Event)> {
     let Ok(accounts) =
         crate::integrations::accounts(&context.pool, crate::integrations::CALENDAR).await
     else {
@@ -261,7 +278,7 @@ pub(crate) async fn subscribed_events(context: &Context) -> Vec<microsoft::Event
             .events(&credentials.access_token, midnight, end, offset)
             .await
         {
-            Ok(events) => found.extend(events),
+            Ok(events) => found.extend(events.into_iter().map(|event| (account.id, event))),
             // Reported without the address, which is a credential.
             Err(error) => eprintln!("a calendar subscription could not be read: {error}"),
         }
