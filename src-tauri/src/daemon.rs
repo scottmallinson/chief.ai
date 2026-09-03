@@ -14,6 +14,7 @@
 //! account that read it, so a merge already in the log is revised rather than
 //! repeated, and an unchanged one is not written at all.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, Runtime};
@@ -77,6 +78,67 @@ pub enum Error {
     Storage(#[from] db::Error),
 }
 
+impl serde::Serialize for Error {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+/// The right to be the pass that is running.
+///
+/// One at a time, whoever asked. The background loop and [`sync_now`] read the
+/// same accounts and write the same rows, and two of them at once spends a
+/// person's GitHub allowance twice to reach the state one of them would have
+/// reached alone.
+///
+/// **Deliberately not [`Attention`].** Every other foreground path — `ask_agent`,
+/// `generate_brief` — takes an `Attention` guard so the daemon steps aside for
+/// it. A pass that did that would step aside for *itself*: `run_once` breaks
+/// out of its account loop the moment `Attention::is_engaged()`, so the button
+/// would return "0 entries" without having read anything, which is precisely
+/// the complaint it is being added to answer.
+#[derive(Debug, Default, Clone)]
+pub struct Passes(Arc<tokio::sync::Mutex<()>>);
+
+/// What one pass did, for the screen that asked for it.
+///
+/// `written` alone is not enough to report with. A pass that reached an account
+/// and found nothing new writes nothing, and so does one whose every account
+/// was refused — `run_once` records a per-account failure against the account
+/// and carries on, by design. So the states come back too, and the interface
+/// tells the two apart from those rather than from the count.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pass {
+    /// How many entries this pass wrote or revised.
+    pub written: usize,
+    /// What every connected account has to say about itself now.
+    pub accounts: Vec<sync_state::SyncState>,
+}
+
+/// Run one pass now, because somebody asked.
+///
+/// Until this existed the work log's "Refresh" called `list_work_logs`, which
+/// is a `SELECT` — it re-read the rows a pass had already written and asked
+/// GitHub for nothing. A user looking at a stale log had no way to ask for a
+/// fresh one and no way to find out why it was stale, which is how three days
+/// of missing entries reached a release.
+///
+/// It calls [`run_once`], not a second ingestion path: a button that fetched
+/// differently from the daemon would be a second thing to keep correct, and
+/// the first divergence would be invisible.
+#[tauri::command]
+pub async fn sync_now<R: Runtime>(app: AppHandle<R>) -> Result<Pass, Error> {
+    let passes = app.state::<Passes>().inner().clone();
+    let _running = passes.0.lock().await;
+
+    let context = context(&app).await?;
+    let written = run_once(&context).await?;
+    let accounts = sync_state::all(&context.pool).await?;
+
+    Ok(Pass { written, accounts })
+}
+
 /// Everything a pass needs. Passed in so the whole thing runs in tests against
 /// an in-memory database and stub servers.
 /// **No engine.** Ingestion is deterministic (see `ingest`), so a pass has no
@@ -122,15 +184,24 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
                 engine.working()
             };
 
-            match context(&app).await {
-                Ok(context) => {
-                    // A pass failing is not fatal: GitHub may be unreachable or
-                    // the engine may still be loading. Try again next time.
-                    if let Err(error) = run_once(&context).await {
-                        eprintln!("work log pass failed: {error}");
+            {
+                // Held only for the ingestion, not for the brief and the draft
+                // below: those are model calls and a person clicking Refresh
+                // must not wait behind one.
+                let passes = app.state::<Passes>().inner().clone();
+                let _running = passes.0.lock().await;
+
+                match context(&app).await {
+                    Ok(context) => {
+                        // A pass failing is not fatal: GitHub may be unreachable
+                        // or the engine may still be loading. Try again next
+                        // time.
+                        if let Err(error) = run_once(&context).await {
+                            eprintln!("work log pass failed: {error}");
+                        }
                     }
+                    Err(error) => eprintln!("work log pass could not start: {error}"),
                 }
-                Err(error) => eprintln!("work log pass could not start: {error}"),
             }
 
             brief_if_the_day_has_none(&app).await;
@@ -745,6 +816,47 @@ mod tests {
         );
 
         github_server.await.expect("github stub should finish");
+    }
+
+    /// Why [`Pass`] carries the account states and not only a count.
+    ///
+    /// A pass whose every account was refused still returns `Ok(0)`: a failure
+    /// belongs to the account it happened to, is recorded against it, and is
+    /// stepped over so one bad credential cannot freeze another account's log.
+    /// Which means "0 written" says nothing at all on its own — it is what a
+    /// caught-up pass reports and what a completely failed one reports.
+    ///
+    /// Proved by asserting `Ok` instead:
+    ///
+    /// ```text
+    /// a count alone cannot tell a caught-up pass from a failed one
+    ///   left: Error
+    ///  right: Ok
+    /// ```
+    #[tokio::test]
+    async fn a_failed_pass_and_a_caught_up_one_both_report_nothing_written() {
+        // Nothing is listening on port 1, so the read cannot succeed.
+        let context = context_for("http://127.0.0.1:1", true).await;
+        let account = only_account(&context).await;
+
+        let written = run_once(&context).await.expect("a pass should not fail");
+
+        assert_eq!(written, 0, "nothing could be read, so nothing was written");
+
+        let state = sync_state::for_account(&context.pool, account)
+            .await
+            .expect("should read")
+            .expect("a pass records what happened");
+
+        assert_eq!(
+            state.status,
+            sync_state::Status::Error,
+            "a count alone cannot tell a caught-up pass from a failed one"
+        );
+        assert!(
+            state.error_message.is_some(),
+            "the screen that asked for this pass has to be able to say why"
+        );
     }
 
     /// Whatever account the fixture connected.

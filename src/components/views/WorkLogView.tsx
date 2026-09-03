@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button';
 import { OpenSource } from '@/components/OpenSource';
 import { Chip } from '@/components/ui/chip';
 import { Dots } from '@/components/ui/activity';
+import { Freshness } from '@/components/Freshness';
+import { useSync } from '@/hooks/use-sync';
 import { useWorkLog } from '@/hooks/use-work-log';
 import type { WorkLogEntry } from '@/lib/work-log';
 
@@ -41,10 +43,23 @@ function Entry({ entry }: { entry: WorkLogEntry }) {
 
 /**
  * Chronological record of the user's work, read from the local SQLite
- * database. Entries are written by the background daemon.
+ * database. Entries are written by the background daemon — and, since this
+ * screen grew a button that means it, by whoever is looking at them.
+ *
+ * **Two different acts, and they used to be one button.** Reading the rows is
+ * a `SELECT`; bringing them up to date is a pass out to every connected
+ * service. "Refresh" did the first while being read as the second, so a log
+ * that had stopped three days earlier could be refreshed all day without
+ * anything being asked of anybody, and without the screen ever saying so.
+ *
+ * Freshness sits here rather than only in Settings for the reason `Freshness`
+ * itself gives: once a read question is answered from these rows, the answer
+ * is only as good as the last pass, and staleness is invisible in a way a
+ * spinner is not.
  */
 export function WorkLogView() {
   const { entries, status, error, reload } = useWorkLog();
+  const { accounts, syncing, error: syncError, sync } = useSync(reload);
   const isLoading = status === 'loading';
 
   return (
@@ -58,14 +73,50 @@ export function WorkLogView() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={reload}
-              disabled={isLoading}
+              onClick={sync}
+              disabled={syncing}
               aria-label="Refresh work log"
             >
-              {isLoading ? <Dots /> : <RefreshCw aria-hidden />}
+              {syncing ? <Dots /> : <RefreshCw aria-hidden />}
               Refresh
             </Button>
           </div>
+
+          <div className="mb-4 flex flex-col gap-1.5">
+            {syncing && (
+              <p className="micro text-thinking" role="status">
+                local · Reading your connected accounts
+              </p>
+            )}
+
+            {accounts.length === 0 && !syncing && (
+              <p className="micro text-muted-foreground">
+                Nothing is connected yet · connect an account in Settings
+              </p>
+            )}
+
+            {accounts.map((account) => (
+              <div key={account.accountId} className="flex flex-wrap items-center gap-2">
+                <span className="micro text-muted-foreground">{account.source}</span>
+                <Freshness state={account} />
+                {account.errorMessage !== null && (
+                  <span className="text-[11px] leading-snug text-muted-foreground">
+                    {account.errorMessage}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {syncError !== null && (
+            <div
+              className="mb-4 rounded-md border border-destructive bg-destructive-surface px-3.5 py-3 text-destructive-text"
+              role="alert"
+            >
+              <h2 className="text-[13px] font-semibold">Could not read your accounts</h2>
+              <p className="mt-1 text-[13px] leading-snug">{syncError}</p>
+            </div>
+          )}
 
           {isLoading && (
             <p className="micro text-muted-foreground" role="status">

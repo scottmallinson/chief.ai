@@ -74,6 +74,9 @@ pub fn run() {
             app.manage(linear::Client::new()?);
             app.manage(connect::Pending::default());
             app.manage(agent::Attention::default());
+            // One ingestion pass at a time, whether the daemon asked or a
+            // person clicked Refresh.
+            app.manage(daemon::Passes::default());
 
             // Start the model server while the window is still opening, so the
             // first question does not wait for the weights to come off disk.
@@ -101,6 +104,7 @@ pub fn run() {
             agent::ask_agent,
             connect::add_calendar,
             connect::add_linear_key,
+            daemon::sync_now,
             connect::start_login,
             connect::finish_login,
             connect::account_data,

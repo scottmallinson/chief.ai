@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
+import type { SyncState } from '@/lib/sync-state';
+
 /** An entry in the local work log, as stored in SQLite. */
 export interface WorkLogEntry {
   id: number;
@@ -33,6 +35,32 @@ export interface NewWorkLogEntry {
   content: string;
   timestamp?: string;
   summary?: string;
+}
+
+/**
+ * What one ingestion pass did, as `daemon::Pass` serialises it.
+ *
+ * The count alone would not do. A pass that reached every account and found
+ * nothing new writes nothing, and so does one whose every account was refused —
+ * a per-account failure is recorded against the account and stepped over, so
+ * `run_once` returns `Ok(0)` for both. The states are how the two are told
+ * apart.
+ */
+export interface Pass {
+  /** How many entries the pass wrote or revised. */
+  written: number;
+  /** What every connected account says about itself now. Empty when none is. */
+  accounts: SyncState[];
+}
+
+/**
+ * Read the connected accounts now, rather than waiting for the next pass.
+ *
+ * The expensive one: it goes out to every connected service. "Refresh" used to
+ * call `listWorkLogs`, which is a `SELECT` and asked nobody for anything.
+ */
+export function syncNow(): Promise<Pass> {
+  return invoke<Pass>('sync_now');
 }
 
 /** Read the work log, newest first. */
