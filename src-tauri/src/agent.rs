@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
+use crate::adapter;
 use crate::clock;
 use crate::context;
 use crate::db;
@@ -247,8 +248,28 @@ impl serde::Serialize for Error {
 ///
 /// `present` is what the clock says right now, worked out fresh for every
 /// question so an app left open overnight does not still think it is yesterday.
+/// Test-only since the adapter took over choosing the ceiling.
+///
+/// Production assembles through `adapter::Adapter::assemble`, which picks the
+/// budget from the tier; on both tiers today that picks exactly
+/// [`context::PROMPT_CEILING`], so this and the production path are the same
+/// call with the same argument. Keeping it means every orchestration test
+/// below is untouched by the seam, which is the point of the seam — and the
+/// adapter's own test is what asserts the budget follows the tier rather than
+/// this constant.
+#[cfg(test)]
 fn conversation(turns: Vec<Turn>, present: &str) -> Vec<Message> {
-    let mut budget = context::Budget::with_ceiling(context::PROMPT_CEILING);
+    conversation_within(turns, present, context::PROMPT_CEILING)
+}
+
+/// The same, under a ceiling the caller chose.
+///
+/// `adapter::Adapter` picks that ceiling from the tier, so a machine whose
+/// engine was started with a narrower window than Chief is willing to spend
+/// gets the narrower of the two. The trimming and the system prompt stay here:
+/// the adapter decides *how much*, never *what*.
+pub(crate) fn conversation_within(turns: Vec<Turn>, present: &str, ceiling: u32) -> Vec<Message> {
+    let mut budget = context::Budget::with_ceiling(ceiling);
     let opening = format!("{SYSTEM_PROMPT}\n\n{present}");
 
     // The system prompt and the clock are not negotiable and are added first,
@@ -505,24 +526,34 @@ pub async fn ask_agent<R: Runtime>(
     // Before the engine, not after it. A question this machine can answer from
     // its own disk should not wait several seconds for a couple of gigabytes of
     // weights to be read in order to say something already written down.
+    //
+    // Which of the two paths a question takes is `adapter::strategy_for`'s to
+    // say, from the intent alone. It is the same branch this always made; what
+    // the seam adds is that the decision has a name and a home, so "a read is
+    // answered from local storage" is a property of one function rather than
+    // an emergent fact about an `if let`.
     if let Some(question) = messages.iter().rev().find(|turn| turn.role == Role::User) {
-        if let Ok(recipe) = recipe::context(&app).await {
-            let answered = intent::deliver(&question.content, &recipe, |update| {
-                let _ = app.emit(
-                    STREAM_EVENT,
-                    StreamEvent {
-                        request_id: request_id.clone(),
-                        update,
-                    },
-                );
-            })
-            .await;
+        let strategy = adapter::strategy_for(intent::route(&question.content));
 
-            if let Some(answered) = answered {
-                return Ok(Answer {
-                    content: answered.markdown,
-                    provenance: answered.provenance,
-                });
+        if strategy == adapter::ExecutionStrategy::DirectContextInjection {
+            if let Ok(recipe) = recipe::context(&app).await {
+                let answered = intent::deliver(&question.content, &recipe, |update| {
+                    let _ = app.emit(
+                        STREAM_EVENT,
+                        StreamEvent {
+                            request_id: request_id.clone(),
+                            update,
+                        },
+                    );
+                })
+                .await;
+
+                if let Some(answered) = answered {
+                    return Ok(Answer {
+                        content: answered.markdown,
+                        provenance: answered.provenance,
+                    });
+                }
             }
         }
     }
@@ -543,7 +574,8 @@ pub async fn ask_agent<R: Runtime>(
 
     engine.start_and_wait(client.inner()).await?;
 
-    let conversation = conversation(messages, &clock::present());
+    let conversation =
+        adapter::Adapter::for_tier(engine.tier()).assemble(messages, &clock::present());
 
     let content = respond(&client, &context, &model, conversation, |update| {
         // A dropped update costs a frame of the answer, nothing more: the whole
@@ -578,7 +610,7 @@ fn turn(role: Role, content: &str) -> Turn {
 
 /// A stand-in for the clock, so the prompt tests do not depend on the date.
 #[cfg(test)]
-const PRESENT: &str = "The current date and time is 14:32 on Thursday 20 August 2026.";
+pub(crate) const PRESENT: &str = "The current date and time is 14:32 on Thursday 20 August 2026.";
 
 #[cfg(test)]
 mod tests {
@@ -1539,5 +1571,24 @@ mod orchestration_tests {
         );
 
         github_server.await.expect("GitHub stub should finish");
+    }
+}
+
+#[cfg(test)]
+mod catalogue_cost {
+    use super::*;
+
+    /// What the catalogue actually costs, printed rather than asserted.
+    ///
+    /// `keeps_the_tool_catalogue_within_its_budget` is the gate; this exists so
+    /// the number can be read off without breaking something to see it, since
+    /// the plan asks for it in the pull request each time it moves.
+    #[test]
+    #[ignore = "prints the catalogue's token cost rather than asserting anything"]
+    fn prints_what_the_catalogue_costs() {
+        println!(
+            "the tool catalogue costs about {} tokens",
+            catalog_cost(&tools::catalog())
+        );
     }
 }

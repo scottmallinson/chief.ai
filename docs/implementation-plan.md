@@ -44,7 +44,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | DLE — freshness in the interface       | Shipped                        | DLE-3 / REC-46   | #65       |
 | —     | DLE — unlinking deletes its data       | Shipped                        | DLE-4 / REC-47   | #65       |
 | —     | DLE — local directory permissions      | Shipped                        | DLE-5 / REC-48   | #65       |
-| —     | DLE — model adapter seam               | Not started                    | DLE-6 / REC-49   | —         |
+| —     | DLE — model adapter seam               | Shipped                        | DLE-6 / REC-49   | #65       |
 | —     | DLE — prompt truncation and TTFT       | Shipped                        | DLE-7 / REC-50   | #65       |
 | —     | DLE — monthly journal roll-up          | Shipped                        | DLE-8 / REC-51   | #65       |
 | —     | DLE — provenance footers               | Shipped                        | DLE-9 / REC-52   | #65       |
@@ -925,6 +925,18 @@ removes from it.**
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **The adapter carries no capability flag, and the refusal is in the code.** The DLE specification's
+  `ModelAdapter::supports_native_tools()` is D1's `supports_tools` under another name — specified at
+  revision 3, rejected at revision 4, and rejected again here, with the reasoning in `adapter.rs` so
+  it is not proposed a third time. `GrammarConstrainedJson` is refused on different grounds: both
+  catalogue models are Llama and tool-call natively, so it would have no users, and a path nothing
+  reaches cannot be tested against anything real.
+- **The prompt is a `Vec<Message>` and the return type is the guard.** The specification's
+  `format_prompt(…) -> String` would bypass the model's own chat template, which is the only thing
+  that makes a tool call work under `--jinja`. `Adapter::max_prefill_tokens` wraps `Tier` rather than
+  introducing a second notion of the context window: it takes the lesser of the window and
+  `PROMPT_CEILING`, so a tier whose window fell below the ceiling would shrink the prompt instead of
+  silently overrunning itself.
 - **Chief runs on the rollback journal, not WAL — and the earlier claim that it did was wrong.**
   This review recorded `PRAGMA journal_mode = WAL` as already satisfied because "sqlx's
   `SqliteConnectOptions` defaults to WAL and a 5s busy timeout". Half of that is wrong, and it is the

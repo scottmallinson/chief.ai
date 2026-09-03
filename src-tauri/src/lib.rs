@@ -5,6 +5,7 @@
 //! persistence is local SQLite. No component of this crate may talk to a remote
 //! service on its own.
 
+mod adapter;
 mod agent;
 mod calendar;
 mod clock;
