@@ -14,10 +14,20 @@ export interface Brief {
   sources: string[];
 }
 
-/** One day with a brief on it, as the list pane shows it. */
+/** One day the list pane offers, whether or not a brief has been written. */
 export interface BriefDay {
   date: string;
   path: string;
+  /**
+   * Whether the corpus actually holds this one.
+   *
+   * False for exactly one day — today, before a brief exists for it. Today is
+   * always in the list because it is the day the user came here for, and a list
+   * built only from the files that exist has no row for the day with no file:
+   * that is how "write today's brief" became unreachable the moment anything
+   * else was on screen.
+   */
+  written: boolean;
 }
 
 /** Today's brief, if one has been written. */
@@ -34,22 +44,46 @@ export function generateBrief(): Promise<Brief> {
 const BRIEF_PATH = /^briefs\/(\d{4}-\d{2}-\d{2})\.md$/;
 
 /**
- * The days that have a brief, newest first.
+ * The days the list pane offers, newest first: today, and every day the corpus
+ * has a brief for.
  *
  * Derived from the corpus listing rather than from a command of its own: the
  * corpus is the store, so a brief the user moved, renamed or deleted in the
  * folder is reflected here without Chief keeping a second opinion about what
  * exists. Sorting is on the date in the name, not on `modifiedAt` — a brief
  * edited today is still yesterday's brief.
+ *
+ * **Today is in the list unconditionally.** It is the one day that can be
+ * selected without a file behind it, and it has to be selectable or there is no
+ * way back to the screen offering to write one.
  */
-export function briefDays(entries: CorpusEntry[]): BriefDay[] {
-  return entries
-    .flatMap((entry) => {
-      const match = BRIEF_PATH.exec(entry.path);
+export function briefDays(entries: CorpusEntry[], today: string): BriefDay[] {
+  const days = entries.flatMap((entry) => {
+    const match = BRIEF_PATH.exec(entry.path);
 
-      return match === null ? [] : [{ date: match[1], path: entry.path }];
-    })
-    .sort((left, right) => right.date.localeCompare(left.date));
+    return match === null ? [] : [{ date: match[1], path: entry.path, written: true }];
+  });
+
+  if (!days.some((day) => day.date === today)) {
+    days.push({ date: today, path: `briefs/${today}.md`, written: false });
+  }
+
+  return days.sort((left, right) => right.date.localeCompare(left.date));
+}
+
+/**
+ * Today, as the date a brief is filed under — `recipe::today_date`'s answer,
+ * worked out here so the list pane does not need a command to know the date.
+ *
+ * Built from the local parts rather than from `toISOString`, which is UTC and
+ * so names the wrong day for anybody west of Greenwich for part of every
+ * evening — the same trap `formatDay` and `BriefList.parse` already avoid.
+ */
+export function todayDate(now: Date = new Date()): string {
+  const month = `${now.getMonth() + 1}`.padStart(2, '0');
+  const day = `${now.getDate()}`.padStart(2, '0');
+
+  return `${now.getFullYear()}-${month}-${day}`;
 }
 
 /** One piece of a brief, ready to render. */

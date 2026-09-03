@@ -1,4 +1,4 @@
-import { PenLine } from 'lucide-react';
+import { CalendarDays, PenLine, RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chip';
@@ -13,10 +13,16 @@ import type { WorkLogEntry } from '@/lib/work-log';
 interface TodayViewProps {
   /** The brief on screen: today's, or whichever day the list pane selected. */
   brief: Brief | null;
+  /** Which day is selected. A day is always selected, brief or no brief. */
+  day: string;
+  /** Today, so this view can tell "no brief yet" from "an earlier day". */
+  today: string;
   status: 'loading' | 'ready' | 'writing' | 'error';
   error: string | null;
   /** Write today's brief. Costs a model call, so it is always a deliberate act. */
   onWrite: () => void;
+  /** Come back to today from an earlier day. */
+  onShowToday: () => void;
   /** The drafts Chief has prepared. Nothing here has been sent. */
   proposals: Proposal[];
   /** Open one in the drawer to change it. */
@@ -99,9 +105,12 @@ function Shipped({ entry }: { entry: WorkLogEntry }) {
  */
 export function TodayView({
   brief,
+  day,
+  today,
   status,
   error,
   onWrite,
+  onShowToday,
   proposals,
   onEditProposal,
   onProposalDismissed,
@@ -109,6 +118,7 @@ export function TodayView({
   const { entries } = useWorkLog();
 
   const isWriting = status === 'writing';
+  const isToday = day === today;
   const blocks = brief === null ? [] : readBrief(brief.markdown);
 
   return (
@@ -148,6 +158,20 @@ export function TodayView({
                 {brief.path}
               </p>
 
+              <div className="mt-3.5 flex flex-wrap items-center gap-2">
+                {isToday ? (
+                  <Button variant="outline" size="sm" onClick={onWrite} disabled={isWriting}>
+                    {isWriting ? <Dots /> : <RefreshCw aria-hidden />}
+                    Write it again
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" onClick={onShowToday}>
+                    <CalendarDays aria-hidden />
+                    Back to today
+                  </Button>
+                )}
+              </div>
+
               {blocks.map((block, index) => (
                 <Block key={index} block={block} />
               ))}
@@ -156,15 +180,24 @@ export function TodayView({
 
           {brief === null && status !== 'loading' && (
             <div className="rounded-lg border border-dashed border-input p-6 text-center">
-              <h2 className="text-[15px] font-semibold tracking-[-0.015em]">No brief for today</h2>
+              <h2 className="text-[15px] font-semibold tracking-[-0.015em]">
+                {isToday ? 'No brief for today' : 'That day has no brief'}
+              </h2>
               <p className="mx-auto mt-1.5 max-w-[320px] text-[13px] leading-snug text-muted-foreground">
                 Chief reads your calendar, your pull requests and your work log, and writes the
                 brief here on this machine.
               </p>
-              <Button className="mt-4" onClick={onWrite} disabled={isWriting}>
-                {isWriting ? <Dots /> : <PenLine aria-hidden />}
-                Write today’s brief
-              </Button>
+              {isToday ? (
+                <Button className="mt-4" onClick={onWrite} disabled={isWriting}>
+                  {isWriting ? <Dots /> : <PenLine aria-hidden />}
+                  Write today’s brief
+                </Button>
+              ) : (
+                <Button className="mt-4" variant="outline" onClick={onShowToday}>
+                  <CalendarDays aria-hidden />
+                  Back to today
+                </Button>
+              )}
             </div>
           )}
 

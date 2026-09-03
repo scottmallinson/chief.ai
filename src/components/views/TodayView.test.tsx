@@ -33,9 +33,12 @@ function show(props: Partial<Parameters<typeof TodayView>[0]> = {}) {
   return render(
     <TodayView
       brief={brief}
+      day="2026-08-29"
+      today="2026-08-29"
       status="ready"
       error={null}
       onWrite={vi.fn()}
+      onShowToday={vi.fn()}
       proposals={[]}
       onEditProposal={vi.fn()}
       onProposalDismissed={vi.fn()}
@@ -173,5 +176,54 @@ describe('TodayView', () => {
 
     expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.getByText('Standup at 09:30 with Ana')).toBeInTheDocument();
+  });
+
+  /**
+   * The guard on REC-55, at the screen.
+   *
+   * Proved by putting the write control back inside the `brief === null` branch
+   * it used to live in:
+   *
+   * ```text
+   * TestingLibraryElementError: Unable to find an accessible element with the
+   * role "button" and name "Write it again"
+   * ```
+   *
+   * Which is the reported defect exactly: a brief on screen and no way to ask
+   * for today's.
+   */
+  it('can still be asked for today’s brief while one is on screen', async () => {
+    const onWrite = vi.fn();
+    show({ onWrite });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Write it again' }));
+
+    expect(onWrite).toHaveBeenCalled();
+  });
+
+  it('offers the way back to today while an earlier day is on screen', async () => {
+    const onShowToday = vi.fn();
+    show({
+      brief: { ...brief, date: '2026-08-28', path: 'briefs/2026-08-28.md', sources: [] },
+      day: '2026-08-28',
+      onShowToday,
+    });
+
+    // And not the rewrite: writing a brief writes *today's*, whatever day is
+    // being read, so offering it here would be a button that changes a
+    // different day from the one on screen.
+    expect(screen.queryByRole('button', { name: 'Write it again' })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Back to today' }));
+
+    expect(onShowToday).toHaveBeenCalled();
+  });
+
+  it('does not offer to write a brief for a day that is not today', () => {
+    show({ brief: null, day: '2026-08-28' });
+
+    expect(screen.getByRole('heading', { name: 'That day has no brief' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Write today’s brief' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back to today' })).toBeInTheDocument();
   });
 });
