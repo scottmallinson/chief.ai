@@ -66,8 +66,33 @@ const MAXIMUM_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// opening the lid, and the check itself is two clock reads.
 const TICK: Duration = Duration::from_secs(60);
 
+/// How long to wait after a pass that stepped aside for the user.
+///
+/// A pass that yielded read nothing and spent nothing, so coming back shortly
+/// costs no request it has already made — which is why this sits below
+/// [`MINIMUM_INTERVAL`], whose floor is about GitHub's hourly rate limit and
+/// applies to passes that actually read. Long enough that a question in flight
+/// has a chance to finish; short enough that one question does not cost the log
+/// half an hour, which is what waiting out the full interval used to do.
+const YIELD_RETRY: Duration = Duration::from_secs(2 * 60);
+
 /// How many merged pull requests to consider in one pass.
 const BATCH: u8 = 25;
+
+/// What a pass did, and whether it got to finish.
+///
+/// **`yielded` is the part that was missing.** Every place the daemon steps
+/// aside for `Attention` used to do it silently and return the same nothing as
+/// a pass that had genuinely found nothing — so a pass suppressed by a question
+/// in flight was indistinguishable from a caught-up one, waited out the whole
+/// interval, and left no trace anywhere that it had happened.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Outcome {
+    /// How many entries were written or revised.
+    pub written: usize,
+    /// Whether any part of the pass stopped early because the user was waiting.
+    pub yielded: bool,
+}
 
 /// What can go wrong during a pass.
 #[derive(Debug, thiserror::Error)]
@@ -133,10 +158,13 @@ pub async fn sync_now<R: Runtime>(app: AppHandle<R>) -> Result<Pass, Error> {
     let _running = passes.0.lock().await;
 
     let context = context(&app).await?;
-    let written = run_once(&context).await?;
+    let outcome = run_once(&context).await?;
     let accounts = sync_state::all(&context.pool).await?;
 
-    Ok(Pass { written, accounts })
+    Ok(Pass {
+        written: outcome.written,
+        accounts,
+    })
 }
 
 /// Everything a pass needs. Passed in so the whole thing runs in tests against
@@ -160,6 +188,15 @@ pub struct Context {
 }
 
 /// Start the daemon. Returns immediately; the work happens on the async runtime.
+///
+/// **The loop outlives whatever one pass does to itself.** This is a single
+/// spawned task, and a panic anywhere inside it used to end ingestion, the
+/// brief, the journal and the drafts together, for the life of the process,
+/// with the message going to a stderr nobody running an installed copy ever
+/// sees. That is indistinguishable, from the outside, from Chief being quietly
+/// idle — which is what "the work log stops on the 30th and the last brief is
+/// the 31st" looks like. Each pass therefore runs in a task of its own and the
+/// loop reads how it ended.
 pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
 
@@ -167,61 +204,97 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) {
         tokio::time::sleep(FIRST_PASS_DELAY).await;
 
         loop {
-            // The engine gives its memory back when nothing is using it, so a
-            // pass may have to start it. Failing to is not fatal and not worth
-            // reporting twice: the pass below will say so in its own terms.
-            //
-            // The guard is held for the whole pass, not just the start. A pass
-            // is one model call per merged pull request and then the brief,
-            // which on a small model runs well past the idle timeout — without
-            // this the supervisor stops the engine halfway through, and every
-            // pass from then on dies at the same place.
-            let working = {
-                let engine = app.state::<crate::engine::Engine>();
-                let client = app.state::<llama::Client>();
-                let _ = engine.ensure_running(client.inner()).await;
+            let outcome = isolated("the work log pass", one_pass(app.clone()))
+                .await
+                .unwrap_or_default();
 
-                engine.working()
-            };
-
-            {
-                // Held only for the ingestion, not for the brief and the draft
-                // below: those are model calls and a person clicking Refresh
-                // must not wait behind one.
-                let passes = app.state::<Passes>().inner().clone();
-                let _running = passes.0.lock().await;
-
-                match context(&app).await {
-                    Ok(context) => {
-                        // A pass failing is not fatal: GitHub may be unreachable
-                        // or the engine may still be loading. Try again next
-                        // time.
-                        if let Err(error) = run_once(&context).await {
-                            eprintln!("work log pass failed: {error}");
-                        }
-                    }
-                    Err(error) => eprintln!("work log pass could not start: {error}"),
+            // A pass that stepped aside read nothing and spent nothing, so
+            // trying again shortly costs no request it has already made — and
+            // waiting out the full interval is how one question in flight cost
+            // the log half an hour.
+            let interval = if outcome.yielded {
+                YIELD_RETRY
+            } else {
+                match db::pool(&app).await {
+                    Ok(pool) => cadence(&pool).await,
+                    // A pool that cannot be opened is the next pass's problem
+                    // to report; waiting the default is right until then.
+                    Err(_) => DEFAULT_INTERVAL,
                 }
-            }
-
-            brief_if_the_day_has_none(&app).await;
-            roll_up_old_work(&app).await;
-            propose_for_one_thing(&app).await;
-
-            // The engine is free to go idle again from here.
-            drop(working);
-
-            let interval = match db::pool(&app).await {
-                Ok(pool) => cadence(&pool).await,
-                // A pool that cannot be opened is the next pass's problem to
-                // report; waiting the default is the right thing to do until
-                // then.
-                Err(_) => DEFAULT_INTERVAL,
             };
 
             wait_until_due(interval).await;
         }
     });
+}
+
+/// Run `work`, and say whether it finished rather than letting it take the
+/// caller down with it.
+///
+/// `None` means it panicked, which has been reported by the time this returns.
+/// A task of its own rather than `catch_unwind`, because a future is not
+/// `UnwindSafe` and asserting that it is would be a claim about every await
+/// point inside it that nothing here is in a position to make.
+async fn isolated<T, F>(what: &str, work: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = T> + Send + 'static,
+{
+    match tauri::async_runtime::spawn(work).await {
+        Ok(done) => Some(done),
+        Err(error) => {
+            eprintln!("{what} panicked and was abandoned; the next one will still run: {error}");
+            None
+        }
+    }
+}
+
+/// Everything one turn of the daemon does.
+async fn one_pass<R: Runtime>(app: AppHandle<R>) -> Outcome {
+    // The engine gives its memory back when nothing is using it, so a pass may
+    // have to start it. Failing to is not fatal and not worth reporting twice:
+    // the pass below will say so in its own terms.
+    //
+    // The guard is held for the whole pass, not just the start. The brief runs
+    // well past the idle timeout on a small model — without this the supervisor
+    // stops the engine halfway through, and every pass from then on dies at the
+    // same place.
+    let working = {
+        let engine = app.state::<crate::engine::Engine>();
+        let client = app.state::<llama::Client>();
+        let _ = engine.ensure_running(client.inner()).await;
+
+        engine.working()
+    };
+
+    let mut outcome = Outcome::default();
+
+    {
+        // Held only for the ingestion, not for the brief and the draft below:
+        // those are model calls and a person clicking Refresh must not wait
+        // behind one.
+        let passes = app.state::<Passes>().inner().clone();
+        let _running = passes.0.lock().await;
+
+        match context(&app).await {
+            Ok(context) => match run_once(&context).await {
+                Ok(done) => outcome = done,
+                // A pass failing is not fatal: GitHub may be unreachable or the
+                // engine may still be loading. Try again next time.
+                Err(error) => eprintln!("work log pass failed: {error}"),
+            },
+            Err(error) => eprintln!("work log pass could not start: {error}"),
+        }
+    }
+
+    outcome.yielded |= brief_if_the_day_has_none(&app).await;
+    roll_up_old_work(&app).await;
+    outcome.yielded |= propose_for_one_thing(&app).await;
+
+    // The engine is free to go idle again from here.
+    drop(working);
+
+    outcome
 }
 
 /// How long to wait between passes, as the user has it set.
@@ -305,8 +378,16 @@ async fn wait_until_due(interval: Duration) {
 /// again next time and nothing else. That is why it is not fatal and why it
 /// runs after the brief: the brief is what somebody is waiting to read.
 async fn roll_up_old_work<R: Runtime>(app: &AppHandle<R>) {
-    let Ok(context) = recipe::context(app).await else {
-        return;
+    let context = match recipe::context(app).await {
+        Ok(context) => context,
+        // Said out loud rather than stepped over. This used to be a bare
+        // `else { return; }`, which meant a corpus root that could not be
+        // resolved stopped the journal, the brief and the drafts together and
+        // left no line anywhere saying it had.
+        Err(error) => {
+            eprintln!("the journal could not be started: {error}");
+            return;
+        }
     };
 
     let journal = journal::Context {
@@ -335,31 +416,45 @@ async fn roll_up_old_work<R: Runtime>(app: &AppHandle<R>) {
 ///
 /// Failing is never fatal. Nothing connected, an engine still loading, a model
 /// that would not answer — all of them mean no brief this pass and another
-/// attempt in half an hour.
-async fn brief_if_the_day_has_none<R: Runtime>(app: &AppHandle<R>) {
-    let Ok(pool) = db::pool(app).await else {
-        return;
+/// attempt shortly.
+///
+/// Returns whether it stepped aside for somebody waiting, so the loop can come
+/// back in [`YIELD_RETRY`] rather than treating "the user was mid-question" as
+/// "today has been dealt with".
+async fn brief_if_the_day_has_none<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let pool = match db::pool(app).await {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("could not open the database to write a brief: {error}");
+            return false;
+        }
     };
 
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     match recipe::written_at(&pool, &date).await {
-        Ok(Some(_)) => return,
+        Ok(Some(_)) => return false,
         Ok(None) => {}
         Err(error) => {
             eprintln!("could not tell whether today has a brief: {error}");
-            return;
+            return false;
         }
     }
 
     // A person waiting on an answer outranks a brief nobody asked for yet. The
-    // next pass will find the day still un-briefed and try again.
+    // next pass will find the day still un-briefed and try again — shortly,
+    // because this is reported rather than swallowed.
     if app.state::<Attention>().is_engaged() {
-        return;
+        eprintln!("no brief this pass: somebody is waiting on an answer");
+        return true;
     }
 
-    let Ok(context) = recipe::context(app).await else {
-        return;
+    let context = match recipe::context(app).await {
+        Ok(context) => context,
+        Err(error) => {
+            eprintln!("no brief this pass: {error}");
+            return false;
+        }
     };
 
     match recipe::daily_brief(&context).await {
@@ -370,6 +465,8 @@ async fn brief_if_the_day_has_none<R: Runtime>(app: &AppHandle<R>) {
         ),
         Err(error) => eprintln!("no brief this pass: {error}"),
     }
+
+    false
 }
 
 /// Draft for one thing Chief noticed, if anything is waiting.
@@ -380,15 +477,20 @@ async fn brief_if_the_day_has_none<R: Runtime>(app: &AppHandle<R>) {
 ///
 /// Failing is never fatal. Nothing connected, an engine still loading, a model
 /// that would not answer — all of them mean no draft this pass.
-async fn propose_for_one_thing<R: Runtime>(app: &AppHandle<R>) {
+async fn propose_for_one_thing<R: Runtime>(app: &AppHandle<R>) -> bool {
     let attention = app.state::<Attention>().inner().clone();
 
     if attention.is_engaged() {
-        return;
+        eprintln!("no draft this pass: somebody is waiting on an answer");
+        return true;
     }
 
-    let Ok(context) = recipe::context(app).await else {
-        return;
+    let context = match recipe::context(app).await {
+        Ok(context) => context,
+        Err(error) => {
+            eprintln!("no draft this pass: {error}");
+            return false;
+        }
     };
 
     match propose::run_once(&context, &attention).await {
@@ -396,6 +498,8 @@ async fn propose_for_one_thing<R: Runtime>(app: &AppHandle<R>) {
         Ok(None) => {}
         Err(error) => eprintln!("no draft this pass: {error}"),
     }
+
+    false
 }
 
 async fn context<R: Runtime>(app: &AppHandle<R>) -> Result<Context, db::Error> {
@@ -413,16 +517,23 @@ async fn context<R: Runtime>(app: &AppHandle<R>) -> Result<Context, db::Error> {
 /// nothing to report. A person with a work and a personal account is two
 /// separate readings of GitHub, because the credentials are separate — and
 /// separate is what they stay when one of them fails.
-pub async fn run_once(context: &Context) -> Result<usize, Error> {
+pub async fn run_once(context: &Context) -> Result<Outcome, Error> {
     let accounts = integrations::accounts(&context.pool, integrations::GITHUB).await?;
-    let mut written = 0;
+    let mut outcome = Outcome::default();
 
     for account in accounts {
         // The user's question is worth more than the log being current, and the
         // engine decodes one request at a time. Stopping between accounts as
         // well as between items keeps a second account from starting a read the
         // pass is about to abandon anyway.
+        //
+        // Said out loud and carried out in the outcome. Stepping aside used to
+        // be silent and indistinguishable from having found nothing, which is
+        // how one question in flight came to cost the log a whole interval
+        // with no record that anything had been skipped.
         if context.attention.is_engaged() {
+            eprintln!("work log pass stepped aside: somebody is waiting on an answer");
+            outcome.yielded = true;
             break;
         }
 
@@ -434,7 +545,7 @@ pub async fn run_once(context: &Context) -> Result<usize, Error> {
         // name that could not be read is, and tried again next pass.
         match run_one_account(context, &account).await {
             Ok(entries) => {
-                written += entries;
+                outcome.written += entries;
                 record_state(context, &account, sync_state::Status::Ok, None).await;
             }
             Err(error) => {
@@ -455,7 +566,7 @@ pub async fn run_once(context: &Context) -> Result<usize, Error> {
         }
     }
 
-    Ok(written)
+    Ok(outcome)
 }
 
 /// Whether this failure means the credential is gone rather than the host is.
@@ -648,9 +759,13 @@ mod tests {
         let context = context_for("http://127.0.0.1:1", true).await;
         let _waiting = context.attention.begin();
 
-        let written = run_once(&context).await.expect("a pass should not fail");
+        let outcome = run_once(&context).await.expect("a pass should not fail");
 
-        assert_eq!(written, 0, "the user's question comes first");
+        assert_eq!(outcome.written, 0, "the user's question comes first");
+        assert!(
+            outcome.yielded,
+            "stepping aside has to be reported, or the loop treats it as caught up"
+        );
         assert!(work_log::fetch(&context.pool, None)
             .await
             .expect("read")
@@ -661,9 +776,13 @@ mod tests {
     async fn does_nothing_when_github_is_not_connected() {
         let context = context_for("http://127.0.0.1:1", false).await;
 
-        let written = run_once(&context).await.expect("a pass should not fail");
+        let outcome = run_once(&context).await.expect("a pass should not fail");
 
-        assert_eq!(written, 0);
+        assert_eq!(outcome.written, 0);
+        assert!(
+            !outcome.yielded,
+            "nothing was connected; nobody was in the way"
+        );
         assert!(work_log::fetch(&context.pool, None)
             .await
             .expect("read")
@@ -675,7 +794,10 @@ mod tests {
         let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", MERGED_PRS)]);
 
         let context = context_for(&github_host, true).await;
-        let written = run_once(&context).await.expect("a pass should not fail");
+        let written = run_once(&context)
+            .await
+            .expect("a pass should not fail")
+            .written;
 
         assert_eq!(written, 2);
 
@@ -839,7 +961,10 @@ mod tests {
         let context = context_for("http://127.0.0.1:1", true).await;
         let account = only_account(&context).await;
 
-        let written = run_once(&context).await.expect("a pass should not fail");
+        let written = run_once(&context)
+            .await
+            .expect("a pass should not fail")
+            .written;
 
         assert_eq!(written, 0, "nothing could be read, so nothing was written");
 
@@ -880,9 +1005,9 @@ mod tests {
 
         let context = context_for(&github_host, true).await;
 
-        assert_eq!(run_once(&context).await.expect("first pass"), 2);
+        assert_eq!(run_once(&context).await.expect("first pass").written, 2);
         assert_eq!(
-            run_once(&context).await.expect("second pass"),
+            run_once(&context).await.expect("second pass").written,
             0,
             "work already in the log should be skipped"
         );
@@ -910,7 +1035,13 @@ mod tests {
         let context = context_for(&github_host, true).await;
         let second = connect(&context.pool, "hubot", Some("hubot")).await;
 
-        assert_eq!(run_once(&context).await.expect("a pass should not fail"), 4);
+        assert_eq!(
+            run_once(&context)
+                .await
+                .expect("a pass should not fail")
+                .written,
+            4
+        );
         assert!(
             work_log::has_logged(
                 &context.pool,
@@ -947,7 +1078,8 @@ mod tests {
 
         let written = run_once(&context)
             .await
-            .expect("one account's refusal is not a failed pass");
+            .expect("one account's refusal is not a failed pass")
+            .written;
 
         assert_eq!(written, 2, "the healthy account should have been read");
         assert!(
@@ -1020,11 +1152,65 @@ mod cadence_tests {
     use std::time::Duration;
 
     use super::{
-        cadence, interval_from, is_due, CADENCE_KEY, DEFAULT_INTERVAL, MAXIMUM_INTERVAL,
-        MINIMUM_INTERVAL,
+        cadence, interval_from, is_due, isolated, CADENCE_KEY, DEFAULT_INTERVAL, MAXIMUM_INTERVAL,
+        MINIMUM_INTERVAL, TICK, YIELD_RETRY,
     };
     use crate::db::test_support::migrated_pool;
     use crate::settings;
+
+    /// The guard on REC-59's third silent path.
+    ///
+    /// The daemon is one spawned task, and a panic anywhere in the loop body
+    /// used to end ingestion, the brief, the journal and the drafts together —
+    /// for the life of the process, with the message going to a stderr nobody
+    /// running an installed copy ever sees. From the outside that is
+    /// indistinguishable from Chief being quietly idle, which is what "the work
+    /// log stops on the 30th and the last brief is the 31st" looks like.
+    ///
+    /// Proved by awaiting the future directly instead of isolating it:
+    ///
+    /// ```text
+    /// panicked at src/daemon.rs: a pass that goes wrong
+    /// ```
+    ///
+    /// — the panic propagates, and in production it takes the loop with it.
+    /// With `isolated` in the way it is reported and the caller carries on,
+    /// which is what the second half of this test is standing in for.
+    #[tokio::test]
+    async fn a_pass_that_panics_is_reported_and_the_next_one_still_runs() {
+        let first = isolated("a pass that goes wrong", async {
+            panic!("a pass that goes wrong");
+        })
+        .await;
+
+        assert_eq!(
+            first, None,
+            "a panicking pass has to come back as a pass that did not finish"
+        );
+
+        // And the loop is still here to run the next one, which is the whole
+        // point: reaching this line at all is the assertion.
+        let second = isolated("a pass that does not", async { 7 }).await;
+
+        assert_eq!(second, Some(7));
+    }
+
+    #[tokio::test]
+    async fn a_pass_stepping_aside_comes_back_sooner_than_the_cadence() {
+        // The floor on `interval_from` is about GitHub's rate limit and applies
+        // to passes that actually read. A pass that yielded read nothing, so
+        // coming back inside that floor spends nothing it has not already
+        // spent — and waiting the full interval is what cost the log half an
+        // hour for one question in flight.
+        assert!(
+            YIELD_RETRY < MINIMUM_INTERVAL,
+            "a pass that read nothing must not wait as long as one that did"
+        );
+        assert!(
+            YIELD_RETRY >= TICK,
+            "the loop cannot notice anything sooner than it ticks"
+        );
+    }
 
     #[tokio::test]
     async fn an_unset_cadence_is_half_an_hour() {
