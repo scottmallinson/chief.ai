@@ -4,6 +4,7 @@ import { act } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatView } from '@/components/views/ChatView';
+import openers from '@/lib/openers.json';
 import type { Answer } from '@/lib/agent';
 import { useChat } from '@/hooks/use-chat';
 
@@ -93,6 +94,38 @@ describe('ChatView', () => {
     render(<Chat />);
 
     expect(screen.getByRole('heading', { name: 'Ask about your work' })).toBeInTheDocument();
+  });
+
+  /**
+   * The composer offers exactly what the shared file says, and nothing of its
+   * own.
+   *
+   * This screen used to hold its own array of opener strings, and all three of
+   * them missed the router — so the one screen that suggests what to ask
+   * suggested three things `intent` was built to catch and caught none of. The
+   * Rust side asserts each of these routes as it claims to; this side asserts
+   * the screen is rendering that list rather than a copy that has drifted from
+   * it.
+   *
+   * Proved by putting a literal back in `ChatView`:
+   *
+   * ```text
+   * → the composer must offer the shared list, not one of its own
+   *   - Expected: [ 'What did I ship this week?', … ]
+   *   + Received: [ 'What did I ship this week?', 'Draft my standup', … ]
+   * ```
+   */
+  it('offers the questions the router is checked against', () => {
+    render(<Chat />);
+
+    const offered = screen
+      .getAllByRole('button')
+      .map((button) => button.textContent)
+      .filter((label) => openers.some((opener) => opener.question === label));
+
+    expect(offered, 'the composer must offer the shared list, not one of its own').toEqual(
+      openers.map((opener) => opener.question),
+    );
   });
 
   it('sends the question to the local model and shows the reply', async () => {

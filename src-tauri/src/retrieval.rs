@@ -157,6 +157,31 @@ pub async fn latest(pool: &SqlitePool, limit: i64) -> Result<Vec<Hit>, Error> {
     Ok(hits)
 }
 
+/// The newest entries of one kind.
+///
+/// What "what is waiting on me" answers with: no window, because a review
+/// request is open until somebody deals with it and one from three weeks ago is
+/// more of a problem than one from this morning rather than less.
+pub async fn latest_in_category(
+    pool: &SqlitePool,
+    category: &str,
+    limit: i64,
+) -> Result<Vec<Hit>, Error> {
+    let hits = sqlx::query_as::<_, Hit>(
+        "SELECT id, timestamp, source, category, title, summary, url
+           FROM work_logs
+          WHERE category = ?1
+          ORDER BY timestamp DESC, id DESC
+          LIMIT ?2",
+    )
+    .bind(category)
+    .bind(limit.clamp(1, MAX_LIMIT))
+    .fetch_all(pool)
+    .await?;
+
+    Ok(hits)
+}
+
 /// One row, as a line for a person or a prompt to read.
 ///
 /// `- [GitHub] Add PKCE auth handler — merged`
