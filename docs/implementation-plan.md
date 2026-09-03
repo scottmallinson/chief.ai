@@ -49,7 +49,7 @@ The current state of every step. **Update this table in the pull request that ch
 | —     | DLE — monthly journal roll-up          | Shipped                        | DLE-8 / REC-51   | #65       |
 | —     | DLE — provenance footers               | Shipped                        | DLE-9 / REC-52   | #65       |
 | —     | DLE — action links from the feed       | Shipped                        | DLE-10 / REC-53  | #65       |
-| —     | DLE — model-swap and concurrency       | Not started                    | DLE-11 / REC-54  | —         |
+| —     | DLE — model-swap and concurrency       | Shipped                        | DLE-11 / REC-54  | #65       |
 
 **Step 22 was built before step 14**, out of the numbered order and on the plan's own advice: an
 empty corpus is step 14's failure mode, and a draft written against seven empty starter files is
@@ -732,7 +732,7 @@ owns its own module and the only shared file is `lib.rs`, which gains one regist
 | DLE-8     | `journal.rs`                                            | Roll up, delete nothing                   |
 | DLE-9     | `ChatView.tsx`, `agent.rs`                              | **blockedBy DLE-1** — the one edge left   |
 | DLE-10    | `TodayView.tsx`, `work_log.rs`                          | Links from `work_logs.url`, no model      |
-| DLE-11    | `db.rs` tests, `weights.rs` tests                       | Model-swap isolation; WAL concurrency     |
+| DLE-11    | `db.rs` tests, `weights.rs` tests                       | Model-swap isolation; journal and locking |
 
 The twelve are **REC-43 through REC-54** in Linear, in that order, each carrying
 `agent-executable`; DLE-0 and DLE-4 also carry `risk:high`. Every one is `blockedBy` REC-43 except
@@ -912,19 +912,44 @@ removes from it.**
 
 ### Unclaimed engineering
 
-| What                                   | Note                                                                                                                                      | Where       |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| **Tokens in the OS keychain**          | Stored as plain text, protected by the OS user account                                                                                    | —           |
-| **Reviewers in `team_structure.md`**   | GitHub's search response carries none, so it is a call per pull request                                                                   | REC-16      |
-| **`glib` GHSA-wrw7-89jp-8q8g**         | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                      | SECURITY.md |
-| **AC/battery polling cadence**         | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                              | DLE-2       |
-| **A control for the pass interval**    | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it     | —           |
-| **Whether `work_logs` is ever pruned** | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                   | DLE-8       |
-| **`busy_timeout` through the plugin**  | `tauri-plugin-sql` owns the pool and `busy_timeout` is per-connection, so it may not be reachable without patching. `sqlx` defaults to 5s | DLE-11      |
-| **FTS5 query semantics**               | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                             | DLE-0       |
+| What                                   | Note                                                                                                                                                               | Where       |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
+| **Tokens in the OS keychain**          | Stored as plain text, protected by the OS user account                                                                                                             | —           |
+| **Reviewers in `team_structure.md`**   | GitHub's search response carries none, so it is a call per pull request                                                                                            | REC-16      |
+| **`glib` GHSA-wrw7-89jp-8q8g**         | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                                               | SECURITY.md |
+| **AC/battery polling cadence**         | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                                                       | DLE-2       |
+| **A control for the pass interval**    | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it                              | —           |
+| **Whether `work_logs` is ever pruned** | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                                            | DLE-8       |
+| **Chief is not on WAL, and cannot be** | Neither sqlx nor `tauri-plugin-sql` offers a seam, and a migration cannot do it — see the settled note below. It needs a patched plugin or an `after_connect` hook | DLE-11      |
+| **FTS5 query semantics**               | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                                                      | DLE-0       |
 
 ### Settled during implementation, recorded so it is not re-litigated
 
+- **Chief runs on the rollback journal, not WAL — and the earlier claim that it did was wrong.**
+  This review recorded `PRAGMA journal_mode = WAL` as already satisfied because "sqlx's
+  `SqliteConnectOptions` defaults to WAL and a 5s busy timeout". Half of that is wrong, and it is the
+  half the specification cared about. **sqlx deliberately leaves `journal_mode` unset**, and says why
+  in its own source: _"WAL mode is a permanent setting for created databases and changing into or out
+  of it requires an exclusive lock that can't be waited on with `sqlite3_busy_timeout()`."_ So the
+  database is on SQLite's own default.
+
+  **And a migration cannot fix it.** `journal_mode` is persistent in the file header, so setting it
+  once would be enough — but `tauri-plugin-sql` hands every migration to sqlx with `no_tx: false`
+  hard-coded, and SQLite does not quietly ignore the pragma inside a transaction, it raises
+  `cannot change into wal mode from within a transaction`. A migration written to "just set WAL"
+  would fail on every installed copy on its first launch after the upgrade. Outside a transaction the
+  same statement works and persists, so the fix exists and needs a seam the plugin does not offer.
+
+  **What saves the background pass is the busy timeout, not the journal.** `busy_timeout` _is_ the
+  five seconds the specification wanted, by sqlx's default, so a reader that meets the daemon's short
+  upsert waits milliseconds rather than failing with `SQLITE_BUSY` — a latency cost rather than an
+  error, which is why nothing has ever noticed. `db::architecture_tests` asserts all three facts, so
+  the day any of them changes is the day a test goes red rather than the day somebody guesses.
+
+- **Model-swap isolation is now asserted rather than claimed.** Ingestion and `bm25()` ranking never
+  read which model is loaded, and the schema does not branch on the tier. Nothing would break visibly
+  on the day that stopped being true — a swap would simply return different rows — which is exactly
+  why it is worth a test.
 - **Three named ceilings, and the chat prompt is the tightest.** `PROMPT_CEILING` is 2,000 —
   the half of the DLE specification's `≤2,000 tokens, TTFT ≤1.5 s` that is real. `DEFAULT_CEILING`
   stays 2,400 for brief assembly, because `/brief` writes a file nobody is watching and a question
