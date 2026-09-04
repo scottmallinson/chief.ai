@@ -454,7 +454,10 @@ pub async fn daily_brief(context: &Context) -> Result<Brief, Error> {
         return Err(Error::NothingToSay);
     }
 
-    let prompt = assemble(&found, &clock::present())?;
+    // `today`, not `present`: the brief gets the clock and not the ranges.
+    // See `clock::today` — a 1B model handed that date list returned it as the
+    // bullets it had been asked for.
+    let prompt = assemble(&found, &clock::today())?;
     let markdown = render(&context.engine, &prompt).await?;
 
     let date = today_date();
@@ -942,6 +945,40 @@ mod tests {
         // Exactly one call. A recipe that needs two is two recipes.
         let requests = server.await.expect("the stub should finish");
         assert_eq!(requests.len(), 1, "one model call per recipe");
+    }
+
+    /// The defect REC-64 is about, guarded where it actually happened.
+    ///
+    /// `clock::today` is asserted in its own module, but nothing there stops
+    /// this call site being pointed back at `clock::present`. This reads the
+    /// prompt the engine was really sent.
+    ///
+    /// Proved by restoring `clock::present()` here:
+    ///
+    /// ```text
+    /// the brief prompt must carry no list of dates to echo
+    /// ```
+    #[tokio::test]
+    async fn the_brief_prompt_carries_the_clock_and_no_list_of_dates() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let (context, _scratch) = ready(&host, "no-date-list").await;
+
+        daily_brief(&context).await.expect("should write a brief");
+
+        let requests = server.await.expect("the stub should finish");
+        let sent = requests.first().expect("one model call").clone();
+
+        assert!(
+            sent.contains("The current date and time is"),
+            "it still knows when now is: {sent}"
+        );
+
+        for leak in ["- yesterday:", "- tomorrow:", "last week", "Resolve every"] {
+            assert!(
+                !sent.contains(leak),
+                "the brief prompt must carry no list of dates to echo: {sent}"
+            );
+        }
     }
 
     #[tokio::test]

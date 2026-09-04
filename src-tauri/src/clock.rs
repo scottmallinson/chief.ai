@@ -17,15 +17,49 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone};
 /// looking at their own work, and it matches ISO-8601.
 const DAYS_IN_WEEK: u64 = 7;
 
-/// How the present is described to the model, using the machine's clock.
+/// How the present is described on the **chat** path: the clock, and the
+/// ranges a relative question has to be resolved against.
 pub fn present() -> String {
     describe(&Local::now())
 }
 
-/// Describe `now` as a block of facts the model can quote from.
+/// How the present is described to a **brief**: the clock, and nothing else.
+///
+/// **A brief asks no relative-date question.** Rust has already gathered
+/// today's material; the model is asked to write it up, not to work out which
+/// seven days "last week" means. So the ranges do no work here — and on the
+/// Light tier they did worse than nothing. Measured in the running app on
+/// Llama 3.2 1B, a whole brief came back as:
+///
+/// ```text
+/// • 2026-09-04 20:24:00 • 2026-09-03 20:24:00 • 2026-09-05 20:24:00 …
+/// ```
+///
+/// which is [`describe`]'s own date list, in its own order, with the time from
+/// its opening line stapled to each. Asked for bullets, a 1B model reached for
+/// the most list-shaped thing in front of it — and that was a hundred and fifty
+/// tokens of dates sitting second from the top. See REC-64.
+pub fn today() -> String {
+    stamp(&Local::now())
+}
+
+/// The clock itself, as one sentence.
 ///
 /// Generic over the time zone so it can be exercised at a fixed offset rather
 /// than against whatever clock the test machine happens to keep.
+fn stamp<Tz: TimeZone>(now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    format!(
+        "The current date and time is {}.",
+        now.format("%H:%M on %A %-d %B %Y (UTC%:z)")
+    )
+}
+
+/// Describe `now` as a block of facts the model can quote from.
+///
+/// Generic over the time zone, for the same reason [`stamp`] is.
 fn describe<Tz: TimeZone>(now: &DateTime<Tz>) -> String
 where
     Tz::Offset: std::fmt::Display,
@@ -36,7 +70,7 @@ where
     let next_monday = monday + Days::new(DAYS_IN_WEEK);
 
     format!(
-        "The current date and time is {stamp}.
+        "{stamp}
 
 Resolve every relative date the user mentions against this list, in the user's \
 local time. Dates are ISO-8601 (YYYY-MM-DD). Never work a date out from memory, \
@@ -51,7 +85,7 @@ and never answer with a date that is not derived from these:
 - this month: {month_start} to {month_end}
 
 Anything dated later than {today} has not happened yet.",
-        stamp = now.format("%H:%M on %A %-d %B %Y (UTC%:z)"),
+        stamp = stamp(now),
         weekday = today.format("%A"),
         yesterday = today - Days::new(1),
         tomorrow = today + Days::new(1),
@@ -97,6 +131,54 @@ mod tests {
             .with_ymd_and_hms(year, month, day, hour, minute, 0)
             .single()
             .expect("the timestamp should be unambiguous")
+    }
+
+    /// The guard REC-64 needed.
+    ///
+    /// A brief gets the clock and not the ranges. Measured in the running app,
+    /// a 1B model handed that date list returned it verbatim as the bullets it
+    /// had been asked for — so the list must not reach a prompt that has no
+    /// relative date to resolve.
+    ///
+    /// Proved by pointing the brief back at `describe`:
+    ///
+    /// ```text
+    /// the brief must not be handed a list of dates to echo: The current date
+    /// and time is 14:32 on Thursday 20 August 2026 (UTC+02:00).
+    ///
+    /// Resolve every relative date the user mentions against this list, …
+    /// - today: 2026-08-20 (Thursday)
+    /// ```
+    #[test]
+    fn the_brief_is_told_the_time_and_given_nothing_to_echo() {
+        let stamped = stamp(&thursday());
+
+        assert!(
+            stamped.contains("14:32 on Thursday 20 August 2026 (UTC+02:00)"),
+            "it still says when now is: {stamped}"
+        );
+
+        for leak in [
+            "- today:",
+            "- yesterday:",
+            "- tomorrow:",
+            "last week",
+            "Resolve every",
+        ] {
+            assert!(
+                !stamped.contains(leak),
+                "the brief must not be handed a list of dates to echo: {stamped}"
+            );
+        }
+    }
+
+    /// And the chat path keeps them, because that is what they are for.
+    #[test]
+    fn the_chat_path_still_gets_the_ranges() {
+        let described = describe(&thursday());
+
+        assert!(described.contains(&stamp(&thursday())), "{described}");
+        assert!(described.contains("- today: 2026-08-20"), "{described}");
     }
 
     #[test]
