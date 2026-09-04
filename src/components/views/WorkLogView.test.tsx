@@ -143,6 +143,60 @@ describe('WorkLogView', () => {
     expect(await screen.findByText('Merged pull request #4')).toBeInTheDocument();
   });
 
+  /**
+   * The defect REC-63 is about.
+   *
+   * Deterministic ingestion writes a state — "merged", "open", a meeting's
+   * time — and the row puts it in a chip. The daemon before it asked the model
+   * for a sentence, and migration 8 gave those rows a title as well, so the
+   * same column now holds both shapes. The sentence was going into the chip,
+   * which is how a work log ends up labelled "merged" on one row and with a
+   * paragraph on the next.
+   *
+   * Proved by chipping whatever the summary said:
+   *
+   * ```text
+   * expected null not to be null   // the chip was found, and should not be
+   * ```
+   */
+  it('puts a sentence from the old daemon under the row, never in its label', async () => {
+    const sentence =
+      "The developer merged a pull request to resolve a bug related to fetching the llama.cpp engine before Rust's checks.";
+
+    answering({ list_work_logs: [{ ...entry, summary: sentence }] });
+
+    render(<WorkLogView />);
+
+    const prose = await screen.findByText(sentence);
+
+    expect(prose).toBeInTheDocument();
+    // A chip is a `<span>` carrying the machine tone; prose is a paragraph.
+    expect(prose.tagName, 'a sentence is prose, not a label').toBe('P');
+    expect(screen.getByText('scottmallinson/chief.ai #4: Ship the app shell')).toBeInTheDocument();
+  });
+
+  it('keeps a state word as the label it is', async () => {
+    answering({ list_work_logs: [entry] });
+
+    render(<WorkLogView />);
+
+    const label = await screen.findByText('merged');
+
+    expect(label.tagName, 'a state word is a label').toBe('SPAN');
+  });
+
+  /** A summary that only repeats the headline is not worth a second line. */
+  it('does not repeat the headline back underneath itself', async () => {
+    answering({ list_work_logs: [{ ...entry, summary: entry.title }] });
+
+    render(<WorkLogView />);
+
+    expect(
+      await screen.findByText('scottmallinson/chief.ai #4: Ship the app shell'),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('scottmallinson/chief.ai #4: Ship the app shell')).toHaveLength(1);
+  });
+
   it('shows the empty state when nothing is logged', async () => {
     answering();
 

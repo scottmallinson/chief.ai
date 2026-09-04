@@ -600,6 +600,29 @@ export function longAnswer(lines = 60): string {
 }
 
 /** A work log long enough to need scrolling. */
+/**
+ * A row the daemon wrote before deterministic ingestion.
+ *
+ * Migration 8 backfilled `title` from `content`, so these rows carry a title
+ * *and* a model-written sentence in `summary` — the shape the interface has to
+ * survive, and the one that tore a card open. Real, copied out of a running
+ * app rather than invented.
+ */
+export const sentenceSummary: WorkLogEntry = {
+  id: 9001,
+  timestamp: '2026-08-27T15:13:00Z',
+  source: 'github',
+  title:
+    'Merged pull request #26 in scottmallinson/chief.ai: fix(ci): fetch the llama.cpp engine before Rust checks, fix Windows spawn flag',
+  content:
+    'Merged pull request #26 in scottmallinson/chief.ai: fix(ci): fetch the llama.cpp engine before Rust checks, fix Windows spawn flag',
+  summary:
+    "The developer merged a pull request to resolve a bug related to fetching the llama.cpp engine before Rust's checks.",
+  url: 'https://github.com/scottmallinson/chief.ai/pull/26',
+  externalId: 'scottmallinson/chief.ai#26',
+  accountId: 1,
+};
+
 export function longWorkLog(entries = 40): WorkLogEntry[] {
   return Array.from({ length: entries }, (_, index) => ({
     id: index + 1,

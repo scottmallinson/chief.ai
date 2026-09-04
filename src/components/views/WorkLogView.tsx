@@ -20,13 +20,18 @@ function formatTimestamp(timestamp: string): string {
 }
 
 function Entry({ entry }: { entry: WorkLogEntry }) {
-  const { headline, detail } = readEntry(entry);
+  const { headline, label, note } = readEntry(entry);
 
   return (
-    <li className="rounded-lg border border-border bg-card p-4">
-      <div className="flex items-center gap-2.5">
+    // `min-w-0` on the card, and `flex-wrap` on the row inside it. A flex item
+    // defaults to `min-width: auto`, which means it refuses to shrink below
+    // its own content — so one long chip pushed the timestamp out through the
+    // side of the card and put a horizontal scrollbar on the whole window.
+    // Measured in the running app on a row the old daemon wrote.
+    <li className="min-w-0 rounded-lg border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
         <Chip tone="machine">{entry.source}</Chip>
-        {detail !== null && <Chip tone="machine">{detail}</Chip>}
+        {label !== null && <Chip tone="machine">{label}</Chip>}
         <time className="font-mono text-xs text-muted-foreground" dateTime={entry.timestamp}>
           {formatTimestamp(entry.timestamp)}
         </time>
@@ -35,6 +40,13 @@ function Entry({ entry }: { entry: WorkLogEntry }) {
       <p className="mt-2.5 text-sm leading-relaxed" data-selectable>
         {headline}
       </p>
+      {/* Prose from the daemon that came before deterministic ingestion.
+          Under the headline, where it wraps, rather than in a chip beside it. */}
+      {note !== null && (
+        <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground" data-selectable>
+          {note}
+        </p>
+      )}
     </li>
   );
 }
