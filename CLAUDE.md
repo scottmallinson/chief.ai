@@ -382,11 +382,17 @@ from here to GitHub.
 - **The client id is shown back to the user**, unlike the Linear key or a calendar address. Those
   are hidden because holding one grants access; a client id grants nothing on its own, and the user
   cannot otherwise tell which registration they are signed in against.
-- **`build.rs` declares `cargo:rerun-if-env-changed` for both id variables.** `option_env!` is read
-  while the crate compiles and cargo does not track that on its own, so without those lines a tree
-  compiled once without the variable is reused when it is set — and the release ships a binary
-  whose sign-in button reports that this build has no client id. The release workflow's guard
-  checks the _variable_, which cannot catch that.
+- **A release cannot compile without one.** `build.rs` panics when `CHIEF_REQUIRE_CLIENT_ID` is
+  set and `CHIEF_GITHUB_CLIENT_ID` is not; the release workflow sets the first on the bundle step.
+  The workflow's older guard checks the repository _variable_ before anything is compiled, which is
+  fast but proves only that the variable exists — this one runs inside the compilation, so nothing
+  is left between it and the binary. It exists because 0.4.0 shipped a Windows build whose sign-in
+  reported that it had no client id, and no mechanism between a set variable and that binary was
+  ever identified.
+- `option_env!` **is** tracked by cargo — rustc writes an `env-dep:` line into the dep-info and
+  changing the id recompiles the crate, which was measured rather than assumed. The
+  `cargo:rerun-if-env-changed` lines in `build.rs` are there for the reads the build script itself
+  makes, which are not tracked that way.
 - `Client::against` — the constructor that points at another host — is `#[cfg(test)]`, so a release
   build cannot be aimed anywhere but GitHub.
 - Chief requests the `repo` scope. That is read _and_ write across public and private
