@@ -6,6 +6,7 @@
 
 pub mod loopback;
 pub mod pkce;
+pub mod registration;
 
 /// A fresh pair of tokens, however they were obtained.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +44,20 @@ pub trait Provider {
     fn endpoints(&self) -> Endpoints;
 
     /// Public by design. Never a secret; see `client_secret`.
+    ///
+    /// The answer without reading the database: this machine's environment,
+    /// then whatever the build carried. Callers that have a pool should go
+    /// through [`registration::resolve`] instead, so an id the user supplied
+    /// in Settings is not skipped over.
     fn client_id(&self) -> Result<String, Self::Error>;
+
+    /// What this machine's environment says, if anything.
+    ///
+    /// Separate from [`Provider::client_id`] because the layers rank: an
+    /// environment variable is a deliberate act for one run and beats a stored
+    /// id, while a built-in one is only a default and loses to it. Resolving
+    /// the two together would make that impossible to express.
+    fn environment_client_id(&self) -> Option<String>;
 
     fn scopes(&self) -> &'static [&'static str];
 

@@ -10,6 +10,7 @@ import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
 import { ProfileBootstrap } from '@/components/ProfileBootstrap';
 import { CalendarSubscriptions } from '@/components/CalendarSubscriptions';
 import { LinearKey } from '@/components/LinearKey';
+import { SignInRegistration } from '@/components/SignInRegistration';
 import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
@@ -136,6 +137,8 @@ interface IntegrationProps {
   /** What it says when adding a second account. */
   addLabel: string;
   icon: ReactNode;
+  /** Where the user makes a registration of their own, in a sentence. */
+  registrationHelp: ReactNode;
 }
 
 /**
@@ -151,6 +154,7 @@ function Integration({
   connectLabel,
   addLabel,
   icon,
+  registrationHelp,
 }: IntegrationProps) {
   const {
     accountsFor,
@@ -285,6 +289,8 @@ function Integration({
           {accounts.length > 0 ? addLabel : connectLabel}
         </Button>
       </div>
+
+      <SignInRegistration service={service} name={title} where={registrationHelp} />
     </SettingsSection>
   );
 }
@@ -582,6 +588,13 @@ export function SettingsView() {
             connectLabel="Connect GitHub"
             addLabel="Add another GitHub account"
             icon={<Github aria-hidden />}
+            registrationHelp={
+              <>
+                Make an <strong>OAuth app</strong> on GitHub under Settings → Developer settings,
+                tick <strong>Enable Device Flow</strong>, and paste its client id. It is not a
+                secret — Chief never needs the client secret, because the device flow has none.
+              </>
+            }
           />
           <Integration
             service={MICROSOFT}
@@ -590,6 +603,15 @@ export function SettingsView() {
             connectLabel="Connect Outlook"
             addLabel="Add another Outlook account"
             icon={<Mail aria-hidden />}
+            registrationHelp={
+              <>
+                Register an <strong>application</strong> in Entra, add a{' '}
+                <strong>Mobile and desktop</strong> redirect of{' '}
+                <span className="font-mono text-[12px]">http://localhost</span>, and paste its
+                application (client) id. It is not a secret — Chief signs in as a public client,
+                which has none.
+              </>
+            }
           />
           <SettingsSection
             title="Local data"

@@ -48,9 +48,8 @@ const MAX_POLL: Duration = Duration::from_secs(15 * 60);
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "this build has no GitHub client id, so signing in is unavailable. Released builds set \
-         CHIEF_GITHUB_CLIENT_ID when they are compiled; set it in your environment when running \
-         from source."
+        "Chief has no GitHub client id to sign in with. Add one in Settings, under GitHub — make \
+         an OAuth app on GitHub with the device flow enabled and paste its client id there."
     )]
     NoClientId,
     #[error("GitHub is not connected. Connect it in Settings.")]
@@ -79,19 +78,60 @@ impl serde::Serialize for Error {
     }
 }
 
-/// The OAuth client id. Not a secret — the device flow has none — so it can be
-/// baked in at build time or supplied at run time.
-pub fn client_id() -> Result<String, Error> {
-    if let Ok(from_env) = std::env::var("CHIEF_GITHUB_CLIENT_ID") {
-        if !from_env.trim().is_empty() {
-            return Ok(from_env);
-        }
-    }
+/// The environment variable that points Chief at another OAuth app.
+const CLIENT_ID_VAR: &str = "CHIEF_GITHUB_CLIENT_ID";
 
+/// What this machine's environment says, if anything.
+fn from_environment() -> Option<String> {
+    std::env::var(CLIENT_ID_VAR)
+        .ok()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+/// What this build was compiled with, if anything.
+///
+/// A release bakes in the repository variable of the same name, so nobody
+/// installing Chief has to register an OAuth app. `option_env!` reads it at
+/// compile time — see `build.rs`, which is what makes cargo notice when the
+/// variable changes rather than reusing a binary compiled without it.
+fn built_in() -> Option<String> {
     option_env!("CHIEF_GITHUB_CLIENT_ID")
-        .filter(|id| !id.trim().is_empty())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
         .map(ToString::to_string)
+}
+
+/// The OAuth client id, without reading the database.
+///
+/// Not a secret — the device flow has none — so it can be baked in at build
+/// time or supplied at run time. Prefer [`configured_client_id`] wherever
+/// there is a pool: this one cannot see an id the user pasted in Settings.
+pub fn client_id() -> Result<String, Error> {
+    from_environment()
+        .or_else(built_in)
         .ok_or(Error::NoClientId)
+}
+
+/// The OAuth client id to actually sign in with.
+///
+/// The environment, then one the user supplied in Settings, then whatever the
+/// build carried. See [`crate::oauth::registration`] for why there are three.
+pub async fn configured_client_id(pool: &sqlx::SqlitePool) -> Result<String, Error> {
+    registration(pool).await?.client_id.ok_or(Error::NoClientId)
+}
+
+/// Which registration GitHub sign-in would use, and where it came from.
+pub async fn registration(
+    pool: &sqlx::SqlitePool,
+) -> Result<crate::oauth::registration::Registration, Error> {
+    Ok(crate::oauth::registration::resolve(
+        pool,
+        crate::integrations::GITHUB,
+        from_environment(),
+        built_in(),
+    )
+    .await?)
 }
 
 /// What the user needs to do to finish signing in.
@@ -601,6 +641,10 @@ impl crate::oauth::Provider for Client {
         client_id()
     }
 
+    fn environment_client_id(&self) -> Option<String> {
+        from_environment()
+    }
+
     fn scopes(&self) -> &'static [&'static str] {
         SCOPE_LIST
     }
@@ -636,7 +680,9 @@ impl crate::oauth::Provider for Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test_support::migrated_pool;
     use crate::llama::test_support::{serve, split};
+    use crate::oauth::registration::{self, Source};
 
     const DEVICE_CODE: &str = r#"{
         "device_code": "3584d83530557fdd1f46af8289938c8ef79f9dc5",
@@ -645,6 +691,34 @@ mod tests {
         "expires_in": 900,
         "interval": 5
     }"#;
+
+    /// The glue REC-60 needed: a build that carries no client id can still be
+    /// given one, and sign-in uses it.
+    ///
+    /// Skipped where the environment is setting one, because there it is
+    /// supposed to win — which is the layering `oauth::registration` tests
+    /// against all three layers explicitly. Neither CI job sets it.
+    #[tokio::test]
+    async fn signs_in_with_an_id_the_user_supplied_in_settings() {
+        if super::from_environment().is_some() {
+            return;
+        }
+
+        let pool = migrated_pool().await;
+
+        registration::store(&pool, crate::integrations::GITHUB, "Ov23liTheirs")
+            .await
+            .expect("store");
+
+        assert_eq!(
+            super::configured_client_id(&pool).await.expect("resolve"),
+            "Ov23liTheirs"
+        );
+        assert_eq!(
+            super::registration(&pool).await.expect("read").source,
+            Source::Stored
+        );
+    }
 
     pub(super) const ONE_ISSUE: &str = r#"{
         "total_count": 1,

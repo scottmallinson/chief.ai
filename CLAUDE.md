@@ -370,10 +370,23 @@ from here to GitHub.
   secret to exchange an authorization code — PKCE protects the code but does not replace the secret,
   and GitHub "does not distinguish between public and confidential clients". A secret shipped inside
   a desktop binary is not a secret, so the device flow, which needs none, is the only honest option.
-- The client id comes from `CHIEF_GITHUB_CLIENT_ID` at run time, falling back to build time. It is
-  **not a secret** — a device-flow client id is public by design, which is why release builds bake
-  one in from the repository _variable_ of the same name and nobody installing Chief has to register
-  anything. The run-time override exists for development against your own OAuth app.
+- The client id comes from `src-tauri/src/oauth/registration.rs`, which is the one place either
+  provider's registration is decided. It is **not a secret** — a device-flow client id and an Entra
+  public-client id are both public by design — but it does have to exist, and neither GitHub nor
+  Entra offers dynamic registration to mint one on the spot. So the only question is where it comes
+  from, and there are **three layers, most deliberate first**: `CHIEF_GITHUB_CLIENT_ID` in the
+  environment, then one the user pasted in Settings, then whatever the release baked in from the
+  repository _variable_ of the same name. Because of the third, nobody installing Chief has to
+  register anything; because of the second, a build that shipped without one is not a dead end, and
+  an organisation can sign in against its own OAuth app or Entra registration without a rebuild.
+- **The client id is shown back to the user**, unlike the Linear key or a calendar address. Those
+  are hidden because holding one grants access; a client id grants nothing on its own, and the user
+  cannot otherwise tell which registration they are signed in against.
+- **`build.rs` declares `cargo:rerun-if-env-changed` for both id variables.** `option_env!` is read
+  while the crate compiles and cargo does not track that on its own, so without those lines a tree
+  compiled once without the variable is reused when it is set — and the release ships a binary
+  whose sign-in button reports that this build has no client id. The release workflow's guard
+  checks the _variable_, which cannot catch that.
 - `Client::against` — the constructor that points at another host — is `#[cfg(test)]`, so a release
   build cannot be aimed anywhere but GitHub.
 - Chief requests the `repo` scope. That is read _and_ write across public and private
