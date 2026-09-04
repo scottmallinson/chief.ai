@@ -58,7 +58,7 @@ pub enum ExecutionStrategy {
 #[must_use]
 pub const fn strategy_for(intent: Option<Intent>) -> ExecutionStrategy {
     match intent {
-        Some(Intent::Brief | Intent::Prep | Intent::Log) => {
+        Some(Intent::Brief | Intent::Prep | Intent::Log(_) | Intent::Waiting) => {
             ExecutionStrategy::DirectContextInjection
         }
         None => ExecutionStrategy::NativeToolCall,
@@ -136,7 +136,13 @@ mod tests {
     /// ```
     #[test]
     fn a_read_is_answered_from_this_machine_and_anything_else_goes_to_the_tools() {
-        for intent in [Intent::Brief, Intent::Prep, Intent::Log] {
+        for intent in [
+            Intent::Brief,
+            Intent::Prep,
+            Intent::Log(crate::intent::Window::Recent),
+            Intent::Log(crate::intent::Window::ThisWeek),
+            Intent::Waiting,
+        ] {
             assert_eq!(
                 strategy_for(Some(intent)),
                 ExecutionStrategy::DirectContextInjection,

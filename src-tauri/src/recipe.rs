@@ -28,8 +28,9 @@ use crate::context::{self, Budget};
 use crate::corpus::Corpus;
 use crate::llama::{self, ChatRequest, Message, Options};
 use crate::microsoft;
+use crate::retrieval;
 use crate::session::{GithubSession, OutlookSession};
-use crate::{clock, corpus, github, integrations, work_log};
+use crate::{clock, corpus, github, integrations};
 
 /// How long a brief may run to. Long enough for a handful of bullets and their
 /// context, short enough that a slow machine finishes it.
@@ -215,13 +216,23 @@ async fn gather(context: &Context) -> Gathered {
         }
     }
 
-    if let Ok(entries) = work_log::fetch(&context.pool, Some(i64::from(PER_SOURCE))).await {
-        found.shipped.extend(entries.iter().filter_map(|entry| {
-            entry
-                .summary
-                .clone()
-                .or_else(|| Some(entry.content.clone()))
-        }));
+    // **Through `retrieval`, which knows what a row says.** This read
+    // `work_log::fetch` and took `summary`, which was a model-written sentence
+    // until deterministic ingestion made it a state word — after which every
+    // bullet of the brief's material was the single word "merged". The model
+    // was told to name pull requests exactly as they appear and given nothing
+    // to name, so it invented them. `retrieval::line` is the same renderer the
+    // chat answers use, so a logged item reads the same wherever it appears.
+    //
+    // **Every logged row, not one category.** An entry the user typed by hand
+    // carries the default category and belongs under this heading as much as a
+    // merged pull request does; filtering to shipped rows would have dropped
+    // it silently. Which rows a brief should carry is a question about the
+    // brief rather than about this defect, and REC-9 is where it belongs.
+    if let Ok(hits) = retrieval::latest(&context.pool, PER_SOURCE.into()).await {
+        found
+            .shipped
+            .extend(hits.iter().filter_map(retrieval::line));
     }
 
     found.assigned = assigned_issues(context).await;
@@ -236,6 +247,23 @@ async fn gather(context: &Context) -> Gathered {
 /// the same rule every other source in `gather` follows: a brief with the
 /// calendar and no mail is worth having.
 pub(crate) async fn subscribed_events(context: &Context) -> Vec<microsoft::Event> {
+    subscribed_events_by_account(context)
+        .await
+        .into_iter()
+        .map(|(_, event)| event)
+        .collect()
+}
+
+/// The same, keeping the account each event was read from.
+///
+/// The brief does not care — a reader must never have to know which calendar a
+/// meeting came from — but ingestion does: the work log's dedupe index is
+/// `(source, account_id, external_id)`, so a person with a work and a personal
+/// calendar holding the same meeting keeps both rows rather than having one
+/// overwrite the other.
+pub(crate) async fn subscribed_events_by_account(
+    context: &Context,
+) -> Vec<(i64, microsoft::Event)> {
     let Ok(accounts) =
         crate::integrations::accounts(&context.pool, crate::integrations::CALENDAR).await
     else {
@@ -261,7 +289,7 @@ pub(crate) async fn subscribed_events(context: &Context) -> Vec<microsoft::Event
             .events(&credentials.access_token, midnight, end, offset)
             .await
         {
-            Ok(events) => found.extend(events),
+            Ok(events) => found.extend(events.into_iter().map(|event| (account.id, event))),
             // Reported without the address, which is a credential.
             Err(error) => eprintln!("a calendar subscription could not be read: {error}"),
         }
@@ -644,6 +672,7 @@ pub async fn todays_brief<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::work_log;
 
     const PRESENT: &str = "The current date and time is 08:00 on Friday 28 August 2026.";
 
@@ -777,6 +806,83 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// The guard on a brief that named nothing, found by running the real one.
+    ///
+    /// `gather` read `work_log::fetch` and took `summary`, which was a
+    /// model-written sentence until deterministic ingestion made it a bare
+    /// state word. From then on the whole of a brief's material read:
+    ///
+    /// ```text
+    /// ## Recently logged work
+    /// - merged
+    /// - merged
+    /// - open
+    /// ```
+    ///
+    /// Measured against the real repository on 2026-09-03, the model was given
+    /// exactly that under a rule saying "name people and pull requests exactly
+    /// as they appear below" — and, with nothing to name, invented a meeting,
+    /// two people and three pull request numbers. `WorkLogEntry` has no
+    /// `title`: migration 8 added the column and `fetch` never selected it, so
+    /// the only field carrying what a row is *about* was unreachable from here.
+    ///
+    /// Proved by taking `summary` again instead of `retrieval::line`:
+    ///
+    /// ```text
+    /// a brief's material has to name the thing, not just its state:
+    ///   ["merged"]
+    /// ```
+    #[tokio::test]
+    async fn the_material_names_the_work_and_not_only_its_state() {
+        let pool = migrated_pool().await;
+
+        work_log::upsert(
+            &pool,
+            work_log::WorkLogRecord {
+                timestamp: "2026-09-03T07:21:03Z".to_string(),
+                source: "github".to_string(),
+                category: crate::ingest::SHIPPED.to_string(),
+                title: "scottmallinson/chief.ai #65: answer read questions from a local work log"
+                    .to_string(),
+                content: "Merged pull request #65".to_string(),
+                summary: Some("merged".to_string()),
+                url: None,
+                raw_ref: None,
+                external_id: "scottmallinson/chief.ai#65".to_string(),
+                account_id: 1,
+            },
+        )
+        .await
+        .expect("should store");
+
+        let root = std::env::temp_dir().join(format!("chief-material-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let corpus = Corpus::at(root.clone());
+        corpus.ensure_shape().await.expect("should create");
+        let _scratch = Scratch(root);
+
+        let context = Context {
+            pool,
+            github: github::Client::against("127.0.0.1:1").expect("client"),
+            microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
+            calendar: crate::calendar::Client::new().expect("client"),
+            linear: crate::linear::Client::new().expect("client"),
+            engine: llama::Client::with_base_url("http://127.0.0.1:1").expect("client"),
+            corpus,
+        };
+
+        let found = gather(&context).await;
+
+        assert!(
+            found
+                .shipped
+                .iter()
+                .any(|line| line.contains("#65") && line.contains("local work log")),
+            "a brief's material has to name the thing, not just its state: {:?}",
+            found.shipped
+        );
     }
 
     /// A context with a work log entry, a corpus, and an engine that answers.

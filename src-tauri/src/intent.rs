@@ -31,15 +31,84 @@ pub enum Intent {
     Brief,
     /// What today looks like — the meetings, in order.
     Prep,
-    /// What has been logged lately.
-    Log,
+    /// What has been logged, over the stretch that was asked about.
+    Log(Window),
+    /// What somebody else is blocked on: the reviews requested of the user.
+    ///
+    /// A separate intent rather than a `Log` window, because it is a different
+    /// question about different rows. REC-41 established that "waiting on you"
+    /// and "your open work" are not the same thing and that conflating them was
+    /// a wrong answer rather than a thin one; this is that distinction carried
+    /// into the router.
+    Waiting,
+}
+
+/// How far back a question is asking about.
+///
+/// **The reason a window exists at all.** `Log` used to answer every phrasing
+/// with the last ten rows whenever they happened, so "what did I ship this
+/// week" and "what did I ship" got the same answer — which for somebody who
+/// had shipped nothing this week was ten things from last month presented as
+/// this week's work. A window is cheap here because `retrieval::in_window`
+/// already takes one; nothing but the router was passing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Window {
+    /// No window: the last few things, whenever they happened.
+    Recent,
+    Today,
+    ThisWeek,
+    LastWeek,
+}
+
+impl Window {
+    /// The heading the answer is filed under, which has to match the window or
+    /// the answer is mislabelled rather than merely wide.
+    const fn heading(self) -> &'static str {
+        match self {
+            Self::Recent => "Recently logged",
+            Self::Today => "Today",
+            Self::ThisWeek => "This week",
+            Self::LastWeek => "Last week",
+        }
+    }
+
+    /// The half-open bounds, as the **UTC** instants the work log stores.
+    ///
+    /// `None` for [`Window::Recent`], which is the caller's signal to read the
+    /// newest rows rather than a range.
+    ///
+    /// Weeks start on Monday, matching `clock::describe` — the model and the
+    /// router must not disagree about which days "this week" covers.
+    fn bounds<Tz: chrono::TimeZone>(self, now: &chrono::DateTime<Tz>) -> Option<(String, String)> {
+        let today = now.date_naive();
+
+        let (from, days) = match self {
+            Self::Recent => return None,
+            Self::Today => (today, 1),
+            Self::ThisWeek => (monday_of(today), 7),
+            Self::LastWeek => (monday_of(today) - chrono::Duration::days(7), 7),
+        };
+
+        Some(between(now, from, from + chrono::Duration::days(days)))
+    }
+}
+
+/// The Monday of the week a date falls in.
+fn monday_of(date: chrono::NaiveDate) -> chrono::NaiveDate {
+    use chrono::Datelike;
+
+    let since_monday = i64::from(date.weekday().num_days_from_monday());
+
+    date - chrono::Duration::days(since_monday)
 }
 
 /// The slash commands, matched before anything else and matched exactly.
-const COMMANDS: [(&str, Intent); 3] = [
+const COMMANDS: [(&str, Intent); 5] = [
     ("/brief", Intent::Brief),
     ("/prep", Intent::Prep),
-    ("/log", Intent::Log),
+    ("/log", Intent::Log(Window::Recent)),
+    ("/week", Intent::Log(Window::ThisWeek)),
+    ("/waiting", Intent::Waiting),
 ];
 
 /// The natural-language phrases that route, written out in full.
@@ -48,7 +117,7 @@ const COMMANDS: [(&str, Intent); 3] = [
 /// would type meaning exactly this and nothing else; anything less certain is
 /// deliberately left to the model, which has the context to tell the
 /// difference and is allowed to be wrong out loud.
-const PHRASES: [(&str, Intent); 22] = [
+const PHRASES: [(&str, Intent); 34] = [
     ("brief me", Intent::Brief),
     ("brief me for today", Intent::Brief),
     ("my brief", Intent::Brief),
@@ -67,10 +136,35 @@ const PHRASES: [(&str, Intent); 22] = [
     ("whats on my calendar today", Intent::Prep),
     ("what meetings do i have", Intent::Prep),
     ("what meetings do i have today", Intent::Prep),
-    ("my work log", Intent::Log),
-    ("show me my work log", Intent::Log),
-    ("what did i ship", Intent::Log),
-    ("what have i shipped", Intent::Log),
+    ("my work log", Intent::Log(Window::Recent)),
+    ("show me my work log", Intent::Log(Window::Recent)),
+    ("what did i ship", Intent::Log(Window::Recent)),
+    ("what have i shipped", Intent::Log(Window::Recent)),
+    // The time-qualified forms. The composer offers the first of these, and
+    // until now it did not match: the list held "what did i ship" and the
+    // opener normalises to "what did i ship this week", so Chief's own
+    // suggested question missed its own router and went to the network.
+    ("what did i ship today", Intent::Log(Window::Today)),
+    ("what have i shipped today", Intent::Log(Window::Today)),
+    ("what did i ship this week", Intent::Log(Window::ThisWeek)),
+    (
+        "what have i shipped this week",
+        Intent::Log(Window::ThisWeek),
+    ),
+    ("what did i ship last week", Intent::Log(Window::LastWeek)),
+    (
+        "what have i shipped last week",
+        Intent::Log(Window::LastWeek),
+    ),
+    // "Waiting on me" is the reviews somebody has asked for, and it is the
+    // other question the composer offers. It became answerable from this
+    // machine when the pass started ingesting review requests.
+    ("what is waiting on me", Intent::Waiting),
+    ("whats waiting on me", Intent::Waiting),
+    ("what is waiting on me right now", Intent::Waiting),
+    ("who is waiting on me", Intent::Waiting),
+    ("what needs my review", Intent::Waiting),
+    ("what am i blocking", Intent::Waiting),
 ];
 
 /// What this question is asking for, if it is asking for one of these.
@@ -129,7 +223,8 @@ pub async fn answer(intent: Intent, context: &recipe::Context) -> Option<Answere
     let answered = match intent {
         Intent::Brief => brief(context).await,
         Intent::Prep => prep(context).await,
-        Intent::Log => log(context).await,
+        Intent::Log(window) => log(context, window).await,
+        Intent::Waiting => waiting(context).await,
     }?;
 
     (!answered.markdown.trim().is_empty()).then_some(answered)
@@ -210,15 +305,30 @@ async fn prep(context: &recipe::Context) -> Option<Answered> {
 /// rather than against whatever clock the test machine keeps — the same reason
 /// `clock::describe` is.
 fn day_window<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> (String, String) {
-    let midnight = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default();
-    let tomorrow = midnight + chrono::Duration::days(1);
+    let today = now.date_naive();
+
+    between(now, today, today + chrono::Duration::days(1))
+}
+
+/// Two local dates as the half-open pair of UTC instants between them.
+///
+/// Shared by [`day_window`] and [`Window::bounds`] so a day and a week are
+/// converted the same way. Getting this wrong is invisible in London in winter
+/// and wrong at every boundary everywhere else.
+fn between<Tz: chrono::TimeZone>(
+    now: &chrono::DateTime<Tz>,
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+) -> (String, String) {
     let zone = now.timezone();
 
     // A local midnight can be ambiguous or absent on the day a clock changes.
     // `earliest` takes the first instant that exists, and the fallback treats
     // the naive time as UTC rather than refusing to answer at all: being an
     // hour out once a year beats showing nothing.
-    let as_utc = |naive: chrono::NaiveDateTime| {
+    let as_utc = |date: chrono::NaiveDate| {
+        let naive = date.and_hms_opt(0, 0, 0).unwrap_or_default();
+
         zone.from_local_datetime(&naive)
             .earliest()
             .map_or_else(
@@ -229,7 +339,7 @@ fn day_window<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> (String, Stri
             .to_string()
     };
 
-    (as_utc(midnight), as_utc(tomorrow))
+    (as_utc(from), as_utc(to))
 }
 
 /// What the daemon has logged lately, newest first.
@@ -237,11 +347,47 @@ fn day_window<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> (String, Stri
 /// Reads the same structured rows `prep` does, so a logged item is described
 /// the same way wherever it appears — and, like `prep`, touches nothing but
 /// this machine's own disk.
-async fn log(context: &recipe::Context) -> Option<Answered> {
-    let hits = retrieval::latest(&context.pool, LOG_ENTRIES).await.ok()?;
+async fn log(context: &recipe::Context, window: Window) -> Option<Answered> {
+    // **Shipped work only.** "What did I ship" is a question about what
+    // landed, and once the pass started reading the user's open pull requests
+    // too, an unfiltered read answered it with work in flight — measured
+    // against the real repository, an open pull request was reported as that
+    // day's shipped work. `ingest::SHIPPED` is what merged rows are filed
+    // under, and what every row written before open ones existed already is.
+    let hits = match window.bounds(&chrono::Local::now()) {
+        Some((from, to)) => retrieval::shipped_in_window(&context.pool, &from, &to, LOG_ENTRIES)
+            .await
+            .ok()?,
+        None => retrieval::shipped_latest(&context.pool, LOG_ENTRIES)
+            .await
+            .ok()?,
+    };
 
     retrieval::to_context(&hits, RETRIEVAL_CEILING).map(|body| Answered {
-        markdown: format!("## Recently logged\n{body}"),
+        markdown: format!("## {}\n{body}", window.heading()),
+        provenance: retrieval::provenance(&hits),
+    })
+}
+
+/// The reviews somebody has asked the user for.
+///
+/// **Read from the work log, like every other read.** This is the question the
+/// composer has offered since REC-41 and could not answer from this machine,
+/// because the ingestion pass only ever read merged work — so it went out to
+/// GitHub on every ask and came back as prose a 3B model invented over a page
+/// of search results. The pass writes `category = 'review'` rows now, and this
+/// is what reads them.
+///
+/// No window. A review request is open until somebody deals with it, and one
+/// from three weeks ago is more of a problem than one from this morning, not
+/// less.
+async fn waiting(context: &recipe::Context) -> Option<Answered> {
+    let hits = retrieval::latest_in_category(&context.pool, "review", LOG_ENTRIES)
+        .await
+        .ok()?;
+
+    retrieval::to_context(&hits, RETRIEVAL_CEILING).map(|body| Answered {
+        markdown: format!("## Waiting on you\n{body}"),
         provenance: retrieval::provenance(&hits),
     })
 }
@@ -282,17 +428,74 @@ mod tests {
 
     /// Every phrase a user might type meaning one of these, and the route it
     /// must take. Failing here is a question silently answered wrongly.
+    /// The questions the composer offers, read from the file it renders them
+    /// from.
+    ///
+    /// **One list, two languages.** `ChatView` used to hold its own array of
+    /// opener strings, and all three of them missed this router: "What did I
+    /// ship this week?" normalises to a phrase the list did not have, so the
+    /// one screen that suggests what to ask suggested three things the router
+    /// was built to catch and caught none of. A test cannot check a list it
+    /// cannot see, so the list moved to a file both sides read.
+    const OPENERS: &str = include_str!("../../src/lib/openers.json");
+
+    /// The guard REC-58 exists for.
+    ///
+    /// Proved by removing "what did i ship this week" from `PHRASES`:
+    ///
+    /// ```text
+    /// the composer offers "What did I ship this week?" as something Chief
+    /// answers from this machine, and the router does not recognise it
+    ///   left: false
+    ///  right: true
+    /// ```
+    ///
+    /// Which is the reported defect exactly: a flagship read going to the
+    /// network and coming back as prose a 3B model invented over a page of
+    /// search results.
+    #[test]
+    fn every_question_the_composer_offers_routes_as_it_claims_to() {
+        let openers: Vec<serde_json::Value> =
+            serde_json::from_str(OPENERS).expect("the openers file should be a list");
+
+        assert!(
+            !openers.is_empty(),
+            "an empty list would pass every assertion below without checking anything"
+        );
+
+        for opener in openers {
+            let question = opener["question"]
+                .as_str()
+                .expect("each opener is a question");
+            let routed = opener["routed"]
+                .as_bool()
+                .expect("each opener says whether it routes");
+
+            assert_eq!(
+                route(question).is_some(),
+                routed,
+                "the composer offers {question:?} as something Chief answers from \
+                 this machine, and the router does not recognise it"
+            );
+        }
+    }
+
     #[test]
     fn routes_every_slash_command() {
         assert_eq!(route("/brief"), Some(Intent::Brief));
         assert_eq!(route("/prep"), Some(Intent::Prep));
-        assert_eq!(route("/log"), Some(Intent::Log));
+        assert_eq!(route("/log"), Some(Intent::Log(Window::Recent)));
+        assert_eq!(route("/week"), Some(Intent::Log(Window::ThisWeek)));
+        assert_eq!(route("/waiting"), Some(Intent::Waiting));
     }
 
     #[test]
     fn routes_a_command_whatever_follows_it() {
         assert_eq!(route("/brief please"), Some(Intent::Brief));
-        assert_eq!(route("/log for this week"), Some(Intent::Log));
+        assert_eq!(
+            route("/log for this week"),
+            Some(Intent::Log(Window::Recent))
+        );
     }
 
     #[test]
@@ -320,7 +523,7 @@ mod tests {
 
     #[test]
     fn ignores_the_punctuation_a_question_ends_with() {
-        assert_eq!(route("What did I ship?"), Some(Intent::Log));
+        assert_eq!(route("What did I ship?"), Some(Intent::Log(Window::Recent)));
         assert_eq!(route("Brief me!"), Some(Intent::Brief));
     }
 
@@ -349,9 +552,94 @@ mod tests {
             "is /brief a command you support?",
             "my briefcase is missing",
             "unblock me",
+            // Added with the phrases below them. A longer list is more surface
+            // for a false positive, not less, and a false positive silently
+            // replaces somebody's question with a canned answer.
+            "what did I ship this week compared with last?",
+            "who is waiting on me to approve their expenses?",
+            "what needs my review by Friday?",
+            "am I blocking anyone on the design?",
+            "what did the team ship this week?",
+            "what is waiting on me in Jira?",
         ] {
             assert_eq!(route(asked), None, "{asked} must reach the model");
         }
+    }
+
+    /// A time-qualified read is answered about the time it asked for.
+    ///
+    /// Proved by pointing every phrase at `Window::Recent`:
+    ///
+    /// ```text
+    /// "what did i ship this week" must be answered about this week
+    ///   left: Log(Recent)
+    ///  right: Log(ThisWeek)
+    /// ```
+    ///
+    /// Which is not a cosmetic difference: for somebody who shipped nothing
+    /// this week, the last ten rows whenever they happened are last month's
+    /// work presented as this week's.
+    #[test]
+    fn a_question_about_a_stretch_of_time_carries_that_stretch() {
+        for (asked, expected) in [
+            ("what did i ship", Window::Recent),
+            ("what did i ship today", Window::Today),
+            ("what did i ship this week", Window::ThisWeek),
+            ("what did i ship last week", Window::LastWeek),
+        ] {
+            assert_eq!(
+                route(asked),
+                Some(Intent::Log(expected)),
+                "{asked:?} must be answered about {expected:?}"
+            );
+        }
+    }
+
+    /// The windows, at a fixed offset rather than the test machine's clock.
+    ///
+    /// Wednesday 2 September 2026 at 14:00, five hours behind UTC — an offset
+    /// chosen so a local midnight is a *different date* in UTC, which is the
+    /// case a naive conversion gets wrong.
+    #[test]
+    fn a_week_is_monday_to_monday_in_the_users_own_zone() {
+        use chrono::TimeZone;
+
+        let zone = chrono::FixedOffset::west_opt(5 * 3600).expect("a real offset");
+        let now = zone
+            .with_ymd_and_hms(2026, 9, 2, 14, 0, 0)
+            .single()
+            .expect("a real instant");
+
+        assert_eq!(Window::Recent.bounds(&now), None, "recent has no window");
+
+        let (from, to) = Window::Today.bounds(&now).expect("today has one");
+        assert_eq!(from, "2026-09-02T05:00:00.000Z");
+        assert_eq!(to, "2026-09-03T05:00:00.000Z");
+
+        // Wednesday's week starts on Monday the 31st of August.
+        let (from, to) = Window::ThisWeek.bounds(&now).expect("this week has one");
+        assert_eq!(from, "2026-08-31T05:00:00.000Z");
+        assert_eq!(to, "2026-09-07T05:00:00.000Z");
+
+        let (from, to) = Window::LastWeek.bounds(&now).expect("last week has one");
+        assert_eq!(from, "2026-08-24T05:00:00.000Z");
+        assert_eq!(to, "2026-08-31T05:00:00.000Z");
+    }
+
+    /// A Monday is its own Monday, which is the boundary a `- days` gets wrong.
+    #[test]
+    fn a_week_asked_about_on_a_monday_starts_that_morning() {
+        use chrono::TimeZone;
+
+        let zone = chrono::FixedOffset::east_opt(0).expect("a real offset");
+        let monday = zone
+            .with_ymd_and_hms(2026, 8, 31, 9, 0, 0)
+            .single()
+            .expect("a real instant");
+
+        let (from, _) = Window::ThisWeek.bounds(&monday).expect("this week has one");
+
+        assert_eq!(from, "2026-08-31T00:00:00.000Z");
     }
 
     #[test]
@@ -544,6 +832,176 @@ mod delivery {
             Vec::<String>::new(),
             "and it must cost zero model calls"
         );
+    }
+
+    /// "What is waiting on me" is the reviews, not the user's own work.
+    ///
+    /// REC-41 established that these are different questions and that answering
+    /// one with the other was a wrong answer rather than a thin one. The
+    /// distinction lives in `category` now, so this asserts the answer holds
+    /// the review and not the pull request sitting beside it in the same table.
+    ///
+    /// Proved by pointing `waiting` at `retrieval::latest`:
+    ///
+    /// ```text
+    /// the user's own work is not a thing waiting on them
+    /// ```
+    #[tokio::test]
+    async fn waiting_answers_with_the_reviews_and_not_the_users_own_work() {
+        let (context, _scratch, server) = silent("waiting").await;
+
+        for (category, external_id, title, summary) in [
+            (
+                "review",
+                "o/r#71",
+                "Tighten the calendar parser",
+                "review requested",
+            ),
+            ("pr", "o/r#70", "Add the corpus watcher", "merged"),
+        ] {
+            work_log::upsert(
+                &context.pool,
+                work_log::WorkLogRecord {
+                    timestamp: "2026-09-02T09:00:00.000Z".to_string(),
+                    source: "github".to_string(),
+                    category: category.to_string(),
+                    title: title.to_string(),
+                    content: title.to_string(),
+                    summary: Some(summary.to_string()),
+                    url: None,
+                    raw_ref: None,
+                    external_id: external_id.to_string(),
+                    account_id: 1,
+                },
+            )
+            .await
+            .expect("should store");
+        }
+
+        let answered = answer(Intent::Waiting, &context)
+            .await
+            .expect("a review request is something to say");
+
+        assert!(
+            answered.markdown.contains("Tighten the calendar parser"),
+            "the review should be the answer: {}",
+            answered.markdown
+        );
+        assert!(
+            !answered.markdown.contains("Add the corpus watcher"),
+            "the user's own work is not a thing waiting on them: {}",
+            answered.markdown
+        );
+        assert_eq!(
+            server.await.expect("server"),
+            Vec::<String>::new(),
+            "and it must cost zero model calls"
+        );
+    }
+
+    /// The guard on a false answer found by running the real thing.
+    ///
+    /// Measured against scottmallinson/chief.ai on 2026-09-03: the pass had
+    /// ingested pull request #66, opened that morning and still open, and
+    /// "what did I ship today" listed it as that day's shipped work beside
+    /// #65, which really had merged. `Log` filtered by window and not by
+    /// state, which was accidentally correct for as long as the pass read only
+    /// merged work and stopped being correct the moment it read more.
+    ///
+    /// Proved by passing `None` as the category:
+    ///
+    /// ```text
+    /// an open pull request is work in flight, not work shipped
+    /// ```
+    #[tokio::test]
+    async fn shipped_means_merged_and_never_merely_open() {
+        let (context, _scratch, _server) = silent("shipped").await;
+
+        for (category, external_id, title, summary) in [
+            (
+                crate::ingest::SHIPPED,
+                "o/r#65",
+                "Landed the work log",
+                "merged",
+            ),
+            (
+                crate::ingest::IN_FLIGHT,
+                "o/r#66",
+                "Still open today",
+                "open",
+            ),
+            (
+                crate::ingest::REVIEW,
+                "o/r#71",
+                "Somebody else's ask",
+                "review requested",
+            ),
+            (crate::ingest::MEETING, "cal:1", "Standup", "09:30"),
+            // Migration 8's default, which is what an entry the user typed
+            // into their own work log carries. It is their work and it counts:
+            // filtering to `SHIPPED` alone dropped it, which an existing test
+            // caught before this one did.
+            ("note", "note:1", "Wrote the release notes by hand", "done"),
+        ] {
+            work_log::upsert(
+                &context.pool,
+                work_log::WorkLogRecord {
+                    timestamp: bump(&day_window(&chrono::Local::now()).0),
+                    source: "github".to_string(),
+                    category: category.to_string(),
+                    title: title.to_string(),
+                    content: title.to_string(),
+                    summary: Some(summary.to_string()),
+                    url: None,
+                    raw_ref: None,
+                    external_id: external_id.to_string(),
+                    account_id: 1,
+                },
+            )
+            .await
+            .expect("should store");
+        }
+
+        for window in [Window::Today, Window::ThisWeek, Window::Recent] {
+            let answered = answer(Intent::Log(window), &context)
+                .await
+                .unwrap_or_else(|| panic!("{window:?} should have the merged one to report"));
+
+            assert!(
+                answered.markdown.contains("Landed the work log"),
+                "{window:?} should report what merged: {}",
+                answered.markdown
+            );
+            assert!(
+                answered
+                    .markdown
+                    .contains("Wrote the release notes by hand"),
+                "{window:?} should count what the user logged themselves: {}",
+                answered.markdown
+            );
+
+            for excluded in ["Still open today", "Somebody else's ask", "Standup"] {
+                assert!(
+                    !answered.markdown.contains(excluded),
+                    "an open pull request is work in flight, not work shipped, and \
+                     neither a review request nor a meeting is either — {excluded:?} \
+                     in {window:?}: {}",
+                    answered.markdown
+                );
+            }
+        }
+    }
+
+    /// Nothing waiting steps aside rather than saying "nothing".
+    ///
+    /// The safety valve the whole module rests on: "you have nothing waiting"
+    /// and "Chief misunderstood you" are indistinguishable to a reader, so a
+    /// routed intent with nothing to say lets the model take the question.
+    #[tokio::test]
+    async fn waiting_steps_aside_when_there_is_nothing_waiting() {
+        let (context, _scratch, _server) = silent("waiting-empty").await;
+
+        assert!(answer(Intent::Waiting, &context).await.is_none());
     }
 
     /// One minute past whatever instant this is, so a fixture lands inside a

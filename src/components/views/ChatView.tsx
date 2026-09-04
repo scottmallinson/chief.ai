@@ -13,6 +13,7 @@ import { ChiefMark } from '@/components/ChiefMark';
 import { Button } from '@/components/ui/button';
 import { Caret, Sweep } from '@/components/ui/activity';
 import type { UseChat } from '@/hooks/use-chat';
+import openers from '@/lib/openers.json';
 import { useElapsed } from '@/hooks/use-elapsed';
 import type { ChatMessage } from '@/lib/agent';
 
@@ -25,8 +26,21 @@ const SAY_HOW_LONG = 3;
 /** After this long the wait is worth explaining rather than just counting. */
 const EXPLAIN_THE_WAIT = 15;
 
-/** Questions worth having on hand, in the words the system would use. */
-const OPENERS = ['What did I ship this week?', 'Draft my standup', 'What is waiting on me?'];
+/**
+ * Questions worth having on hand, in the words the system would use.
+ *
+ * **Read from the file `intent`'s tests read, rather than written out here.**
+ * All three of the openers this screen used to hold missed the router: "What
+ * did I ship this week?" normalises to a phrase `PHRASES` did not have, so the
+ * one screen that suggests what to ask suggested three things the router was
+ * built to catch and caught none of — and each of them went out to GitHub and
+ * came back as prose a 3B model invented over a page of search results.
+ *
+ * A test cannot check a list it cannot see, so the list lives in one file both
+ * languages read: `intent::tests::every_question_the_composer_offers_routes_as_it_claims_to`
+ * fails if an opener claiming to be answerable here is not.
+ */
+const OPENERS = openers.map((opener) => opener.question);
 
 const clockFormat = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
 

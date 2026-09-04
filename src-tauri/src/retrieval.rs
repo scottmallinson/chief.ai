@@ -141,8 +141,9 @@ pub async fn in_window(
 
 /// The newest entries, whatever they are.
 ///
-/// What `/log` answers with: no window and no search terms, just the last few
-/// things that happened, newest first.
+/// What the brief's "recently logged work" reads: everything the log holds,
+/// whatever category it was filed under, because an entry the user typed by
+/// hand belongs there beside a merged pull request.
 pub async fn latest(pool: &SqlitePool, limit: i64) -> Result<Vec<Hit>, Error> {
     let hits = sqlx::query_as::<_, Hit>(
         "SELECT id, timestamp, source, category, title, summary, url
@@ -150,6 +151,86 @@ pub async fn latest(pool: &SqlitePool, limit: i64) -> Result<Vec<Hit>, Error> {
           ORDER BY timestamp DESC, id DESC
           LIMIT ?1",
     )
+    .bind(limit.clamp(1, MAX_LIMIT))
+    .fetch_all(pool)
+    .await?;
+
+    Ok(hits)
+}
+
+/// Shipped work in a window: everything the log holds except the categories
+/// that are explicitly not that.
+///
+/// See [`crate::ingest::NOT_SHIPPED`] for why this excludes rather than
+/// includes. The list is written into the statement rather than bound, because
+/// it is a constant of this crate and not anything a caller supplies.
+pub async fn shipped_in_window(
+    pool: &SqlitePool,
+    from: &str,
+    to: &str,
+    limit: i64,
+) -> Result<Vec<Hit>, Error> {
+    let [in_flight, review, meeting] = crate::ingest::NOT_SHIPPED;
+
+    let hits = sqlx::query_as::<_, Hit>(
+        "SELECT id, timestamp, source, category, title, summary, url
+           FROM work_logs
+          WHERE timestamp >= ?1 AND timestamp < ?2
+            AND category NOT IN (?3, ?4, ?5)
+          ORDER BY timestamp ASC, id ASC
+          LIMIT ?6",
+    )
+    .bind(from)
+    .bind(to)
+    .bind(in_flight)
+    .bind(review)
+    .bind(meeting)
+    .bind(limit.clamp(1, MAX_LIMIT))
+    .fetch_all(pool)
+    .await?;
+
+    Ok(hits)
+}
+
+/// The same with no window: the newest shipped work, whenever it happened.
+pub async fn shipped_latest(pool: &SqlitePool, limit: i64) -> Result<Vec<Hit>, Error> {
+    let [in_flight, review, meeting] = crate::ingest::NOT_SHIPPED;
+
+    let hits = sqlx::query_as::<_, Hit>(
+        "SELECT id, timestamp, source, category, title, summary, url
+           FROM work_logs
+          WHERE category NOT IN (?1, ?2, ?3)
+          ORDER BY timestamp DESC, id DESC
+          LIMIT ?4",
+    )
+    .bind(in_flight)
+    .bind(review)
+    .bind(meeting)
+    .bind(limit.clamp(1, MAX_LIMIT))
+    .fetch_all(pool)
+    .await?;
+
+    Ok(hits)
+}
+
+/// The newest entries of one kind.
+///
+/// What "what is waiting on me" answers with: no window, because a review
+/// request is open until somebody deals with it and one from three weeks ago is
+/// more of a problem than one from this morning rather than less.
+pub async fn latest_in_category(
+    pool: &SqlitePool,
+    category: &str,
+    limit: i64,
+) -> Result<Vec<Hit>, Error> {
+    let hits = sqlx::query_as::<_, Hit>(
+        "SELECT id, timestamp, source, category, title, summary, url
+           FROM work_logs
+          WHERE category = ?1
+          ORDER BY timestamp DESC, id DESC
+          LIMIT ?2",
+    )
+    .bind(category)
     .bind(limit.clamp(1, MAX_LIMIT))
     .fetch_all(pool)
     .await?;
@@ -174,6 +255,25 @@ pub async fn latest(pool: &SqlitePool, limit: i64) -> Result<Vec<Hit>, Error> {
 #[must_use]
 pub fn describe(hit: &Hit) -> Option<String> {
     let source = title_case(&hit.source);
+
+    line(hit).map(|line| format!("- [{source}] {line}"))
+}
+
+/// The same row without the bullet or the source, for a caller that frames it
+/// itself.
+///
+/// **Extracted because the brief was not using it and paid for that.**
+/// `recipe::gather` built its own line from `summary` alone, which was a
+/// model-written sentence until deterministic ingestion made it a bare state
+/// word — after which the brief's whole material read `- merged`, `- merged`,
+/// `- open`, with nothing to name. Measured against the real repository, the
+/// model was handed six state words under a rule saying "name people and pull
+/// requests exactly as they appear below", and invented a meeting, two people
+/// and three pull request numbers rather than naming nothing.
+///
+/// One renderer, so a logged item reads the same wherever it appears.
+#[must_use]
+pub fn line(hit: &Hit) -> Option<String> {
     let title = hit.title.trim();
     let summary = hit
         .summary
@@ -182,11 +282,9 @@ pub fn describe(hit: &Hit) -> Option<String> {
         .filter(|summary| !summary.is_empty());
 
     match (title.is_empty(), summary) {
-        (false, Some(summary)) if summary != title => {
-            Some(format!("- [{source}] {title} — {summary}"))
-        }
-        (false, _) => Some(format!("- [{source}] {title}")),
-        (true, Some(summary)) => Some(format!("- [{source}] {summary}")),
+        (false, Some(summary)) if summary != title => Some(format!("{title} — {summary}")),
+        (false, _) => Some(title.to_string()),
+        (true, Some(summary)) => Some(summary.to_string()),
         (true, None) => None,
     }
 }

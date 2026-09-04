@@ -85,7 +85,8 @@ function App() {
           activeView === 'today' ? (
             <BriefList
               days={brief.days}
-              selected={brief.brief?.date ?? null}
+              selected={brief.selected}
+              today={brief.today}
               onSelect={brief.select}
             />
           ) : undefined
@@ -94,9 +95,12 @@ function App() {
         {activeView === 'today' && (
           <TodayView
             brief={brief.brief}
+            day={brief.selected}
+            today={brief.today}
             status={brief.status}
             error={brief.error}
             onWrite={brief.write}
+            onShowToday={() => brief.select(brief.today)}
             proposals={proposals.proposals}
             onEditProposal={(proposal) => {
               setEditing(proposal);

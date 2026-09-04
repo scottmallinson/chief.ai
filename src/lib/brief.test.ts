@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { briefDays, readBrief } from '@/lib/brief';
+import { briefDays, readBrief, todayDate } from '@/lib/brief';
 import type { CorpusEntry } from '@/lib/corpus';
 
 function entry(path: string, modifiedAt = '2026-08-29T08:00:00Z'): CorpusEntry {
@@ -9,26 +9,81 @@ function entry(path: string, modifiedAt = '2026-08-29T08:00:00Z'): CorpusEntry {
 
 describe('briefDays', () => {
   it('keeps only the briefs, newest day first', () => {
-    const days = briefDays([
-      entry('briefs/2026-08-27.md'),
-      entry('notes/standup.md'),
-      entry('briefs/2026-08-29.md'),
-      entry('briefs/2026-08-28.md'),
-    ]);
+    const days = briefDays(
+      [
+        entry('briefs/2026-08-27.md'),
+        entry('notes/standup.md'),
+        entry('briefs/2026-08-29.md'),
+        entry('briefs/2026-08-28.md'),
+      ],
+      '2026-08-29',
+    );
 
     expect(days.map((day) => day.date)).toEqual(['2026-08-29', '2026-08-28', '2026-08-27']);
   });
 
   it('carries the path the brief was read from', () => {
-    const days = briefDays([entry('briefs/2026-08-29.md')]);
+    const days = briefDays([entry('briefs/2026-08-29.md')], '2026-08-29');
 
     expect(days[0]?.path).toBe('briefs/2026-08-29.md');
   });
 
   it('ignores anything under briefs that is not a dated markdown file', () => {
-    const days = briefDays([entry('briefs/README.md'), entry('briefs/2026-08-29.md')]);
+    const days = briefDays(
+      [entry('briefs/README.md'), entry('briefs/2026-08-29.md')],
+      '2026-08-29',
+    );
 
     expect(days.map((day) => day.date)).toEqual(['2026-08-29']);
+  });
+
+  /**
+   * The guard on the defect this exists for.
+   *
+   * Proved by dropping the `days.push` in `briefDays`:
+   *
+   * ```text
+   * → today is the day you came here for, and it has to be selectable
+   *   - Expected: ["2026-08-29", "2026-08-28"]
+   *   + Received: ["2026-08-28"]
+   * ```
+   *
+   * With no row for today there is nothing to click, and the empty state that
+   * offers to write one is unreachable for the rest of the session.
+   */
+  it('offers today even when nothing has been written for it', () => {
+    const days = briefDays([entry('briefs/2026-08-28.md')], '2026-08-29');
+
+    expect(
+      days.map((day) => day.date),
+      'today is the day you came here for, and it has to be selectable',
+    ).toEqual(['2026-08-29', '2026-08-28']);
+    expect(days[0]?.written).toBe(false);
+    expect(days[0]?.path).toBe('briefs/2026-08-29.md');
+  });
+
+  it('offers today once, not twice, when it has been written', () => {
+    const days = briefDays([entry('briefs/2026-08-29.md')], '2026-08-29');
+
+    expect(days.map((day) => day.date)).toEqual(['2026-08-29']);
+    expect(days[0]?.written).toBe(true);
+  });
+
+  it('offers today even when the corpus lists nothing at all', () => {
+    expect(briefDays([], '2026-08-29').map((day) => day.date)).toEqual(['2026-08-29']);
+  });
+});
+
+describe('todayDate', () => {
+  it('names the local day, not the UTC one', () => {
+    // 23:30 on the 29th wherever the test machine is. `toISOString` would say
+    // the 30th for anybody east of Greenwich and the 29th for anybody west,
+    // which is the bug this avoids by never asking it.
+    expect(todayDate(new Date(2026, 7, 29, 23, 30))).toBe('2026-08-29');
+  });
+
+  it('pads the month and the day, so the string sorts and matches the path', () => {
+    expect(todayDate(new Date(2026, 0, 5, 12, 0))).toBe('2026-01-05');
   });
 });
 

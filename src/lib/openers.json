@@ -1,0 +1,6 @@
+[
+  { "question": "What did I ship this week?", "routed": true },
+  { "question": "What is waiting on me?", "routed": true },
+  { "question": "What is on my calendar?", "routed": true },
+  { "question": "Draft my standup", "routed": false }
+]

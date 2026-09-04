@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useBrief } from '@/hooks/use-brief';
 
@@ -26,6 +26,14 @@ function corpus(...paths: string[]) {
 describe('useBrief', () => {
   beforeEach(() => {
     invoke.mockReset();
+    // The hook now works out today for itself, so the fixtures below only
+    // describe "today" if the clock agrees with them.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 7, 29, 9, 0));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('opens on today, and offers the days that came before it', async () => {
@@ -119,7 +127,10 @@ describe('useBrief', () => {
     await waitFor(() => expect(result.current.status).toBe('ready'));
 
     expect(result.current.brief).toBeNull();
-    expect(result.current.days.map((day) => day.date)).toEqual(['2026-08-28']);
+    expect(result.current.days.map((day) => day.date)).toEqual(['2026-08-29', '2026-08-28']);
+    expect(result.current.selected, 'today is selected before anything is picked').toBe(
+      '2026-08-29',
+    );
   });
 
   it('brings the new day into the list when one is written', async () => {
@@ -140,11 +151,12 @@ describe('useBrief', () => {
 
     const { result } = renderHook(() => useBrief());
     await waitFor(() => expect(result.current.status).toBe('ready'));
-    expect(result.current.days).toEqual([]);
+    expect(result.current.days.map((day) => day.written)).toEqual([false]);
 
     act(() => result.current.write());
 
-    await waitFor(() => expect(result.current.days.map((day) => day.date)).toEqual(['2026-08-29']));
+    await waitFor(() => expect(result.current.days.map((day) => day.written)).toEqual([true]));
+    expect(result.current.days.map((day) => day.date)).toEqual(['2026-08-29']);
   });
 
   it('survives a corpus that cannot be listed, since the brief is the point', async () => {
@@ -164,6 +176,78 @@ describe('useBrief', () => {
     await waitFor(() => expect(result.current.status).toBe('ready'));
 
     expect(result.current.brief?.date).toBe('2026-08-29');
-    expect(result.current.days).toEqual([]);
+    expect(result.current.days.map((day) => day.date)).toEqual(['2026-08-29']);
+  });
+
+  /**
+   * The defect REC-55 is about, from the hook's side.
+   *
+   * Proved by restoring `selected` to `brief?.date ?? null` and dropping the
+   * `date === today` branch in `select`:
+   *
+   * ```text
+   * AssertionError: expected { date: '2026-08-29', …(3) } to be null
+   * ```
+   *
+   * Which is worse than the bug it replaces: with today in the day list but no
+   * branch for it, selecting today reads `briefs/2026-08-29.md` as a file, and
+   * a file that is not there comes back as a brief with nothing in it. Today is
+   * read through `todays_brief` for exactly that reason — the command knows the
+   * difference between "no brief yet" and "here is an empty one".
+   */
+  it('comes back to today after an earlier day, even with no brief written', async () => {
+    invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'todays_brief':
+          return Promise.resolve(null);
+        case 'list_corpus':
+          return Promise.resolve(corpus('briefs/2026-08-28.md'));
+        case 'read_corpus_file':
+          return Promise.resolve('- Shipped the release workflow');
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    const { result } = renderHook(() => useBrief());
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    act(() => result.current.select('2026-08-28'));
+    await waitFor(() => expect(result.current.brief?.date).toBe('2026-08-28'));
+    expect(result.current.selected).toBe('2026-08-28');
+
+    act(() => result.current.select(result.current.today));
+
+    await waitFor(() => expect(result.current.brief).toBeNull());
+    expect(
+      result.current.selected,
+      'selecting today has to reach the empty state that offers to write one',
+    ).toBe('2026-08-29');
+  });
+
+  it('picks up a brief written while the window was open, when today is selected', async () => {
+    // What the daemon does behind the screen: the file appears without the
+    // window having asked for it.
+    let daemonWrote = false;
+
+    invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'todays_brief':
+          return Promise.resolve(daemonWrote ? today : null);
+        case 'list_corpus':
+          return Promise.resolve(daemonWrote ? corpus('briefs/2026-08-29.md') : []);
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    const { result } = renderHook(() => useBrief());
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.brief).toBeNull();
+
+    daemonWrote = true;
+    act(() => result.current.select('2026-08-29'));
+
+    await waitFor(() => expect(result.current.brief?.date).toBe('2026-08-29'));
   });
 });

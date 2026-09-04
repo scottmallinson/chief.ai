@@ -18,7 +18,71 @@
 //! not the canonical thing a person would open.
 
 use crate::github::PullRequest;
+use crate::microsoft::Event;
 use crate::work_log::WorkLogRecord;
+
+/// Why a pull request is in the log: the user's own work, or a review somebody
+/// has asked them for.
+///
+/// The two are different questions and used to be one row shape, because the
+/// pass only ever read `author:@me is:merged` and had nothing else to
+/// distinguish. `category` carries it, so "what did I ship" and "what is
+/// waiting on me" can be answered from the same table without either of them
+/// having to guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A pull request the user opened.
+    Mine,
+    /// One somebody asked them to review.
+    Review,
+}
+
+/// What a row is filed under, which is what every read question filters on.
+///
+/// **Three categories, because there are three questions.** "What did I ship"
+/// wants [`SHIPPED`], "what is waiting on me" wants [`REVIEW`], and the feed
+/// wants all of it. Getting this wrong is not a thin answer but a false one:
+/// when the pass started reading open pull requests, they landed under the same
+/// category as merged ones and "what did I ship today" began reporting work in
+/// flight as shipped — measured against the real repository, an open pull
+/// request opened today was listed as that day's shipped work.
+///
+/// `SHIPPED` keeps the name `pr` deliberately. Every row an installed copy
+/// already holds under it was written by the old pass, which read
+/// `author:@me is:merged` and nothing else — so every one of them is merged,
+/// and the meaning carries over without a migration.
+pub const SHIPPED: &str = "pr";
+/// The user's own work that has not landed yet.
+pub const IN_FLIGHT: &str = "open";
+/// A review somebody has asked the user for.
+pub const REVIEW: &str = "review";
+/// A meeting, from any calendar.
+pub const MEETING: &str = "calendar";
+
+/// The categories that are never an answer to "what did I ship".
+///
+/// An **exclusion**, not an inclusion, and the difference is a regression an
+/// existing test caught: an entry the user typed into their own work log
+/// carries migration 8's default category, and a question about their work has
+/// to count it. What must not count is work that has not landed, somebody
+/// else's request, and a meeting — each of which is a different question with
+/// a heading of its own.
+pub const NOT_SHIPPED: [&str; 3] = [IN_FLIGHT, REVIEW, MEETING];
+
+impl Kind {
+    /// What the row is filed under, given what state the item is in.
+    fn category(self, pull_request: &PullRequest) -> &'static str {
+        match self {
+            Self::Review => REVIEW,
+            // Merged is the only thing that counts as shipped. A draft and an
+            // open pull request are both work in flight, and `merged_at` is the
+            // only field that separates them from work that landed — GitHub
+            // reports a merged pull request as `closed`, so `state` cannot.
+            Self::Mine if pull_request.merged_at.is_some() => SHIPPED,
+            Self::Mine => IN_FLIGHT,
+        }
+    }
+}
 
 /// Query parameters that are somebody's analytics rather than the address of a
 /// thing.
@@ -80,7 +144,7 @@ pub fn canonical(url: &str) -> String {
     canonical
 }
 
-/// A merged or open pull request, as a row.
+/// A merged, open or review-requested pull request, as a row.
 ///
 /// `summary` is a template rather than prose. It says what state the thing is
 /// in, which is the question a feed row answers and the thing that changes
@@ -89,8 +153,13 @@ pub fn canonical(url: &str) -> String {
 /// merged by the next pass has to change, or the feed keeps asserting something
 /// that stopped being true.
 #[must_use]
-pub fn from_pull_request(pull_request: &PullRequest, account_id: i64) -> WorkLogRecord {
-    let state = describe_state(pull_request);
+pub fn from_pull_request(pull_request: &PullRequest, account_id: i64, kind: Kind) -> WorkLogRecord {
+    let state = match kind {
+        Kind::Mine => describe_state(pull_request),
+        // What the user has to *do*, which for a review request is the whole
+        // point of the row and is not a state GitHub reports on the item.
+        Kind::Review => "review requested".to_string(),
+    };
 
     WorkLogRecord {
         timestamp: pull_request
@@ -98,24 +167,120 @@ pub fn from_pull_request(pull_request: &PullRequest, account_id: i64) -> WorkLog
             .clone()
             .unwrap_or_else(|| pull_request.updated_at.clone()),
         source: "github".to_string(),
-        category: "pr".to_string(),
+        category: kind.category(pull_request).to_string(),
         title: format!(
             "{} #{}: {}",
             pull_request.repository, pull_request.number, pull_request.title
         ),
-        content: format!(
-            "{} pull request #{} in {}: {}",
-            capitalise(&state),
-            pull_request.number,
-            pull_request.repository,
-            pull_request.title
-        ),
+        content: match kind {
+            Kind::Mine => format!(
+                "{} pull request #{} in {}: {}",
+                capitalise(&state),
+                pull_request.number,
+                pull_request.repository,
+                pull_request.title
+            ),
+            Kind::Review => format!(
+                "Review requested on pull request #{} in {}: {}",
+                pull_request.number, pull_request.repository, pull_request.title
+            ),
+        },
         summary: Some(state),
         url: Some(canonical(&pull_request.url)),
         raw_ref: None,
         external_id: pull_request.external_id(),
         account_id,
     }
+}
+
+/// One meeting, as a row.
+///
+/// **The rows `intent::prep` has always queried for and nothing ever wrote.**
+/// D9 says a read is answered from local storage, and `prep` duly filters
+/// `category = 'calendar'` — but the only production writer of `work_logs` was
+/// `from_pull_request`, so the query never matched anything, `answer` returned
+/// `None` every time, and "what is on my calendar" fell through to the tool
+/// loop and Microsoft Graph exactly as it had before D9 was built.
+///
+/// `None` when the start cannot be read. A meeting with no placeable time
+/// cannot be answered from a window query, and a row dated now would put it in
+/// the middle of today's agenda claiming to be a meeting that is not.
+#[must_use]
+pub fn from_event<Tz: chrono::TimeZone>(
+    event: &Event,
+    account_id: i64,
+    zone: &Tz,
+) -> Option<WorkLogRecord> {
+    let timestamp = as_utc(&event.start, zone)?;
+    let when = clock_time(&event.start);
+    let who = if event.attendees.is_empty() {
+        String::new()
+    } else {
+        format!(" with {}", event.attendees.join(", "))
+    };
+
+    Some(WorkLogRecord {
+        timestamp,
+        source: "calendar".to_string(),
+        category: "calendar".to_string(),
+        title: event.subject.clone(),
+        content: format!("{when} {}{who}", event.subject).trim().to_string(),
+        summary: Some(format!("{when}{who}").trim().to_string()),
+        // A subscription event has no address to open, and `Event` does not
+        // carry Graph's `webLink`. Better nothing than a link that goes wrong.
+        url: None,
+        raw_ref: None,
+        // `Event` carries no identifier of its own, so the row is keyed on the
+        // two fields that make a meeting the meeting it is. Enough for a pass
+        // to recognise the one it wrote last time, which is all `upsert` needs.
+        external_id: format!("{}|{}", event.start, event.subject),
+        account_id,
+    })
+}
+
+/// A local wall-clock stamp as the UTC instant the work log stores.
+///
+/// Both calendar paths produce `%Y-%m-%dT%H:%M:%S` **in the user's own zone** —
+/// `calendar.rs` formats an expanded occurrence that way, and Graph is asked
+/// for its own offset — while `work_logs.timestamp` is UTC, because that is
+/// what SQLite's `strftime(…, 'now')` writes. Storing one as the other reads
+/// the wrong day by whatever the offset is: invisible in London in winter and
+/// wrong at every day's edge everywhere else.
+///
+/// Generic over the zone so the conversion is tested at a fixed offset rather
+/// than against whatever clock the test machine keeps — the same reason
+/// `clock::describe` and `intent::day_window` are.
+#[must_use]
+pub fn as_utc<Tz: chrono::TimeZone>(local: &str, zone: &Tz) -> Option<String> {
+    // Some providers append a fractional part; none of them append an offset,
+    // which is the whole reason this function exists.
+    let stem = local
+        .split('.')
+        .next()
+        .unwrap_or(local)
+        .trim_end_matches('Z');
+    let naive = chrono::NaiveDateTime::parse_from_str(stem, "%Y-%m-%dT%H:%M:%S").ok()?;
+
+    Some(
+        zone.from_local_datetime(&naive)
+            .earliest()
+            // A local time that does not exist — the hour a clock skips
+            // forward — is read as UTC rather than dropped: being an hour out
+            // once a year beats losing the meeting.
+            .map_or_else(|| naive.and_utc(), |at| at.to_utc())
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
+    )
+}
+
+/// `HH:MM` out of a wall-clock stamp, or nothing if it is not one.
+fn clock_time(start: &str) -> &str {
+    start
+        .split('T')
+        .nth(1)
+        .unwrap_or("")
+        .get(0..5)
+        .unwrap_or("")
 }
 
 /// What state a pull request is in, in one word a person would use.
@@ -167,7 +332,7 @@ mod tests {
         merged.state = "closed".to_string();
         merged.merged_at = Some("2026-09-02T09:00:00Z".to_string());
 
-        let record = from_pull_request(&merged, 1);
+        let record = from_pull_request(&merged, 1, Kind::Mine);
 
         assert_eq!(record.summary.as_deref(), Some("merged"));
         assert_eq!(
@@ -182,14 +347,14 @@ mod tests {
         draft.draft = true;
 
         assert_eq!(
-            from_pull_request(&draft, 1).summary.as_deref(),
+            from_pull_request(&draft, 1, Kind::Mine).summary.as_deref(),
             Some("draft")
         );
     }
 
     #[test]
     fn the_title_carries_the_repository_and_number() {
-        let record = from_pull_request(&pull_request(), 1);
+        let record = from_pull_request(&pull_request(), 1, Kind::Mine);
 
         assert_eq!(
             record.title,
@@ -241,8 +406,8 @@ mod tests {
         // A compile-time assertion: `from_pull_request` takes no client and
         // returns no future, so a model call cannot be added without changing
         // every caller.
-        let build: fn(&PullRequest, i64) -> WorkLogRecord = from_pull_request;
-        let record = build(&pull_request(), 1);
+        let build: fn(&PullRequest, i64, Kind) -> WorkLogRecord = from_pull_request;
+        let record = build(&pull_request(), 1, Kind::Mine);
 
         assert_eq!(record.source, "github");
         assert!(
