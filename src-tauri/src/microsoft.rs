@@ -66,8 +66,9 @@ const ADMIN_CONSENT_CODE: &str = "AADSTS90094";
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "Chief has no Microsoft client id. Set {CLIENT_ID_VAR} to one from your own app \
-         registration."
+        "Chief has no Microsoft client id to sign in with. Add one in Settings, under Outlook — \
+         register an application in Entra as a public client and paste its application (client) \
+         id there."
     )]
     NoClientId,
     #[error("could not reach Microsoft: {0}")]
@@ -107,16 +108,50 @@ impl serde::Serialize for Error {
 /// developer — or an organisation that would rather register its own app than
 /// approve Chief's — can point at theirs without a rebuild.
 pub fn client_id() -> Result<String, Error> {
-    if let Ok(from_env) = std::env::var(CLIENT_ID_VAR) {
-        if !from_env.trim().is_empty() {
-            return Ok(from_env);
-        }
-    }
-
-    option_env!("CHIEF_MICROSOFT_CLIENT_ID")
-        .filter(|id| !id.trim().is_empty())
-        .map(ToString::to_string)
+    from_environment()
+        .or_else(built_in)
         .ok_or(Error::NoClientId)
+}
+
+/// What this machine's environment says, if anything.
+fn from_environment() -> Option<String> {
+    std::env::var(CLIENT_ID_VAR)
+        .ok()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+/// What this build was compiled with, if anything.
+///
+/// `option_env!` reads it at compile time — see `build.rs`, which is what
+/// makes cargo notice when the variable changes rather than reusing a binary
+/// compiled without it.
+fn built_in() -> Option<String> {
+    option_env!("CHIEF_MICROSOFT_CLIENT_ID")
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+}
+
+/// The client id to actually sign in with.
+///
+/// The environment, then one the user supplied in Settings, then whatever the
+/// build carried. Until an Entra application is registered for Chief there is
+/// no built-in one at all, so on a release build the middle layer is the only
+/// one there is — which is what makes Outlook connectable without waiting on
+/// a portal that is somebody else's to open.
+pub async fn configured_client_id(pool: &sqlx::SqlitePool) -> Result<String, Error> {
+    registration(pool).await?.client_id.ok_or(Error::NoClientId)
+}
+
+/// Which registration Outlook sign-in would use, and where it came from.
+pub async fn registration(
+    pool: &sqlx::SqlitePool,
+) -> Result<crate::oauth::registration::Registration, Error> {
+    Ok(
+        crate::oauth::registration::resolve(pool, MICROSOFT, from_environment(), built_in())
+            .await?,
+    )
 }
 
 /// A sign-in that has been started and is waiting on the browser.
@@ -648,6 +683,10 @@ impl crate::oauth::Provider for Client {
 
     fn client_id(&self) -> Result<String, Error> {
         client_id()
+    }
+
+    fn environment_client_id(&self) -> Option<String> {
+        from_environment()
     }
 
     fn scopes(&self) -> &'static [&'static str] {

@@ -39,6 +39,7 @@ describe('useIntegrations', () => {
       kind: 'device',
       userCode: 'ABCD-1234',
       verificationUri: 'https://github.com/login/device',
+      verificationUriComplete: 'https://github.com/login/device?user_code=ABCD-1234',
     };
 
     invoke.mockImplementation((command: string) => {
@@ -55,6 +56,44 @@ describe('useIntegrations', () => {
 
     await waitFor(() => expect(result.current.status).toBe('awaiting-user'));
     expect(result.current.login).toEqual(login);
+    // The page with the code already in it, not the bare one: that is the
+    // difference between "click, authorise, done" and asking somebody to
+    // copy an eight-character code between two windows.
+    expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device?user_code=ABCD-1234');
+  });
+
+  /**
+   * The prefill is built from something GitHub does not document, so the
+   * plain page has to stay a working answer — an older backend, or a prefill
+   * GitHub withdraws, must cost a keystroke rather than the sign-in.
+   *
+   * Proved by opening `verificationUriComplete` unconditionally:
+   *
+   * ```text
+   * expected "spy" to be called with arguments:
+   *   [ 'https://github.com/login/device' ]
+   * Received: [ undefined ]
+   * ```
+   */
+  it('opens the plain page when there is no prefilled one', async () => {
+    const login = {
+      kind: 'device',
+      userCode: 'ABCD-1234',
+      verificationUri: 'https://github.com/login/device',
+    };
+
+    invoke.mockImplementation((command: string) => {
+      if (command === 'connections') return Promise.resolve([]);
+      if (command === 'start_login') return Promise.resolve(login);
+      return new Promise(() => {});
+    });
+
+    const { result } = renderHook(() => useIntegrations());
+    await waitFor(() => expect(result.current.status).toBe('idle'));
+
+    act(() => result.current.connect('github'));
+
+    await waitFor(() => expect(result.current.status).toBe('awaiting-user'));
     expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device');
   });
 

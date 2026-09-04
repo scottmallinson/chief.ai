@@ -48,9 +48,8 @@ const MAX_POLL: Duration = Duration::from_secs(15 * 60);
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "this build has no GitHub client id, so signing in is unavailable. Released builds set \
-         CHIEF_GITHUB_CLIENT_ID when they are compiled; set it in your environment when running \
-         from source."
+        "Chief has no GitHub client id to sign in with. Add one in Settings, under GitHub — make \
+         an OAuth app on GitHub with the device flow enabled and paste its client id there."
     )]
     NoClientId,
     #[error("GitHub is not connected. Connect it in Settings.")]
@@ -79,19 +78,60 @@ impl serde::Serialize for Error {
     }
 }
 
-/// The OAuth client id. Not a secret — the device flow has none — so it can be
-/// baked in at build time or supplied at run time.
-pub fn client_id() -> Result<String, Error> {
-    if let Ok(from_env) = std::env::var("CHIEF_GITHUB_CLIENT_ID") {
-        if !from_env.trim().is_empty() {
-            return Ok(from_env);
-        }
-    }
+/// The environment variable that points Chief at another OAuth app.
+const CLIENT_ID_VAR: &str = "CHIEF_GITHUB_CLIENT_ID";
 
+/// What this machine's environment says, if anything.
+fn from_environment() -> Option<String> {
+    std::env::var(CLIENT_ID_VAR)
+        .ok()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+/// What this build was compiled with, if anything.
+///
+/// A release bakes in the repository variable of the same name, so nobody
+/// installing Chief has to register an OAuth app. `option_env!` reads it at
+/// compile time — see `build.rs`, which is what makes cargo notice when the
+/// variable changes rather than reusing a binary compiled without it.
+fn built_in() -> Option<String> {
     option_env!("CHIEF_GITHUB_CLIENT_ID")
-        .filter(|id| !id.trim().is_empty())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
         .map(ToString::to_string)
+}
+
+/// The OAuth client id, without reading the database.
+///
+/// Not a secret — the device flow has none — so it can be baked in at build
+/// time or supplied at run time. Prefer [`configured_client_id`] wherever
+/// there is a pool: this one cannot see an id the user pasted in Settings.
+pub fn client_id() -> Result<String, Error> {
+    from_environment()
+        .or_else(built_in)
         .ok_or(Error::NoClientId)
+}
+
+/// The OAuth client id to actually sign in with.
+///
+/// The environment, then one the user supplied in Settings, then whatever the
+/// build carried. See [`crate::oauth::registration`] for why there are three.
+pub async fn configured_client_id(pool: &sqlx::SqlitePool) -> Result<String, Error> {
+    registration(pool).await?.client_id.ok_or(Error::NoClientId)
+}
+
+/// Which registration GitHub sign-in would use, and where it came from.
+pub async fn registration(
+    pool: &sqlx::SqlitePool,
+) -> Result<crate::oauth::registration::Registration, Error> {
+    Ok(crate::oauth::registration::resolve(
+        pool,
+        crate::integrations::GITHUB,
+        from_environment(),
+        built_in(),
+    )
+    .await?)
 }
 
 /// What the user needs to do to finish signing in.
@@ -102,8 +142,55 @@ pub struct DeviceLogin {
     pub user_code: String,
     /// Where they type it.
     pub verification_uri: String,
+    /// The same page with the code already in the box.
+    ///
+    /// **Chief builds this; GitHub does not send it.** RFC 8628 defines
+    /// `verification_uri_complete` for exactly this and leaves it optional,
+    /// and GitHub's device-code response has never carried one — the prefill
+    /// is real but undocumented, so it is treated as something that may stop
+    /// working without notice.
+    ///
+    /// That is the whole reason it is a *second* field rather than a rewritten
+    /// first one. The user code stays on screen and the plain page stays the
+    /// fallback, so a prefill GitHub removes tomorrow costs a keystroke rather
+    /// than the ability to sign in.
+    pub verification_uri_complete: String,
     /// Seconds until the code stops working.
     pub expires_in: u64,
+}
+
+/// The verification page with the code already filled in.
+///
+/// Percent-encodes the code rather than pasting it in: a user code is
+/// `ABCD-1234` today and nothing promises it always will be, and a query
+/// string assembled by hand is how a stray `&` becomes a parameter somebody
+/// else chose.
+fn prefilled(verification_uri: &str, user_code: &str) -> String {
+    // Anything GitHub might already have put in the URL is left alone; this
+    // only ever adds a parameter.
+    let separator = if verification_uri.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+
+    format!(
+        "{verification_uri}{separator}user_code={}",
+        percent_encode(user_code)
+    )
+}
+
+/// Percent-encode everything that is not unreserved, per RFC 3986.
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(byte).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }
 
 /// GitHub's answer to a device code request.
@@ -319,6 +406,10 @@ impl Client {
             // GitHub asks us not to poll faster than this.
             interval: Duration::from_secs(response.interval.max(1)),
             login: DeviceLogin {
+                verification_uri_complete: prefilled(
+                    &response.verification_uri,
+                    &response.user_code,
+                ),
                 user_code: response.user_code,
                 verification_uri: response.verification_uri,
                 expires_in: response.expires_in,
@@ -601,6 +692,10 @@ impl crate::oauth::Provider for Client {
         client_id()
     }
 
+    fn environment_client_id(&self) -> Option<String> {
+        from_environment()
+    }
+
     fn scopes(&self) -> &'static [&'static str] {
         SCOPE_LIST
     }
@@ -636,7 +731,9 @@ impl crate::oauth::Provider for Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test_support::migrated_pool;
     use crate::llama::test_support::{serve, split};
+    use crate::oauth::registration::{self, Source};
 
     const DEVICE_CODE: &str = r#"{
         "device_code": "3584d83530557fdd1f46af8289938c8ef79f9dc5",
@@ -645,6 +742,78 @@ mod tests {
         "expires_in": 900,
         "interval": 5
     }"#;
+
+    /// The gap between the device flow and "click, accept, done".
+    ///
+    /// Chief opens this page for the user, so a code already in the box is
+    /// the difference between one manual step and none. GitHub does not send
+    /// a `verification_uri_complete`, so Chief builds it — and the user code
+    /// stays on screen, because the prefill is undocumented.
+    #[test]
+    fn puts_the_code_in_the_page_it_opens() {
+        assert_eq!(
+            super::prefilled("https://github.com/login/device", "WDJB-MJHT"),
+            "https://github.com/login/device?user_code=WDJB-MJHT"
+        );
+    }
+
+    /// The guard. The code is pasted into a query string, so a code carrying
+    /// anything but unreserved characters must not be able to add a parameter
+    /// of its own — GitHub issues `ABCD-1234` today and promises nothing
+    /// about tomorrow.
+    ///
+    /// Proved by interpolating the code as it arrived:
+    ///
+    /// ```text
+    /// assertion `left == right` failed: a user code goes into a URL
+    ///   left: "https://github.com/login/device?user_code=A&scope=admin:org"
+    ///  right: "https://github.com/login/device?user_code=A%26scope%3Dadmin%3Aorg"
+    /// ```
+    #[test]
+    fn a_user_code_cannot_add_a_parameter_nobody_asked_for() {
+        assert_eq!(
+            super::prefilled("https://github.com/login/device", "A&scope=admin:org"),
+            "https://github.com/login/device?user_code=A%26scope%3Dadmin%3Aorg",
+            "a user code goes into a URL"
+        );
+    }
+
+    /// A verification page that already carries a query keeps it.
+    #[test]
+    fn adds_to_a_query_rather_than_starting_a_second_one() {
+        assert_eq!(
+            super::prefilled("https://example.invalid/device?flow=1", "WDJB-MJHT"),
+            "https://example.invalid/device?flow=1&user_code=WDJB-MJHT"
+        );
+    }
+
+    /// The glue REC-60 needed: a build that carries no client id can still be
+    /// given one, and sign-in uses it.
+    ///
+    /// Skipped where the environment is setting one, because there it is
+    /// supposed to win — which is the layering `oauth::registration` tests
+    /// against all three layers explicitly. Neither CI job sets it.
+    #[tokio::test]
+    async fn signs_in_with_an_id_the_user_supplied_in_settings() {
+        if super::from_environment().is_some() {
+            return;
+        }
+
+        let pool = migrated_pool().await;
+
+        registration::store(&pool, crate::integrations::GITHUB, "Ov23liTheirs")
+            .await
+            .expect("store");
+
+        assert_eq!(
+            super::configured_client_id(&pool).await.expect("resolve"),
+            "Ov23liTheirs"
+        );
+        assert_eq!(
+            super::registration(&pool).await.expect("read").source,
+            Source::Stored
+        );
+    }
 
     pub(super) const ONE_ISSUE: &str = r#"{
         "total_count": 1,
@@ -668,6 +837,8 @@ mod tests {
             login: DeviceLogin {
                 user_code: "WDJB-MJHT".to_string(),
                 verification_uri: "https://github.com/login/device".to_string(),
+                verification_uri_complete: "https://github.com/login/device?user_code=WDJB-MJHT"
+                    .to_string(),
                 expires_in: 900,
             },
         }

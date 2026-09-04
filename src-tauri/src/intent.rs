@@ -17,6 +17,8 @@
 
 use crate::agent::Update;
 use crate::context::RETRIEVAL_CEILING;
+use crate::ingest;
+use crate::integrations;
 use crate::recipe;
 use crate::retrieval;
 
@@ -211,6 +213,176 @@ fn normalise(question: &str) -> String {
     folded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Which services feed a routed intent, so an empty answer can tell the two
+/// empties apart.
+///
+/// "Nothing happened today" and "nothing is connected, so Chief has never had
+/// anything to look at" read identically in the work log and mean opposite
+/// things to the user. Only the second is a fact this module can state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Feeds {
+    /// Outlook, or a calendar subscribed to by address.
+    Calendar,
+    /// GitHub, which is where pull requests and reviews come from.
+    Github,
+    /// Nothing in particular — the corpus, which is always there.
+    Corpus,
+}
+
+impl Intent {
+    /// What this intent reads from.
+    const fn feeds(self) -> Feeds {
+        match self {
+            // The brief is a file on disk. An empty one is not a connection
+            // problem and saying it were would be a wrong answer.
+            Intent::Brief => Feeds::Corpus,
+            Intent::Prep => Feeds::Calendar,
+            Intent::Log(_) | Intent::Waiting => Feeds::Github,
+        }
+    }
+}
+
+impl Feeds {
+    /// Whether anything that feeds this is connected at all.
+    async fn connected(self, pool: &sqlx::SqlitePool) -> bool {
+        let services: &[&str] = match self {
+            Feeds::Calendar => &[integrations::MICROSOFT, integrations::CALENDAR],
+            Feeds::Github => &[integrations::GITHUB],
+            Feeds::Corpus => return true,
+        };
+
+        for service in services {
+            match integrations::accounts(pool, service).await {
+                Ok(accounts) if !accounts.is_empty() => return true,
+                // A database that cannot be read is not evidence that nothing
+                // is connected, so it steps aside rather than asserting.
+                Err(_) => return true,
+                Ok(_) => {}
+            }
+        }
+
+        false
+    }
+
+    /// What to say when nothing that feeds this is connected.
+    const fn nothing_connected(self) -> &'static str {
+        match self {
+            Feeds::Calendar => {
+                "No calendar is connected, so Chief has nothing to read. Connect Outlook, or add \
+                 a calendar subscription, in Settings."
+            }
+            Feeds::Github => {
+                "No GitHub account is connected, so Chief has nothing to read. Connect GitHub in \
+                 Settings."
+            }
+            Feeds::Corpus => "",
+        }
+    }
+}
+
+/// A question Chief knows the material for but cannot write itself.
+///
+/// **Deliberately not an [`Intent`].** Every `Intent` means "this is
+/// answerable from local storage without a model", and the whole router is
+/// built on that being true of all of them. A standup is the opposite shape:
+/// the facts are on this machine, and turning them into something a person
+/// would say out loud is exactly the part a model is for. Folding it into
+/// `Intent` would have made one variant mean something different from every
+/// other one, and `strategy_for` would have had to special-case it.
+///
+/// So this is a second, narrower recogniser feeding the tool loop rather than
+/// bypassing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ground {
+    /// "Draft my standup" and its neighbours.
+    Standup,
+}
+
+/// The questions that get material put in front of them.
+///
+/// Whole-question matching, like [`PHRASES`], and for the same reason: a
+/// keyword found somewhere inside a sentence is how "can you write up the
+/// standup process for onboarding?" would silently become a standup draft.
+const GROUNDED: &[(&str, Ground)] = &[
+    ("draft my standup", Ground::Standup),
+    ("draft my stand up", Ground::Standup),
+    ("write my standup", Ground::Standup),
+    ("write my stand up", Ground::Standup),
+    ("my standup", Ground::Standup),
+    ("standup", Ground::Standup),
+    ("stand up", Ground::Standup),
+    ("what is my standup", Ground::Standup),
+    ("whats my standup", Ground::Standup),
+];
+
+/// Which grounded question this is, if it is one.
+#[must_use]
+pub fn ground(question: &str) -> Option<Ground> {
+    let normalised = normalise(question);
+
+    GROUNDED
+        .iter()
+        .find(|(phrase, _)| *phrase == normalised)
+        .map(|(_, ground)| *ground)
+}
+
+/// What Chief knows, written for the model rather than for the user.
+///
+/// **Never empty.** An empty string would leave the model with the question
+/// and nothing else, which is the state it was in when it answered "What's new
+/// with GitHub pull requests this week?" as though that were a standup item.
+/// Being told plainly that the log is empty is what makes "I have nothing to
+/// report" reachable.
+pub async fn material(ground: Ground, pool: &sqlx::SqlitePool) -> String {
+    match ground {
+        Ground::Standup => standup(pool).await,
+    }
+}
+
+/// The work log, in the three buckets a standup is made of.
+async fn standup(pool: &sqlx::SqlitePool) -> String {
+    let mut sections: Vec<String> = Vec::new();
+
+    let shipped = match Window::ThisWeek.bounds(&chrono::Local::now()) {
+        Some((from, to)) => retrieval::shipped_in_window(pool, &from, &to, LOG_ENTRIES).await,
+        None => retrieval::shipped_latest(pool, LOG_ENTRIES).await,
+    };
+
+    for (heading, hits) in [
+        ("Shipped this week", shipped),
+        (
+            "Still open",
+            retrieval::latest_in_category(pool, ingest::IN_FLIGHT, LOG_ENTRIES).await,
+        ),
+        (
+            "Waiting on my review",
+            retrieval::latest_in_category(pool, ingest::REVIEW, LOG_ENTRIES).await,
+        ),
+    ] {
+        if let Some(body) = hits
+            .ok()
+            .as_deref()
+            .and_then(|hits| retrieval::to_context(hits, RETRIEVAL_CEILING))
+        {
+            sections.push(format!("{heading}:\n{body}"));
+        }
+    }
+
+    if sections.is_empty() {
+        return "Chief's work log has nothing in it for this week. Say that there is nothing to \
+                report and that connecting GitHub in Settings is what would fill it. Do not \
+                invent any work."
+            .to_string();
+    }
+
+    format!(
+        "Here is the user's work, read from this machine's work log. Write their standup from \
+         these lines and nothing else. Do not add items, people, meetings or dates that do not \
+         appear here.\n\n{}",
+        sections.join("\n\n")
+    )
+}
+
 /// Answer a routed intent from local data, without a model.
 ///
 /// `None` means there was nothing to say, and the question goes to the tool
@@ -219,15 +391,44 @@ fn normalise(question: &str) -> String {
 /// from Chief having misunderstood them — so it steps aside and lets the model
 /// answer instead. The cost of being wrong is one model call, which is what the
 /// question cost before this module existed.
+///
+/// **With one exception, which is what REC-62 is about.** Stepping aside was
+/// written as though the model were the safer answer. Measured in the running
+/// app it is not: asked what was on a calendar with nothing connected, a 3B
+/// model invented "[Outlook] Meeting with John Doe at 10:00 AM" — confident,
+/// plausible and entirely fabricated, past a system prompt that tells it not
+/// to. So when the source a question reads from is not connected *at all*,
+/// that is said plainly instead. It is a fact about this machine rather than a
+/// judgement about the user's day, and it names the thing that would fix it.
+///
+/// A source that *is* connected and simply has nothing still steps aside: that
+/// is the ambiguous case the original reasoning was about, and it is untouched.
 pub async fn answer(intent: Intent, context: &recipe::Context) -> Option<Answered> {
-    let answered = match intent {
+    let found = match intent {
         Intent::Brief => brief(context).await,
         Intent::Prep => prep(context).await,
         Intent::Log(window) => log(context, window).await,
         Intent::Waiting => waiting(context).await,
-    }?;
+    }
+    .filter(|answered| !answered.markdown.trim().is_empty());
 
-    (!answered.markdown.trim().is_empty()).then_some(answered)
+    if let Some(answered) = found {
+        return Some(answered);
+    }
+
+    let feeds = intent.feeds();
+
+    if feeds == Feeds::Corpus || feeds.connected(&context.pool).await {
+        return None;
+    }
+
+    Some(Answered {
+        markdown: feeds.nothing_connected().to_string(),
+        // Nothing was read, so there is nothing to cite. A provenance line
+        // here would be claiming a source for a statement about there being
+        // none.
+        provenance: None,
+    })
 }
 
 /// An answer, and the line under it saying where it came from.
@@ -470,6 +671,14 @@ mod tests {
             let routed = opener["routed"]
                 .as_bool()
                 .expect("each opener says whether it routes");
+
+            assert!(
+                route(question).is_some() || ground(question).is_some(),
+                "the composer offers {question:?}, so Chief has to have a plan for it — either \
+                 the router answers it from local data or `GROUNDED` puts the material in front \
+                 of the model. Neither does, so it reaches a 3B model with nothing but its own \
+                 words, which is how REC-62's invented standup happened"
+            );
 
             assert_eq!(
                 route(question).is_some(),
@@ -738,6 +947,28 @@ mod delivery {
         (context, Scratch(root), server)
     }
 
+    /// Connect an account for `service`, so a routed intent that finds nothing
+    /// is the ambiguous empty rather than the stateable one.
+    async fn connect(context: &recipe::Context, service: &str) {
+        integrations::save(
+            &context.pool,
+            integrations::NewAccount {
+                service,
+                account_key: "someone",
+                identity: Some("someone"),
+                credential_kind: integrations::OAUTH,
+                access_token: "token",
+                refresh_token: None,
+                expires_at: None,
+                scopes: None,
+                client_id: None,
+                client_secret: None,
+            },
+        )
+        .await
+        .expect("should store a credential");
+    }
+
     fn logged(content: &str) -> work_log::NewWorkLogEntry {
         work_log::NewWorkLogEntry {
             source: "github".to_string(),
@@ -997,9 +1228,83 @@ mod delivery {
     /// The safety valve the whole module rests on: "you have nothing waiting"
     /// and "Chief misunderstood you" are indistinguishable to a reader, so a
     /// routed intent with nothing to say lets the model take the question.
+    /// The defect REC-62's second half.
+    ///
+    /// "Draft my standup" is the one opener the router does not answer, so it
+    /// reaches the model — which, with nothing in front of it, answered with
+    /// two bullets that were themselves questions: "What's new with GitHub
+    /// pull requests this week?". The material is what it writes from now.
+    #[tokio::test]
+    async fn a_standup_is_written_from_the_work_log_and_not_from_the_question() {
+        let (context, _scratch, _server) = silent("standup").await;
+
+        let (from, _to) = Window::ThisWeek
+            .bounds(&chrono::Local::now())
+            .expect("this week is a window");
+
+        work_log::upsert(
+            &context.pool,
+            work_log::WorkLogRecord {
+                // Nudged past the boundary the window excludes at the far end.
+                timestamp: bump(&from),
+                source: "github".to_string(),
+                category: ingest::SHIPPED.to_string(),
+                title: "scottmallinson/chief.ai#64: Ship the work log".to_string(),
+                content: "Merged #64".to_string(),
+                summary: Some("merged".to_string()),
+                url: None,
+                raw_ref: None,
+                external_id: "gh:64".to_string(),
+                account_id: 1,
+            },
+        )
+        .await
+        .expect("should store");
+
+        let material = material(Ground::Standup, &context.pool).await;
+
+        assert!(
+            material.contains("Ship the work log"),
+            "the model is given the real row: {material}"
+        );
+        assert!(
+            material.contains("nothing else"),
+            "and told to write from it alone: {material}"
+        );
+    }
+
+    /// The empty case, which is the one that was inventing.
+    ///
+    /// Proved by returning an empty string when there is nothing:
+    ///
+    /// ```text
+    /// assertion failed: an empty log has to be stated, or the model fills
+    /// the silence
+    /// ```
+    #[tokio::test]
+    async fn an_empty_log_is_said_out_loud_rather_than_left_as_silence() {
+        let (context, _scratch, _server) = silent("standup-empty").await;
+
+        let material = material(Ground::Standup, &context.pool).await;
+
+        assert!(
+            !material.trim().is_empty(),
+            "an empty log has to be stated, or the model fills the silence"
+        );
+        assert!(
+            material.contains("nothing in it"),
+            "and it says so plainly: {material}"
+        );
+        assert!(
+            material.contains("Do not invent"),
+            "and says what not to do instead: {material}"
+        );
+    }
+
     #[tokio::test]
     async fn waiting_steps_aside_when_there_is_nothing_waiting() {
         let (context, _scratch, _server) = silent("waiting-empty").await;
+        connect(&context, integrations::GITHUB).await;
 
         assert!(answer(Intent::Waiting, &context).await.is_none());
     }
@@ -1058,6 +1363,9 @@ mod delivery {
     #[tokio::test]
     async fn steps_aside_rather_than_answering_that_there_is_nothing() {
         let (context, _scratch, _server) = silent("empty").await;
+        // Connected, and simply with nothing in it. This is the ambiguous
+        // empty the step-aside was written for and it is untouched.
+        connect(&context, integrations::GITHUB).await;
 
         let answered = deliver("/log", &context, |_| {}).await;
 
@@ -1065,6 +1373,67 @@ mod delivery {
             answered, None,
             "an empty log reads as a misunderstanding, so the model gets the question"
         );
+    }
+
+    /// The defect REC-62 is about.
+    ///
+    /// Asked what was on a calendar with nothing connected, the model
+    /// answered "[Outlook] Meeting with John Doe at 10:00 AM" — invented, and
+    /// past a system prompt that says never to invent meetings. Whether the
+    /// user had a quiet day is not something this module can know; whether
+    /// anything is connected is, so that is what it says.
+    ///
+    /// Proved by stepping aside as before:
+    ///
+    /// ```text
+    /// assertion failed: a question with no source behind it must not reach
+    /// the model, which will invent one
+    /// ```
+    #[tokio::test]
+    async fn says_nothing_is_connected_rather_than_letting_the_model_invent_one() {
+        let (context, _scratch, _server) = silent("unconnected").await;
+
+        let answered = answer(Intent::Prep, &context).await.expect(
+            "a question with no source behind it must not reach the model, which will invent one",
+        );
+
+        assert!(
+            answered.markdown.contains("No calendar is connected"),
+            "it names what is missing: {}",
+            answered.markdown
+        );
+        assert!(
+            answered.markdown.contains("Settings"),
+            "and where to fix it: {}",
+            answered.markdown
+        );
+        assert_eq!(
+            answered.provenance, None,
+            "nothing was read, so there is no source to cite"
+        );
+    }
+
+    /// A calendar reads from either provider, so one of them is enough to make
+    /// the empty ambiguous again.
+    #[tokio::test]
+    async fn a_subscribed_calendar_alone_is_a_connected_calendar() {
+        let (context, _scratch, _server) = silent("subscribed").await;
+        connect(&context, integrations::CALENDAR).await;
+
+        assert!(
+            answer(Intent::Prep, &context).await.is_none(),
+            "a connected calendar with nothing in it steps aside as before"
+        );
+    }
+
+    /// The brief is a file, not a connection. Saying "nothing is connected"
+    /// when a brief has simply not been written would be a wrong answer about
+    /// a different thing.
+    #[tokio::test]
+    async fn an_unwritten_brief_is_never_reported_as_a_missing_connection() {
+        let (context, _scratch, _server) = silent("brief-unconnected").await;
+
+        assert_eq!(answer(Intent::Brief, &context).await, None);
     }
 
     #[tokio::test]

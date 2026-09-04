@@ -208,6 +208,11 @@ jobs:
           # in. A device-flow client id is not a secret, which is why this is a
           # repository variable rather than a secret.
           CHIEF_GITHUB_CLIENT_ID: ${{ vars.CHIEF_GITHUB_CLIENT_ID }}
+          # And checked again from inside the compilation. The step above
+          # proves the variable is set; only `build.rs` can prove the value
+          # reached the compiler, which is the gap a stale build fingerprint
+          # fits through and the one a user finds by pressing Connect.
+          CHIEF_REQUIRE_CLIENT_ID: '1'
         with:
           releaseId: ${{ needs.version.outputs.id }}
           args: ${{ matrix.args }}

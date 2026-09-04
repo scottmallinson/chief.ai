@@ -338,6 +338,27 @@ function installBackend(setup: Setup) {
         case 'profile_plan':
           return Promise.resolve({ reads: [], writes: [], keeps: [] });
 
+        // A `Registration[]`, which shares only its `service` field with an
+        // account: answering this with the account list would hand the card
+        // an object with no `source` and it would render `undefined`.
+        case 'sign_in_registrations':
+          return Promise.resolve([
+            {
+              service: 'github',
+              clientId: 'Ov23liBuiltIn',
+              source: 'builtIn',
+              hasBuiltIn: true,
+              overriddenByEnvironment: false,
+            },
+            {
+              service: 'microsoft',
+              clientId: null,
+              source: 'missing',
+              hasBuiltIn: false,
+              overriddenByEnvironment: false,
+            },
+          ]);
+
         case 'generate_brief':
           return Promise.resolve(setup.brief);
 

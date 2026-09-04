@@ -100,7 +100,17 @@ export function useIntegrations(): UseIntegrations {
         // browser sign-in it is the whole flow — but the URL is also shown, so
         // a blocked opener leaves the user something to click rather than a
         // dead dialog.
-        const destination = started.kind === 'device' ? started.verificationUri : started.url;
+        //
+        // The device code opens the page that already has the code in it, so
+        // the flow is click, authorise, done rather than click, read a code,
+        // type a code, authorise, done. `??` rather than a truthiness check
+        // and rather than nothing at all: the field is built by Rust from a
+        // prefill GitHub does not document, and an older backend or a removed
+        // prefill has to leave the plain page working.
+        const destination =
+          started.kind === 'device'
+            ? (started.verificationUriComplete ?? started.verificationUri)
+            : started.url;
         await openUrl(destination).catch(() => undefined);
 
         const current = await finishLogin(service);

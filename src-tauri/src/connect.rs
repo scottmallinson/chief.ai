@@ -20,6 +20,7 @@ use crate::integrations::{
 };
 use crate::linear;
 use crate::microsoft;
+use crate::oauth::registration::{self, Registration};
 use crate::oauth::Provider;
 use crate::proposed;
 use crate::sync_state;
@@ -71,6 +72,10 @@ pub enum Error {
     Microsoft(#[from] microsoft::Error),
     #[error("that sign-in was for a different service")]
     WrongFlow,
+    #[error("'{0}' is not signed into, so it has no client id")]
+    NoSignIn(String),
+    #[error(transparent)]
+    BadClientId(#[from] registration::Invalid),
     #[error(transparent)]
     Storage(#[from] db::Error),
     #[error(transparent)]
@@ -180,10 +185,85 @@ pub async fn add_linear_key<R: Runtime>(
     Ok(stored)
 }
 
+/// Reject a service that has no OAuth sign-in of its own.
+///
+/// Separate from [`known`]: the calendar and Linear are known services and are
+/// connected with something the user pastes, so asking either of them for a
+/// client id is a different mistake from naming a service that does not exist.
+fn signs_in(service: &str) -> Result<(), Error> {
+    known(service)?;
+
+    if service == GITHUB || service == MICROSOFT {
+        return Ok(());
+    }
+
+    Err(Error::NoSignIn(service.to_string()))
+}
+
+/// Which registration each service Chief signs into would use.
+///
+/// Both services in one answer rather than one command per service, so the
+/// settings screen makes one call and cannot show two halves of two different
+/// moments. A client id is public by design and is returned as it is — the
+/// user cannot choose a registration they are not allowed to see.
+#[tauri::command]
+pub async fn sign_in_registrations<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Vec<Registration>, Error> {
+    let pool = db::pool(&app).await?;
+
+    Ok(vec![
+        github::registration(&pool).await?,
+        microsoft::registration(&pool).await?,
+    ])
+}
+
+/// Sign `service` in against a registration of the user's own from now on.
+///
+/// Checked before it is stored — see [`registration::check`] — because the id
+/// is interpolated into an authorize URL, and because a value that is wrong in
+/// an obvious way should be refused while the user is looking at the field
+/// rather than become a failed sign-in later.
+#[tauri::command]
+pub async fn set_sign_in_registration<R: Runtime>(
+    app: AppHandle<R>,
+    service: String,
+    client_id: String,
+) -> Result<Vec<Registration>, Error> {
+    signs_in(&service)?;
+
+    let checked = registration::check(&client_id)?;
+    let pool = db::pool(&app).await?;
+
+    registration::store(&pool, &service, &checked).await?;
+
+    sign_in_registrations(app).await
+}
+
+/// Go back to whatever this build carries, if it carries anything.
+///
+/// Accounts already connected are left alone: a token that has been issued
+/// stays valid, and the id only matters again when one is renewed or another
+/// account is added.
+#[tauri::command]
+pub async fn clear_sign_in_registration<R: Runtime>(
+    app: AppHandle<R>,
+    service: String,
+) -> Result<Vec<Registration>, Error> {
+    signs_in(&service)?;
+
+    let pool = db::pool(&app).await?;
+
+    registration::forget(&pool, &service).await?;
+
+    sign_in_registrations(app).await
+}
+
 /// Begin signing in and return what the user must do next.
 #[tauri::command]
-pub async fn start_login(
+pub async fn start_login<R: Runtime>(
     service: String,
+    app: AppHandle<R>,
     github_client: State<'_, Client>,
     microsoft_client: State<'_, microsoft::Client>,
     pending: State<'_, Pending>,
@@ -202,13 +282,18 @@ pub async fn start_login(
         ));
     }
 
+    // The registration is read from this machine rather than from the build,
+    // so a release that shipped without one — and an organisation signing in
+    // against its own OAuth app — both work. See `oauth::registration`.
+    let pool = db::pool(&app).await?;
+
     let (flow, login) = if service == MICROSOFT {
-        let client_id = microsoft::client_id()?;
+        let client_id = microsoft::configured_client_id(&pool).await?;
         let (started, url) = microsoft_client.start_login(&client_id).await?;
 
         (Flow::Browser(Box::new(started)), Login::Browser { url })
     } else {
-        let client_id = github::client_id()?;
+        let client_id = github::configured_client_id(&pool).await?;
         let started = github_client.start_login(&client_id).await?;
         let login = Login::Device(started.login.clone());
 
@@ -245,7 +330,7 @@ pub async fn finish_login<R: Runtime>(
     // collide on a placeholder key, then save.
     match (service.as_str(), started) {
         (MICROSOFT, Flow::Browser(started)) => {
-            let client_id = microsoft::client_id()?;
+            let client_id = microsoft::configured_client_id(&pool).await?;
             let tokens = microsoft_client.finish_login(&client_id, *started).await?;
             let mailbox = microsoft_client.me(&tokens.access_token).await?;
 
@@ -270,7 +355,7 @@ pub async fn finish_login<R: Runtime>(
             .await?;
         }
         (_, Flow::Device(started)) => {
-            let client_id = github::client_id()?;
+            let client_id = github::configured_client_id(&pool).await?;
             let (access_token, refresh_token) =
                 github_client.finish_login(&client_id, &started).await?;
             let login = github_client.viewer(&access_token).await?;
@@ -770,6 +855,8 @@ mod tests {
         let device = serde_json::to_value(Login::Device(DeviceLogin {
             user_code: "WDJB-MJHT".to_string(),
             verification_uri: "https://github.com/login/device".to_string(),
+            verification_uri_complete: "https://github.com/login/device?user_code=WDJB-MJHT"
+                .to_string(),
             expires_in: 900,
         }))
         .expect("should serialize");
@@ -777,6 +864,14 @@ mod tests {
         assert_eq!(device["kind"], "device");
         assert_eq!(device["userCode"], "WDJB-MJHT");
         assert_eq!(device["expiresIn"], 900);
+        // The page Chief opens, and the plain one it falls back to, both
+        // cross the boundary: the renderer opens the first and prints the
+        // second.
+        assert_eq!(
+            device["verificationUriComplete"],
+            "https://github.com/login/device?user_code=WDJB-MJHT"
+        );
+        assert_eq!(device["verificationUri"], "https://github.com/login/device");
 
         let browser = serde_json::to_value(Login::Browser {
             url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?x=1".to_string(),

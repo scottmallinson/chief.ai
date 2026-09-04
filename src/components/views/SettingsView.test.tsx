@@ -34,6 +34,7 @@ const deviceLogin = {
   kind: 'device',
   userCode: 'WDJB-MJHT',
   verificationUri: 'https://github.com/login/device',
+  verificationUriComplete: 'https://github.com/login/device?user_code=WDJB-MJHT',
   expiresIn: 900,
 };
 
@@ -46,19 +47,47 @@ const deviceLogin = {
 const NO_PLAN = { reads: [], writes: [], keeps: [] };
 
 /**
- * Answer `profile_plan` and `sync_status` in their own shapes, and everything
- * else with `value`.
+ * Both services signing in against the id this build was compiled with, which
+ * is the ordinary case and the one that says nothing much.
  *
- * Both are dispatched on the command name rather than being swept up by the
- * catch-all, because neither returns a list of accounts: `sync_status` returns
- * `SyncState[]` keyed on `accountId`, and answering it with the account list
- * would key the map on `undefined` and quietly render nothing.
+ * A `Registration[]` and not an account list: the two share a `service` field
+ * and nothing else, so a catch-all answering this command with accounts would
+ * hand the card an object with no `source` and it would render the word
+ * `undefined` — the shortcut CLAUDE.md records taking the screen down three
+ * times, in miniature.
  */
-function answering(value: unknown, syncStates: unknown[] = []) {
+const BUILT_IN = [
+  {
+    service: 'github',
+    clientId: 'Ov23liBuiltIn',
+    source: 'builtIn',
+    hasBuiltIn: true,
+    overriddenByEnvironment: false,
+  },
+  {
+    service: 'microsoft',
+    clientId: null,
+    source: 'missing',
+    hasBuiltIn: false,
+    overriddenByEnvironment: false,
+  },
+];
+
+/**
+ * Answer the commands whose replies are not account lists in their own shapes,
+ * and everything else with `value`.
+ *
+ * Each is dispatched on the command name rather than being swept up by the
+ * catch-all, because none of them returns a list of accounts: `sync_status`
+ * returns `SyncState[]` keyed on `accountId`, and answering it with the
+ * account list would key the map on `undefined` and quietly render nothing.
+ */
+function answering(value: unknown, syncStates: unknown[] = [], registrations = BUILT_IN) {
   invoke.mockImplementation((command: string) => {
     if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
     if (command === 'sync_status') return Promise.resolve(syncStates);
     if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
+    if (command === 'sign_in_registrations') return Promise.resolve(registrations);
 
     return Promise.resolve(value);
   });
@@ -152,7 +181,9 @@ describe('SettingsView', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Connect GitHub' }));
 
     expect(await screen.findByText('WDJB-MJHT')).toBeInTheDocument();
-    expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device');
+    // The page with the code already in it. The code stays on screen anyway,
+    // because the prefill is undocumented and may stop working.
+    expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device?user_code=WDJB-MJHT');
   });
 
   it('says so when the corpus folder is not there yet', async () => {
@@ -193,7 +224,7 @@ describe('SettingsView', () => {
     expect(openUrl).toHaveBeenCalledWith(browserLogin.url);
 
     // There is no code in this flow, and offering one would be a lie.
-    expect(screen.queryByText(/Enter this code/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Your browser is open at/)).not.toBeInTheDocument();
 
     // The destination is shown as well as opened, so a browser that did not
     // open leaves the user something to act on.

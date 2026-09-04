@@ -22,8 +22,10 @@ pub struct Session<'a, P: Provider> {
     pool: &'a SqlitePool,
     provider: &'a P,
     account_id: i64,
-    /// Needed only to renew. Resolved up front because a build without one
-    /// simply cannot refresh — which is no reason to fail a plain read.
+    /// A registration to renew with, set only where one is being forced —
+    /// tests, today. Otherwise the id is resolved when a renewal is actually
+    /// needed, so an id the user pasted in Settings after this session was
+    /// built is the one it renews with.
     client_id: Option<String>,
 }
 
@@ -33,8 +35,32 @@ impl<'a, P: Provider> Session<'a, P> {
             pool,
             provider,
             account_id,
-            client_id: provider.client_id().ok(),
+            client_id: None,
         }
+    }
+
+    /// The registration to renew this account with, if there is one.
+    ///
+    /// Read at renewal rather than at construction: a build that shipped
+    /// without a client id can be given one in Settings, and a session created
+    /// before that should not go on believing there is nothing to refresh
+    /// with. A build with none anywhere simply cannot refresh — which is no
+    /// reason to fail a plain read, so this is an `Option` rather than an
+    /// error.
+    async fn client_id(&self) -> Option<String> {
+        if self.client_id.is_some() {
+            return self.client_id.clone();
+        }
+
+        crate::oauth::registration::resolve(
+            self.pool,
+            P::SERVICE,
+            self.provider.environment_client_id(),
+            self.provider.client_id().ok(),
+        )
+        .await
+        .ok()?
+        .client_id
     }
 
     /// A session that renews with a known client id, for tests.
@@ -73,12 +99,13 @@ impl<'a, P: Provider> Session<'a, P> {
     pub async fn renew(&self) -> Result<Option<String>, P::Error> {
         let credentials = self.credentials().await?;
 
-        let (Some(refresh_token), Some(client_id)) = (&credentials.refresh_token, &self.client_id)
+        let (Some(refresh_token), Some(client_id)) =
+            (&credentials.refresh_token, self.client_id().await)
         else {
             return Ok(None);
         };
 
-        let tokens = self.provider.refresh(client_id, refresh_token).await?;
+        let tokens = self.provider.refresh(&client_id, refresh_token).await?;
 
         integrations::store_tokens(
             self.pool,
@@ -477,6 +504,10 @@ mod tests {
 
         fn client_id(&self) -> Result<String, ReuserError> {
             Ok("reuser-client".to_string())
+        }
+
+        fn environment_client_id(&self) -> Option<String> {
+            None
         }
 
         fn scopes(&self) -> &'static [&'static str] {

@@ -31,8 +31,18 @@ export interface DeviceLogin {
   kind: 'device';
   /** The code they type into the provider. */
   userCode: string;
-  /** Where they type it. */
+  /** Where they type it, if they have to. */
   verificationUri: string;
+  /**
+   * The same page with the code already in the box, which is what Chief
+   * opens.
+   *
+   * Built by Rust rather than sent by GitHub — the prefill works but is not
+   * documented, so `verificationUri` and `userCode` stay beside it and stay
+   * on screen. A prefill that stops working costs a keystroke, not the
+   * sign-in.
+   */
+  verificationUriComplete: string;
   /** Seconds until the code stops working. */
   expiresIn: number;
 }

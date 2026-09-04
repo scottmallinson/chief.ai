@@ -370,10 +370,36 @@ from here to GitHub.
   secret to exchange an authorization code — PKCE protects the code but does not replace the secret,
   and GitHub "does not distinguish between public and confidential clients". A secret shipped inside
   a desktop binary is not a secret, so the device flow, which needs none, is the only honest option.
-- The client id comes from `CHIEF_GITHUB_CLIENT_ID` at run time, falling back to build time. It is
-  **not a secret** — a device-flow client id is public by design, which is why release builds bake
-  one in from the repository _variable_ of the same name and nobody installing Chief has to register
-  anything. The run-time override exists for development against your own OAuth app.
+  This is a deviation from RFC 8252 by GitHub rather than by Chief, and it is what GitHub's own `gh`
+  does — `cli/oauth` tries the device flow first. Outlook is already the RFC 8252 flow, and GitHub
+  joins it when GitHub supports public clients: REC-61, and §9 of the plan, hold the evidence.
+- **Chief opens the verification page with the code already in it.** RFC 8628 has a field for that
+  and GitHub does not send one, so `github::prefilled` builds the URL from a query parameter GitHub
+  honours but does not document. That is why the code and the plain address stay on screen and the
+  renderer falls back to the bare page: a prefill withdrawn costs a keystroke, not the sign-in.
+- The client id comes from `src-tauri/src/oauth/registration.rs`, which is the one place either
+  provider's registration is decided. It is **not a secret** — a device-flow client id and an Entra
+  public-client id are both public by design — but it does have to exist, and neither GitHub nor
+  Entra offers dynamic registration to mint one on the spot. So the only question is where it comes
+  from, and there are **three layers, most deliberate first**: `CHIEF_GITHUB_CLIENT_ID` in the
+  environment, then one the user pasted in Settings, then whatever the release baked in from the
+  repository _variable_ of the same name. Because of the third, nobody installing Chief has to
+  register anything; because of the second, a build that shipped without one is not a dead end, and
+  an organisation can sign in against its own OAuth app or Entra registration without a rebuild.
+- **The client id is shown back to the user**, unlike the Linear key or a calendar address. Those
+  are hidden because holding one grants access; a client id grants nothing on its own, and the user
+  cannot otherwise tell which registration they are signed in against.
+- **A release cannot compile without one.** `build.rs` panics when `CHIEF_REQUIRE_CLIENT_ID` is
+  set and `CHIEF_GITHUB_CLIENT_ID` is not; the release workflow sets the first on the bundle step.
+  The workflow's older guard checks the repository _variable_ before anything is compiled, which is
+  fast but proves only that the variable exists — this one runs inside the compilation, so nothing
+  is left between it and the binary. It exists because 0.4.0 shipped a Windows build whose sign-in
+  reported that it had no client id, and no mechanism between a set variable and that binary was
+  ever identified.
+- `option_env!` **is** tracked by cargo — rustc writes an `env-dep:` line into the dep-info and
+  changing the id recompiles the crate, which was measured rather than assumed. The
+  `cargo:rerun-if-env-changed` lines in `build.rs` are there for the reads the build script itself
+  makes, which are not tracked that way.
 - `Client::against` — the constructor that points at another host — is `#[cfg(test)]`, so a release
   build cannot be aimed anywhere but GitHub.
 - Chief requests the `repo` scope. That is read _and_ write across public and private
