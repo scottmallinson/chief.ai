@@ -370,6 +370,13 @@ from here to GitHub.
   secret to exchange an authorization code — PKCE protects the code but does not replace the secret,
   and GitHub "does not distinguish between public and confidential clients". A secret shipped inside
   a desktop binary is not a secret, so the device flow, which needs none, is the only honest option.
+  This is a deviation from RFC 8252 by GitHub rather than by Chief, and it is what GitHub's own `gh`
+  does — `cli/oauth` tries the device flow first. Outlook is already the RFC 8252 flow, and GitHub
+  joins it when GitHub supports public clients: REC-61, and §9 of the plan, hold the evidence.
+- **Chief opens the verification page with the code already in it.** RFC 8628 has a field for that
+  and GitHub does not send one, so `github::prefilled` builds the URL from a query parameter GitHub
+  honours but does not document. That is why the code and the plain address stay on screen and the
+  renderer falls back to the bare page: a prefill withdrawn costs a keystroke, not the sign-in.
 - The client id comes from `src-tauri/src/oauth/registration.rs`, which is the one place either
   provider's registration is decided. It is **not a secret** — a device-flow client id and an Entra
   public-client id are both public by design — but it does have to exist, and neither GitHub nor

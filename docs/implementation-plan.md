@@ -912,16 +912,17 @@ removes from it.**
 
 ### Unclaimed engineering
 
-| What                                   | Note                                                                                                                                                               | Where       |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
-| **Tokens in the OS keychain**          | Stored as plain text, protected by the OS user account                                                                                                             | —           |
-| **Reviewers in `team_structure.md`**   | GitHub's search response carries none, so it is a call per pull request                                                                                            | REC-16      |
-| **`glib` GHSA-wrw7-89jp-8q8g**         | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                                               | SECURITY.md |
-| **AC/battery polling cadence**         | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                                                       | DLE-2       |
-| **A control for the pass interval**    | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it                              | —           |
-| **Whether `work_logs` is ever pruned** | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                                            | DLE-8       |
-| **Chief is not on WAL, and cannot be** | Neither sqlx nor `tauri-plugin-sql` offers a seam, and a migration cannot do it — see the settled note below. It needs a patched plugin or an `after_connect` hook | DLE-11      |
-| **FTS5 query semantics**               | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                                                      | DLE-0       |
+| What                                      | Note                                                                                                                                                               | Where       |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
+| **Tokens in the OS keychain**             | Stored as plain text, protected by the OS user account                                                                                                             | —           |
+| **Reviewers in `team_structure.md`**      | GitHub's search response carries none, so it is a call per pull request                                                                                            | REC-16      |
+| **`glib` GHSA-wrw7-89jp-8q8g**            | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                                               | SECURITY.md |
+| **AC/battery polling cadence**            | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                                                       | DLE-2       |
+| **A control for the pass interval**       | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it                              | —           |
+| **Whether `work_logs` is ever pruned**    | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                                            | DLE-8       |
+| **Chief is not on WAL, and cannot be**    | Neither sqlx nor `tauri-plugin-sql` offers a seam, and a migration cannot do it — see the settled note below. It needs a patched plugin or an `after_connect` hook | DLE-11      |
+| **FTS5 query semantics**                  | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                                                      | DLE-0       |
+| **GitHub sign-in is not RFC 8252's flow** | Blocked on GitHub supporting public clients, not on us. Outlook already is that flow; see the settled note below                                                   | REC-61      |
 
 ### Settled during implementation, recorded so it is not re-litigated
 
@@ -957,6 +958,25 @@ removes from it.**
   upsert waits milliseconds rather than failing with `SQLITE_BUSY` — a latency cost rather than an
   error, which is why nothing has ever noticed. `db::architecture_tests` asserts all three facts, so
   the day any of them changes is the day a test goes red rather than the day somebody guesses.
+
+- **The standard for a desktop app is RFC 8252, Chief follows it, and GitHub is the one that
+  cannot.** BCP 212 says native apps MUST use an external user-agent and never an embedded one, that
+  they are public clients, and that requiring a shared secret of them is NOT RECOMMENDED. Outlook is
+  exactly that — `oauth/pkce.rs` plus `oauth/loopback.rs` plus the system browser — and it is the
+  house pattern every later provider should take. **GitHub cannot be**: it added PKCE in July 2025
+  but still requires the client secret at the token endpoint, because it does not distinguish public
+  from confidential clients. So on GitHub one can be secretless or use the redirect flow, not both.
+
+  **Chief is secretless, and that is not a compromise.** The device flow (RFC 8628) is a standard,
+  and it is what GitHub's own `gh` does — `cli/oauth` tries the device flow first and falls back to
+  a loopback server. Shipping a secret to buy the last browser click was considered and rejected: a
+  secret inside a binary handed to everybody is not a secret, it can be used to impersonate Chief,
+  and it contradicts both BCP 212 and §0's one rule. REC-60 closed the felt gap instead, by opening
+  GitHub's verification page with the device code already in it.
+
+  Revisit when GitHub ships public-client support (`github/roadmap#1153`, no date) — REC-61 holds the
+  evidence and the checklist. Note that a GitHub App does **not** change this; REC-37 is about
+  narrowing the `repo` scope, not about the flow.
 
 - **Model-swap isolation is now asserted rather than claimed.** Ingestion and `bm25()` ranking never
   read which model is loaded, and the schema does not branch on the tier. Nothing would break visibly
