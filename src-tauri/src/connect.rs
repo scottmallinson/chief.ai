@@ -855,6 +855,8 @@ mod tests {
         let device = serde_json::to_value(Login::Device(DeviceLogin {
             user_code: "WDJB-MJHT".to_string(),
             verification_uri: "https://github.com/login/device".to_string(),
+            verification_uri_complete: "https://github.com/login/device?user_code=WDJB-MJHT"
+                .to_string(),
             expires_in: 900,
         }))
         .expect("should serialize");
@@ -862,6 +864,14 @@ mod tests {
         assert_eq!(device["kind"], "device");
         assert_eq!(device["userCode"], "WDJB-MJHT");
         assert_eq!(device["expiresIn"], 900);
+        // The page Chief opens, and the plain one it falls back to, both
+        // cross the boundary: the renderer opens the first and prints the
+        // second.
+        assert_eq!(
+            device["verificationUriComplete"],
+            "https://github.com/login/device?user_code=WDJB-MJHT"
+        );
+        assert_eq!(device["verificationUri"], "https://github.com/login/device");
 
         let browser = serde_json::to_value(Login::Browser {
             url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?x=1".to_string(),

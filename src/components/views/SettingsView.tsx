@@ -219,11 +219,17 @@ function Integration({
 
       {prompt?.kind === 'device' && (
         <div className="mt-4 rounded-md border border-border p-4" role="status">
+          {/* Chief opens the page with the code already in it, so this reads
+              as confirmation rather than as an instruction. The code and the
+              plain address stay on screen because the prefill is built from
+              something GitHub does not document: if it stops working, this
+              panel is still everything the user needs. */}
           <p className="text-sm">
-            Enter this code at{' '}
+            Your browser is open at{' '}
             <span className="font-mono text-[13px]" data-selectable>
               {prompt.verificationUri}
-            </span>
+            </span>{' '}
+            with this code filled in. Enter it yourself if it is not.
           </p>
           <p className="mt-2 font-mono text-xl tracking-[0.2em]" data-selectable>
             {prompt.userCode}

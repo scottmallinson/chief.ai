@@ -34,6 +34,7 @@ const deviceLogin = {
   kind: 'device',
   userCode: 'WDJB-MJHT',
   verificationUri: 'https://github.com/login/device',
+  verificationUriComplete: 'https://github.com/login/device?user_code=WDJB-MJHT',
   expiresIn: 900,
 };
 
@@ -180,7 +181,9 @@ describe('SettingsView', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Connect GitHub' }));
 
     expect(await screen.findByText('WDJB-MJHT')).toBeInTheDocument();
-    expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device');
+    // The page with the code already in it. The code stays on screen anyway,
+    // because the prefill is undocumented and may stop working.
+    expect(openUrl).toHaveBeenCalledWith('https://github.com/login/device?user_code=WDJB-MJHT');
   });
 
   it('says so when the corpus folder is not there yet', async () => {
@@ -221,7 +224,7 @@ describe('SettingsView', () => {
     expect(openUrl).toHaveBeenCalledWith(browserLogin.url);
 
     // There is no code in this flow, and offering one would be a lie.
-    expect(screen.queryByText(/Enter this code/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Your browser is open at/)).not.toBeInTheDocument();
 
     // The destination is shown as well as opened, so a browser that did not
     // open leaves the user something to act on.
