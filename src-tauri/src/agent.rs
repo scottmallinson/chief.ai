@@ -156,9 +156,12 @@ and what their day looks like.
 Use the tools available to you to look things up rather than guessing. When a tool
 returns results, answer from those results alone.
 
-Answer in a few sentences, or a short list. Prefer specifics over generalities. If
-you do not have the information needed to answer, say so plainly and name what you
-would need — never invent pull requests, meetings or dates.";
+Never invent. An empty result is an answer: if a tool returns nothing, reports that
+a service is not connected, or fails, say exactly that and name what would fix it.
+Never put a placeholder, an example or a plausible-sounding name, meeting, pull
+request or date in place of one you were actually given.
+
+Answer in a few sentences, or a short list. Prefer specifics over generalities.";
 
 /// One turn of the conversation as the UI holds it.
 #[derive(Debug, Clone, Deserialize)]
@@ -500,6 +503,34 @@ pub struct Answer {
 /// The answer is returned whole, and also emitted piece by piece on
 /// [`STREAM_EVENT`] as it is written, tagged with `request_id` so the window
 /// can tell one question from the next.
+/// Put what this machine knows in front of the newest question, when it is one
+/// [`intent::ground`] recognises.
+///
+/// The material goes immediately before the question rather than after it, so
+/// the model reads the facts and then what is being asked of them — and so the
+/// question stays the newest turn, which is the one `conversation_within`
+/// guarantees survives trimming.
+async fn grounded(messages: Vec<Turn>, pool: &sqlx::SqlitePool) -> Vec<Turn> {
+    let Some(at) = messages.iter().rposition(|turn| turn.role == Role::User) else {
+        return messages;
+    };
+
+    let Some(ground) = intent::ground(&messages[at].content) else {
+        return messages;
+    };
+
+    let mut grounded = messages;
+    grounded.insert(
+        at,
+        Turn {
+            role: Role::User,
+            content: intent::material(ground, pool).await,
+        },
+    );
+
+    grounded
+}
+
 #[tauri::command]
 pub async fn ask_agent<R: Runtime>(
     app: AppHandle<R>,
@@ -573,6 +604,16 @@ pub async fn ask_agent<R: Runtime>(
     }
 
     engine.start_and_wait(client.inner()).await?;
+
+    // Some questions the tool loop has to write are ones this machine already
+    // knows the facts for. Putting those facts in front of the model is the
+    // difference between a standup drafted from the work log and one invented
+    // out of the question's own words — measured in the running app, where
+    // "Draft my standup" came back as two bullets that were themselves
+    // questions. Injected as a turn rather than folded into the system prompt:
+    // the opening is the cached prefix llama.cpp reuses, and material that
+    // changes per question does not belong in it.
+    let messages = grounded(messages, &context.pool).await;
 
     let conversation =
         adapter::Adapter::for_tier(engine.tier()).assemble(messages, &clock::present());
