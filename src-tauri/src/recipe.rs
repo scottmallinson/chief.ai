@@ -431,11 +431,26 @@ Rules:
 - No preamble, no sign-off, no headings. Bullets only.";
 
 /// Phase three: exactly one call, no tools.
+///
+/// **Streamed, even though nobody is watching it arrive.** The engine client
+/// bounds a request by silence rather than by a deadline, precisely so a slow
+/// answer is not cut off — but on a non-streamed request there is nothing to
+/// hear until the whole answer is ready, so the inactivity timeout becomes a
+/// deadline for the entire generation. That is the failure `SILENCE_TIMEOUT`
+/// was written to avoid, and the brief was the one call still exposed to it:
+/// the longest generation Chief makes, and reported as "the model engine
+/// stopped responding part-way through the answer" when nothing had gone
+/// wrong except that a small model was still working. Measured on Llama 3.2
+/// 1B, where a cold brief takes longer than the ninety seconds allowed.
+///
+/// The tokens are dropped. Nothing here has anywhere to put them — a brief is
+/// written to a file, not to a transcript — so this asks for a stream to be
+/// timed correctly rather than to show progress. See REC-65.
 async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
     let request = ChatRequest::new(crate::agent::DEFAULT_MODEL, vec![Message::user(prompt)])
         .with_options(Options::new().with_answer_length(BRIEF_TOKENS));
 
-    let reply = engine.chat(&request).await?;
+    let reply = engine.chat_stream(&request, |_| {}).await?;
 
     Ok(reply.content.trim().to_string())
 }
@@ -799,9 +814,14 @@ mod tests {
     // ---- end to end, against stub servers ----
 
     use crate::db::test_support::migrated_pool;
-    use crate::llama::test_support::serve;
+    use crate::llama::test_support::{delta, events, serve};
 
-    const ANSWER: &str = r#"{"choices":[{"message":{"role":"assistant","content":"- 10:00 with Sam\n- PR #12 is waiting"}}]}"#;
+    /// What the stub engine writes back, in the shape `llama-server` streams
+    /// it — the brief asks for a stream so that a slow answer is not mistaken
+    /// for a stalled one. See `render`.
+    fn answer() -> String {
+        events(&[delta("- 10:00 with Sam\n- PR #12 is waiting")])
+    }
 
     struct Scratch(std::path::PathBuf);
 
@@ -928,7 +948,7 @@ mod tests {
 
     #[tokio::test]
     async fn writes_the_brief_into_the_corpus_with_one_model_call() {
-        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", answer())]);
         let (context, _scratch) = ready(&host, "writes").await;
 
         let brief = daily_brief(&context).await.expect("should write a brief");
@@ -960,7 +980,7 @@ mod tests {
     /// ```
     #[tokio::test]
     async fn the_brief_prompt_carries_the_clock_and_no_list_of_dates() {
-        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", answer())]);
         let (context, _scratch) = ready(&host, "no-date-list").await;
 
         daily_brief(&context).await.expect("should write a brief");
@@ -981,12 +1001,49 @@ mod tests {
         }
     }
 
+    /// The defect REC-65 is about.
+    ///
+    /// The client bounds a request by silence rather than by a deadline, so a
+    /// slow answer is never cut off — but silence only means anything on a
+    /// stream. A non-streamed request says nothing until the whole answer is
+    /// ready, which turns the inactivity timeout into a deadline for the
+    /// entire generation, and the brief is the longest generation Chief makes.
+    /// Reported from a running app on Llama 3.2 1B as "the model engine
+    /// stopped responding part-way through the answer", when nothing had gone
+    /// wrong except that the model was still working.
+    ///
+    /// Proved by asking for the answer in one piece again:
+    ///
+    /// ```text
+    /// the brief must ask for a stream, or its ninety seconds of silence
+    /// become a deadline for the whole answer
+    /// ```
+    #[tokio::test]
+    async fn the_brief_asks_for_a_stream_so_a_slow_answer_is_not_a_stalled_one() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", answer())]);
+        let (context, _scratch) = ready(&host, "streams").await;
+
+        // The result is deliberately ignored. A brief asked for in one piece
+        // cannot read this stub's reply and would fail here, which would end
+        // the test before it reached the assertion that explains why — so what
+        // was *sent* is the thing examined, whatever came back.
+        let _ = daily_brief(&context).await;
+
+        let requests = server.await.expect("the stub should finish");
+        let sent = requests.first().expect("one model call").clone();
+
+        assert!(
+            sent.contains("\"stream\":true"),
+            "the brief must ask for a stream, or its ninety seconds of silence become a deadline \
+             for the whole answer: {sent}"
+        );
+    }
+
     #[tokio::test]
     async fn regenerating_the_same_day_replaces_rather_than_stacking() {
-        let second =
-            r#"{"choices":[{"message":{"role":"assistant","content":"- a later brief"}}]}"#;
+        let second = events(&[delta("- a later brief")]);
         let (host, _server) = serve(vec![
-            ("HTTP/1.1 200 OK", ANSWER),
+            ("HTTP/1.1 200 OK", answer()),
             ("HTTP/1.1 200 OK", second),
         ]);
         let (context, _scratch) = ready(&host, "replaces").await;
@@ -1013,10 +1070,9 @@ mod tests {
         // Measured in the product: a hand-written section was added to today's
         // brief, the brief was regenerated, and the section was gone with
         // nothing said. The corpus is offered as a folder you can edit.
-        let second =
-            r#"{"choices":[{"message":{"role":"assistant","content":"- a replacement"}}]}"#;
+        let second = events(&[delta("- a replacement")]);
         let (host, _server) = serve(vec![
-            ("HTTP/1.1 200 OK", ANSWER),
+            ("HTTP/1.1 200 OK", answer()),
             ("HTTP/1.1 200 OK", second),
         ]);
         let (context, _scratch) = ready(&host, "edited").await;
@@ -1054,10 +1110,9 @@ mod tests {
     async fn a_brief_chief_wrote_itself_is_replaced_as_before() {
         // The guard must not stop the ordinary case: a brief nobody has touched
         // is still regenerated.
-        let second =
-            r#"{"choices":[{"message":{"role":"assistant","content":"- a later brief"}}]}"#;
+        let second = events(&[delta("- a later brief")]);
         let (host, _server) = serve(vec![
-            ("HTTP/1.1 200 OK", ANSWER),
+            ("HTTP/1.1 200 OK", answer()),
             ("HTTP/1.1 200 OK", second),
         ]);
         let (context, _scratch) = ready(&host, "untouched").await;
