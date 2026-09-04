@@ -46,7 +46,7 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # PKCE: SHA-256 for the code challenge, base64url for both halves, and the
 # operating system's CSPRNG for the verifier and the state nonce.
 sha2 = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 getrandom = "0.3"
 notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
 
