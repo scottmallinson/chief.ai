@@ -12,7 +12,13 @@ import { cn } from '@/lib/utils';
  * urgent.
  */
 const chipVariants = cva(
-  'inline-flex items-center gap-1.5 rounded-sm px-[9px] py-[3px] text-[11px] font-semibold whitespace-nowrap',
+  // `max-w-full` and `overflow-hidden` are the last line of defence, not the
+  // design: a chip is a label and its text is short by construction. But it is
+  // `whitespace-nowrap`, so text nobody expected spills out of whatever row it
+  // is in rather than wrapping — which is how one work-log row put a scrollbar
+  // on the whole window. Clipping is an ugly chip; the alternative was a
+  // broken screen.
+  'inline-flex max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-sm px-[9px] py-[3px] text-[11px] font-semibold whitespace-nowrap',
   {
     variants: {
       tone: {

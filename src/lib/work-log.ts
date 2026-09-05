@@ -73,15 +73,50 @@ export function syncNow(): Promise<Pass> {
 }
 
 /**
- * One row's headline and the line under it.
+ * How long a summary may be and still be a label.
  *
- * **`summary` is a state, not a sentence.** Deterministic ingestion made it the
- * single word "merged", "open" or "review requested", and every screen was
- * leading with it — so the Today feed read `merged`, `merged`, `open` five rows
- * deep with nothing saying what had been merged. The title is what the row is
- * about; the state belongs beside it, not instead of it.
+ * Deterministic ingestion writes either a state — "merged", "open", "review
+ * requested" — or a meeting's time and who is at it, "09:30, with Dana". Both
+ * are short by construction. The daemon that came before it asked the model
+ * for a sentence, and those rows are still in everybody's database: "The
+ * developer merged a pull request to resolve a bug related to fetching the
+ * llama.cpp engine before Rust's checks." is a real one, measured in the
+ * running app.
+ *
+ * 40 characters is comfortably past the longest state and nowhere near a
+ * sentence. It is a heuristic, and it is allowed to be one **because nothing
+ * breaks when it is wrong**: a misjudged summary renders on the wrong line,
+ * where the old behaviour tore the row open. The layout no longer depends on
+ * this being right — see the `min-w-0` and the wrap in `WorkLogView`.
  */
-export function readEntry(entry: WorkLogEntry): { headline: string; detail: string | null } {
+const LABEL_LIMIT = 40;
+
+/** One row, split into what it is about, what state it is in, and any prose. */
+export interface ReadEntry {
+  /** What the row leads with. */
+  headline: string;
+  /** A short machine fact, fit for a chip. Null when there is none. */
+  label: string | null;
+  /** A sentence from the old daemon. Prose, and never a chip. */
+  note: string | null;
+}
+
+/**
+ * One row's headline, its label and any prose under it.
+ *
+ * **`summary` is a state, not a sentence — except where it is.** Deterministic
+ * ingestion made it the single word "merged", "open" or "review requested",
+ * and every screen was leading with it: the Today feed read `merged`,
+ * `merged`, `open` five rows deep with nothing saying what had been merged.
+ * The title is what the row is about; the state belongs beside it.
+ *
+ * What that fix did not account for is that the column holds **both shapes at
+ * once**. Migration 8 backfilled `title` from `content`, so rows the old
+ * daemon wrote now have a title *and* a model-written sentence — and the
+ * sentence was going into the chip beside it, which is how a work log ends up
+ * with labels reading "merged" on one row and a full paragraph on the next.
+ */
+export function readEntry(entry: WorkLogEntry): ReadEntry {
   // **Read defensively, because a missing field here is a white screen.** The
   // column is `NOT NULL DEFAULT ''` so Rust always sends a string — but this
   // renders every row of two feeds, and a row that arrived without it from a
@@ -90,12 +125,16 @@ export function readEntry(entry: WorkLogEntry): { headline: string; detail: stri
   const title = entry.title?.trim() ?? '';
   const summary = entry.summary?.trim() ?? '';
 
-  if (title === '') {
-    // What the user typed themselves, which has no title by design.
-    return { headline: entry.content, detail: null };
+  // What the user typed themselves, which has no title by design.
+  const headline = title === '' ? entry.content : title;
+
+  if (summary === '' || summary === headline) {
+    return { headline, label: null, note: null };
   }
 
-  return { headline: title, detail: summary === '' ? null : summary };
+  return summary.length <= LABEL_LIMIT
+    ? { headline, label: summary, note: null }
+    : { headline, label: null, note: summary };
 }
 
 /** Read the work log, newest first. */

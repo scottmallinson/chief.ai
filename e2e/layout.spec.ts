@@ -7,7 +7,7 @@
  * rail out of the window, and put a second scrollbar beside the first.
  */
 
-import { expect, longAnswer, longWorkLog, test, type Account } from './fixtures';
+import { expect, longAnswer, longWorkLog, sentenceSummary, test, type Account } from './fixtures';
 
 /** An account named right up to the limit the field allows. */
 const longNamed: Account = {
@@ -76,6 +76,57 @@ test.describe('a work log taller than the window', () => {
     expect(shell.scrollingRegions).toBe(1);
     expect(shell.nestedScrollRegions).toBe(1);
     expect(shell.headerTop).toBe(0);
+  });
+
+  /**
+   * The defect REC-63 is about.
+   *
+   * Every row deterministic ingestion writes has a short summary — "merged",
+   * "open", a meeting's time — and the row rendered it as a chip in a flex
+   * line that could not wrap. The daemon that came before it wrote sentences,
+   * migration 8 gave those rows a title as well, and one of them was enough:
+   * the chip refused to shrink below its own text, pushed the timestamp out
+   * through the side of the card, and put a horizontal scrollbar on the whole
+   * window.
+   *
+   * jsdom reports every width as zero, so this can only be measured here.
+   *
+   * Proved by putting the summary back in the chip:
+   *
+   * ```text
+   * the row must stay inside the card it is in
+   * Expected: <= 1
+   * Received: 476.5
+   * ```
+   */
+  test('keeps a row from before deterministic ingestion inside its card', async ({
+    chief,
+    page,
+  }) => {
+    await chief.open({ workLog: [sentenceSummary] });
+    await chief.goTo('Work Log');
+
+    const card = await page.getByRole('listitem').first().boundingBox();
+    const time = await page.locator('time').first().boundingBox();
+
+    expect(card, 'the row should render').not.toBeNull();
+    expect(time, 'the timestamp should render').not.toBeNull();
+
+    const cardRight = (card?.x ?? 0) + (card?.width ?? 0);
+    const timeRight = (time?.x ?? 0) + (time?.width ?? 0);
+
+    // A pixel of slack for sub-pixel layout, and no more.
+    expect(timeRight - cardRight, 'the row must stay inside the card it is in').toBeLessThanOrEqual(
+      1,
+    );
+
+    // `measure()` reports vertical scrolling only, and this defect was
+    // horizontal, so the document is asked directly.
+    const scrollsSideways = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    );
+
+    expect(scrollsSideways, 'and must not scroll the window sideways').toBe(false);
   });
 });
 

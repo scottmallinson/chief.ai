@@ -77,14 +77,16 @@ function Block({ block }: { block: BriefBlock }) {
 }
 
 function Shipped({ entry }: { entry: WorkLogEntry }) {
-  const { headline, detail } = readEntry(entry);
+  // The label only. A row in this feed is one line, and the prose the old
+  // daemon wrote is already restated by the headline beside it.
+  const { headline, label } = readEntry(entry);
 
   return (
     <li className="border-l-2 border-border pl-3.5">
       <p className="flex items-center gap-2 micro text-muted-foreground">
         <span>
           {entry.source} · {formatTimestamp(entry.timestamp)}
-          {detail === null ? '' : ` · ${detail}`}
+          {label === null ? '' : ` · ${label}`}
         </span>
         <OpenSource url={entry.url} label={headline} />
       </p>
