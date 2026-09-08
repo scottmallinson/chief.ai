@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 import {
+  accountName,
   connections,
   disconnect as forget,
   finishLogin,
@@ -19,6 +20,17 @@ import {
  */
 type Status = 'loading' | 'idle' | 'awaiting-user' | 'working';
 
+/**
+ * Why a sign-in was started, which decides what its outcome means.
+ *
+ * Coming back as the account already connected is the ordinary, wanted result
+ * of `again` — the user pressed Reconnect on that very account. It is the
+ * *failure* of `another`: they asked for a second account and got the first
+ * one back, because the device flow authorises whoever the browser is signed
+ * in as. Same outcome, opposite meanings, so the intent has to be carried in.
+ */
+export type Intent = 'first' | 'another' | 'again';
+
 interface UseIntegrations {
   accounts: Account[];
   accountsFor: (service: string) => Account[];
@@ -29,7 +41,12 @@ interface UseIntegrations {
   /** Accounts being forgotten, so a row cannot be asked to go twice. */
   disconnecting: readonly number[];
   error: string | null;
-  connect: (service: string) => void;
+  /**
+   * Something that happened and is worth saying, but is not a failure — a
+   * sign-in that reconnected the account already there rather than adding one.
+   */
+  notice: string | null;
+  connect: (service: string, intent?: Intent) => void;
   /** Stop waiting on a sign-in the user has walked away from. */
   cancel: () => void;
   disconnect: (accountId: number) => void;
@@ -51,6 +68,7 @@ export function useIntegrations(): UseIntegrations {
   const [status, setStatus] = useState<Status>('loading');
   const [disconnecting, setDisconnecting] = useState<readonly number[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Which sign-in attempt is the live one. Giving up moves it on, so the poll
   // still running in Rust answers a number nobody is waiting for and is
@@ -83,10 +101,11 @@ export function useIntegrations(): UseIntegrations {
     };
   }, []);
 
-  const connect = useCallback((service: string) => {
+  const connect = useCallback((service: string, intent: Intent = 'first') => {
     const mine = ++attempt.current;
 
     setError(null);
+    setNotice(null);
     setConnecting(service);
     setStatus('working');
 
@@ -113,9 +132,19 @@ export function useIntegrations(): UseIntegrations {
             : started.url;
         await openUrl(destination).catch(() => undefined);
 
-        const current = await finishLogin(service);
+        const finished = await finishLogin(service);
         if (attempt.current !== mine) return;
-        setAccounts(current);
+        setAccounts(finished.accounts);
+        // Asked for a second account and given back the first one. Nothing
+        // failed — the sign-in worked — so this is not an error, but saying
+        // nothing leaves an unchanged list as the only report, and the button
+        // reads as broken. Naming who signed in is the whole message: it is
+        // what tells the user their browser is the thing to change.
+        if (intent === 'another' && finished.reconnected) {
+          setNotice(
+            `That signed in as ${accountName(finished.account)}, which was already connected, so no account was added. Sign-in uses whoever your browser is signed in to — sign out there, or use a private window, then try again.`,
+          );
+        }
         setLogin(null);
         setConnecting(null);
         setStatus('idle');
@@ -137,6 +166,7 @@ export function useIntegrations(): UseIntegrations {
     setLogin(null);
     setConnecting(null);
     setError(null);
+    setNotice(null);
     setStatus('idle');
   }, []);
 
@@ -184,6 +214,7 @@ export function useIntegrations(): UseIntegrations {
     status,
     disconnecting,
     error,
+    notice,
     connect,
     cancel,
     disconnect,

@@ -78,9 +78,26 @@ export function startLogin(service: string): Promise<Login> {
   return invoke<Login>('start_login', { service });
 }
 
+/**
+ * What a finished sign-in did.
+ *
+ * The account list alone cannot say. Signing in as somebody already connected
+ * replaces that account's credential rather than adding a row, so the list
+ * comes back exactly as long as it went out — which is indistinguishable, on
+ * screen, from the sign-in having done nothing at all.
+ */
+export interface Connected {
+  /** Every account, whatever the service. */
+  accounts: Account[];
+  /** The account this sign-in landed on. */
+  account: Account;
+  /** Whether it was already connected, so nothing was added. */
+  reconnected: boolean;
+}
+
 /** Wait for the user to finish signing in, then store the credential. */
-export function finishLogin(service: string): Promise<Account[]> {
-  return invoke<Account[]>('finish_login', { service });
+export function finishLogin(service: string): Promise<Connected> {
+  return invoke<Connected>('finish_login', { service });
 }
 
 /** Forget one account's credential. */

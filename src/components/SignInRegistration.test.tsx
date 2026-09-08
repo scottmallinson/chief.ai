@@ -47,7 +47,14 @@ function answering(...replies: (Registration[] | Error)[]) {
 function show(registration: Registration[] | Error = [builtIn]) {
   answering(registration);
 
-  render(<SignInRegistration service="github" name="GitHub" where="Make one on GitHub." />);
+  render(
+    <SignInRegistration
+      service="github"
+      name="GitHub"
+      signInLabel="Add another GitHub account"
+      where="Make one on GitHub."
+    />,
+  );
 }
 
 describe('SignInRegistration', () => {
@@ -105,13 +112,26 @@ describe('SignInRegistration', () => {
     };
 
     answering([builtIn], [stored]);
-    render(<SignInRegistration service="github" name="GitHub" where="Make one on GitHub." />);
+    render(
+      <SignInRegistration
+        service="github"
+        name="GitHub"
+        signInLabel="Add another GitHub account"
+        where="Make one on GitHub."
+      />,
+    );
 
     await userEvent.click(await screen.findByRole('button', { name: 'Change' }));
     await userEvent.type(screen.getByLabelText('GitHub client id'), 'Ov23liTheirs');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    expect(await screen.findByText('Saved. Sign in again to use it.')).toBeInTheDocument();
+    // Saving an id is not signing in, and the two controls are inches apart:
+    // the confirmation has to name the button that does the other thing.
+    expect(
+      await screen.findByText(
+        'Saved. Nothing is signed in yet — press “Add another GitHub account” above to sign in with it.',
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText('Ov23liTheirs')).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith('set_sign_in_registration', {
       service: 'github',
@@ -121,7 +141,14 @@ describe('SignInRegistration', () => {
 
   it('surfaces an id the backend refused, in the words it refused it with', async () => {
     answering([missing], new Error('a client id is letters, digits and one of -._~'));
-    render(<SignInRegistration service="github" name="GitHub" where="Make one on GitHub." />);
+    render(
+      <SignInRegistration
+        service="github"
+        name="GitHub"
+        signInLabel="Add another GitHub account"
+        where="Make one on GitHub."
+      />,
+    );
 
     await userEvent.type(await screen.findByLabelText('GitHub client id'), 'https://example.com');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -142,7 +169,14 @@ describe('SignInRegistration', () => {
     };
 
     answering([orphan]);
-    render(<SignInRegistration service="microsoft" name="Outlook" where="Register one." />);
+    render(
+      <SignInRegistration
+        service="microsoft"
+        name="Outlook"
+        signInLabel="Connect Outlook"
+        where="Register one."
+      />,
+    );
 
     await userEvent.click(await screen.findByRole('button', { name: 'Change' }));
 
@@ -153,7 +187,14 @@ describe('SignInRegistration', () => {
     const stored: Registration = { ...builtIn, clientId: 'theirs', source: 'stored' };
 
     answering([stored], [builtIn]);
-    render(<SignInRegistration service="github" name="GitHub" where="Make one on GitHub." />);
+    render(
+      <SignInRegistration
+        service="github"
+        name="GitHub"
+        signInLabel="Add another GitHub account"
+        where="Make one on GitHub."
+      />,
+    );
 
     await userEvent.click(await screen.findByRole('button', { name: 'Change' }));
     await userEvent.click(screen.getByRole('button', { name: 'Use the built-in one' }));

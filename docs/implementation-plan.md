@@ -912,17 +912,18 @@ removes from it.**
 
 ### Unclaimed engineering
 
-| What                                      | Note                                                                                                                                                               | Where       |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
-| **Tokens in the OS keychain**             | Stored as plain text, protected by the OS user account                                                                                                             | —           |
-| **Reviewers in `team_structure.md`**      | GitHub's search response carries none, so it is a call per pull request                                                                                            | REC-16      |
-| **`glib` GHSA-wrw7-89jp-8q8g**            | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                                               | SECURITY.md |
-| **AC/battery polling cadence**            | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                                                       | DLE-2       |
-| **A control for the pass interval**       | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it                              | —           |
-| **Whether `work_logs` is ever pruned**    | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                                            | DLE-8       |
-| **Chief is not on WAL, and cannot be**    | Neither sqlx nor `tauri-plugin-sql` offers a seam, and a migration cannot do it — see the settled note below. It needs a patched plugin or an `after_connect` hook | DLE-11      |
-| **FTS5 query semantics**                  | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                                                      | DLE-0       |
-| **GitHub sign-in is not RFC 8252's flow** | Blocked on GitHub supporting public clients, not on us. Outlook already is that flow; see the settled note below                                                   | REC-61      |
+| What                                       | Note                                                                                                                                                                                                                | Where       |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| **Tokens in the OS keychain**              | Stored as plain text, protected by the OS user account                                                                                                                                                              | —           |
+| **Reviewers in `team_structure.md`**       | GitHub's search response carries none, so it is a call per pull request                                                                                                                                             | REC-16      |
+| **`glib` GHSA-wrw7-89jp-8q8g**             | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                                                                                                | SECURITY.md |
+| **AC/battery polling cadence**             | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                                                                                                        | DLE-2       |
+| **A control for the pass interval**        | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it                                                                               | —           |
+| **Whether `work_logs` is ever pruned**     | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                                                                                             | DLE-8       |
+| **Chief is not on WAL, and cannot be**     | Neither sqlx nor `tauri-plugin-sql` offers a seam, and a migration cannot do it — see the settled note below. It needs a patched plugin or an `after_connect` hook                                                  | DLE-11      |
+| **FTS5 query semantics**                   | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                                                                                                       | DLE-0       |
+| **GitHub sign-in is not RFC 8252's flow**  | Blocked on GitHub supporting public clients, not on us. Outlook already is that flow; see the settled note below                                                                                                    | REC-61      |
+| **A changed client id voids older tokens** | `session.rs` renews with whatever registration is configured now, and one OAuth app cannot exchange another's refresh token. `integration_accounts.client_id` is the column for this and every caller writes `None` | —           |
 
 ### Settled during implementation, recorded so it is not re-litigated
 

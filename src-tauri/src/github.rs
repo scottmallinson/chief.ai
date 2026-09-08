@@ -58,6 +58,14 @@ pub enum Error {
     Declined,
     #[error("the sign-in code expired before it was entered")]
     CodeExpired,
+    #[error(
+        "This GitHub OAuth app does not have the device flow enabled, so GitHub will not issue a \
+         sign-in code. Open the app on GitHub under Settings → Developer settings → \
+         OAuth Apps, tick Enable Device Flow, then try again."
+    )]
+    DeviceFlowDisabled,
+    #[error("GitHub would not start the sign-in: {0}")]
+    DeviceFlowRefused(String),
     #[error("GitHub rejected the stored token. Reconnect GitHub in Settings.")]
     TokenRejected,
     #[error("GitHub's rate limit is exhausted; try again later")]
@@ -202,6 +210,49 @@ struct DeviceCodeResponse {
     expires_in: u64,
     /// How many seconds GitHub wants between polls.
     interval: u64,
+}
+
+/// What GitHub says when it will not issue a device code at all.
+///
+/// **This arrives as HTTP 200.** The device-code endpoint answers a refusal
+/// with a success status and an `error` in the body, exactly as the polling
+/// endpoint does, so a client that only looks at the status reads the refusal
+/// as a code it then fails to find fields in.
+#[derive(Debug, Clone, Deserialize)]
+struct Refusal {
+    error: String,
+    error_description: Option<String>,
+}
+
+/// GitHub's answer to a device code request: a code, or why not.
+///
+/// Untagged with the code first, so the ordinary answer is matched on the
+/// fields it actually has and only something without them is read as a
+/// refusal.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum DeviceCodeAnswer {
+    Issued(DeviceCodeResponse),
+    Refused(Refusal),
+}
+
+/// Say what a refusal means, in words the user can act on.
+///
+/// Pure, so every branch is testable without a server. `device_flow_disabled`
+/// is the one worth naming: it is what GitHub says about an OAuth app whose
+/// **Enable Device Flow** box was never ticked, which is the state every app
+/// is registered in and the single most likely reason a pasted client id
+/// produces no code.
+fn refusal(refused: Refusal) -> Error {
+    match refused.error.as_str() {
+        "device_flow_disabled" => Error::DeviceFlowDisabled,
+        other => Error::DeviceFlowRefused(
+            refused
+                .error_description
+                .filter(|description| !description.trim().is_empty())
+                .unwrap_or_else(|| other.to_string()),
+        ),
+    }
 }
 
 /// A device flow in progress: what to show the user, and what to poll with.
@@ -394,12 +445,17 @@ impl Client {
         // borrow the form takes of it.
         let scope = SCOPE_LIST.join(" ");
 
-        let response: DeviceCodeResponse = self
+        let answer: DeviceCodeAnswer = self
             .post_form(
                 &format!("{}/login/device/code", self.auth_host),
                 &[("client_id", client_id), ("scope", &scope)],
             )
             .await?;
+
+        let response = match answer {
+            DeviceCodeAnswer::Issued(response) => response,
+            DeviceCodeAnswer::Refused(refused) => return Err(refusal(refused)),
+        };
 
         Ok(PendingLogin {
             device_code: response.device_code,
@@ -883,6 +939,94 @@ mod tests {
                 .to_lowercase()
                 .contains("accept: application/json"),
             "GitHub answers in form encoding without this"
+        );
+    }
+
+    /// The defect this file's `Refusal` exists for.
+    ///
+    /// An OAuth app is registered with the device flow **off**, so the first
+    /// thing a user who pasted their own client id meets is this refusal —
+    /// and GitHub sends it as HTTP 200 with an `error` in the body. Read as a
+    /// device code it is simply missing every field, which reached the screen
+    /// as `could not read GitHub's response: error decoding response body`:
+    /// a message about Chief's parser, naming nothing the user can do.
+    ///
+    /// Proved by reading the answer as a device code again, which is what
+    /// this replaced:
+    ///
+    /// ```text
+    /// unexpected error: could not read GitHub's response: error decoding
+    ///   response body for url (http://127.0.0.1:46113/login/device/code)
+    /// ```
+    #[tokio::test]
+    async fn says_when_the_oauth_app_has_no_device_flow() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            r#"{"error":"device_flow_disabled","error_description":"Device Flow has not been enabled","error_uri":"https://docs.github.com/"}"#,
+        )]);
+        let client = Client::against(&host).expect("should build a client");
+
+        let error = client
+            .start_login("Ov23liTheirs")
+            .await
+            .expect_err("a refusal is not a sign-in");
+
+        assert!(
+            matches!(error, Error::DeviceFlowDisabled),
+            "unexpected error: {error}"
+        );
+        // The message is the fix, so it is what the test holds: it has to name
+        // the box on GitHub that is not ticked.
+        assert!(
+            error.to_string().contains("Enable Device Flow"),
+            "the message should say what to do: {error}"
+        );
+
+        server.await.expect("the stub should finish");
+    }
+
+    /// Any other refusal is repeated rather than swallowed. GitHub explains
+    /// itself in `error_description`, and that sentence is worth more than
+    /// anything Chief could write about a code it has not seen before.
+    #[test]
+    fn repeats_a_refusal_it_has_no_words_of_its_own_for() {
+        let error = super::refusal(Refusal {
+            error: "unauthorized_client".to_string(),
+            error_description: Some("This app is not allowed to use this flow".to_string()),
+        });
+
+        assert_eq!(
+            error.to_string(),
+            "GitHub would not start the sign-in: This app is not allowed to use this flow"
+        );
+    }
+
+    /// A refusal with no description falls back to the code itself, which is
+    /// still something to search for.
+    #[test]
+    fn falls_back_to_the_error_code_when_github_explains_nothing() {
+        let error = super::refusal(Refusal {
+            error: "unsupported_grant_type".to_string(),
+            error_description: None,
+        });
+
+        assert!(
+            error.to_string().contains("unsupported_grant_type"),
+            "unexpected message: {error}"
+        );
+    }
+
+    /// The guard on the untagged enum: a real device code must still be read
+    /// as one. `Refusal`'s fields are both absent from it, so the ordering
+    /// cannot silently start matching the wrong arm.
+    #[test]
+    fn a_real_device_code_is_not_read_as_a_refusal() {
+        let answer: DeviceCodeAnswer =
+            serde_json::from_str(DEVICE_CODE).expect("the fixture should parse");
+
+        assert!(
+            matches!(answer, DeviceCodeAnswer::Issued(_)),
+            "a device code should be read as a device code"
         );
     }
 

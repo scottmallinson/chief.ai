@@ -15,6 +15,14 @@ interface SignInRegistrationProps {
   service: string;
   /** What this service is called on screen. */
   name: string;
+  /**
+   * What the sign-in button on this card says, word for word.
+   *
+   * Saving an id does not sign anybody in, and the two controls sit inches
+   * apart on the same card — so the confirmation names the button rather than
+   * saying "sign in again", which reads as something already under way.
+   */
+  signInLabel: string;
   /** Where the user makes a registration of their own, in a sentence. */
   where: ReactNode;
 }
@@ -52,7 +60,7 @@ function provenance(registration: Registration): string {
  * "nothing to do here" and this is not what the card is for. Open, and stated
  * as the thing in the way, when there is not.
  */
-export function SignInRegistration({ service, name, where }: SignInRegistrationProps) {
+export function SignInRegistration({ service, name, signInLabel, where }: SignInRegistrationProps) {
   const [registration, setRegistration] = useState<Registration | null>(null);
   const [showing, setShowing] = useState(false);
   const [clientId, setClientId] = useState('');
@@ -187,8 +195,8 @@ export function SignInRegistration({ service, name, where }: SignInRegistrationP
             )}
 
             {saved && (
-              <p className="micro text-verified-text" role="status">
-                Saved. Sign in again to use it.
+              <p className="text-[13px] leading-snug text-verified-text" role="status">
+                {`Saved. Nothing is signed in yet — press “${signInLabel}” above to sign in with it.`}
               </p>
             )}
 
