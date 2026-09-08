@@ -150,6 +150,34 @@ test.describe('the bundled typefaces', () => {
   });
 });
 
+test.describe('a connected account', () => {
+  /**
+   * The row is a field with a button beside it, and the two have to read as
+   * one line.
+   *
+   * They did not. The row centred the button against the *left column* — the
+   * field with its "Connected … · Synced …" caption underneath — rather than
+   * against the field, so the button sat half a caption lower than the thing
+   * it belongs to. jsdom cannot see this: it reports every height as zero, so
+   * a browser is the only place the question can be asked.
+   */
+  test('lines the disconnect button up with the field it belongs to', async ({ chief, page }) => {
+    await chief.open({ accounts: [octocat] });
+    await chief.goTo('Settings');
+
+    const field = await page.getByLabel('Name for octocat').boundingBox();
+    const button = await page.getByRole('button', { name: 'Disconnect octocat' }).boundingBox();
+
+    if (field === null || button === null) throw new Error('the account row should be on screen');
+
+    const middleOf = (box: { y: number; height: number }) => box.y + box.height / 2;
+
+    // A pixel of slack for rounding, and nothing like the half-caption the
+    // two were out by.
+    expect(Math.abs(middleOf(field) - middleOf(button))).toBeLessThanOrEqual(1);
+  });
+});
+
 test.describe('the one colour that means you are needed', () => {
   const revoked: SyncState = {
     accountId: 1,

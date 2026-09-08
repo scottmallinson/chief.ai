@@ -93,8 +93,12 @@ function ConnectedAccount({
   };
 
   return (
-    <div className="flex items-center justify-between gap-4 border-t border-border py-3">
-      <div className="min-w-0 flex-1">
+    <div className="border-t border-border py-3">
+      {/* The field and the button are one line, so they are one flex row.
+          Centring the button against the whole column instead — the field
+          with its caption under it — put it half a caption low, which is
+          visible at a glance and was 8px. */}
+      <div className="flex items-center gap-4">
         <input
           type="text"
           aria-label={`Name for ${identity}`}
@@ -103,25 +107,25 @@ function ConnectedAccount({
           maxLength={NAME_LIMIT}
           onChange={(event) => setName(event.target.value)}
           onBlur={(event) => commit(event.target.value)}
-          className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm font-medium transition-colors duration-[120ms] ease-instrument placeholder:font-normal placeholder:text-muted-foreground hover:border-ring"
+          className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm font-medium transition-colors duration-[120ms] ease-instrument placeholder:font-normal placeholder:text-muted-foreground hover:border-ring"
         />
-        <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 px-[9px] micro text-muted-foreground">
-          <span>
-            {Number.isNaN(since.getTime())
-              ? 'Connected'
-              : `Connected ${connectedFormat.format(since)}`}
-          </span>
-          <span aria-hidden>·</span>
-          <Freshness state={sync} onReconnect={onReconnect} />
-        </p>
+        <DisconnectAccount
+          accountId={account.id}
+          name={accountName(account)}
+          verb="Disconnect"
+          leaving={leaving}
+          onConfirm={onDisconnect}
+        />
       </div>
-      <DisconnectAccount
-        accountId={account.id}
-        name={accountName(account)}
-        verb="Disconnect"
-        leaving={leaving}
-        onConfirm={onDisconnect}
-      />
+      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 px-[9px] micro text-muted-foreground">
+        <span>
+          {Number.isNaN(since.getTime())
+            ? 'Connected'
+            : `Connected ${connectedFormat.format(since)}`}
+        </span>
+        <span aria-hidden>·</span>
+        <Freshness state={sync} onReconnect={onReconnect} />
+      </p>
     </div>
   );
 }
