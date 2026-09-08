@@ -522,6 +522,51 @@ pastes the address their provider already publishes.
 - **GraphQL answers 200 with an `errors` array**, so status alone is not enough — `read` inspects
   the body and separates an authentication failure, which is the user's to fix, from anything else.
 
+## Jira, over an MCP server that registers Chief at runtime
+
+`src-tauri/src/atlassian.rs` is the odd one out, and the module docs carry the evidence because the
+mechanism is undocumented.
+
+- **Classic 3LO is impossible, not merely awkward.** Atlassian's discovery document offers
+  `client_secret_basic` and `client_secret_post` and no `none`, so every 3LO client is confidential.
+  PKCE does not rescue it: there it hardens the code exchange on top of client authentication rather
+  than replacing it. A secret compiled into a distributed binary is not a secret.
+- **The Remote MCP server runs a different authorization server, and that one takes public
+  clients.** So Chief registers itself per installation against a `registration_endpoint` Atlassian
+  does not document. Nothing is baked in and nothing is shipped. Re-verified 2026-09-08; the
+  fetched facts and the date are in the module docs, because there is no page to cite.
+- **The issuer now advertises `client_id_metadata_document_supported`**, the successor MCP's spec
+  prefers over registration. It is worse here: a Client ID Metadata Document must be hosted at a
+  stable HTTPS URL the client controls and that URL _is_ the client id — a permanent off-machine
+  dependency for an app whose claim is that none of it exists off the user's machine. If
+  registration is withdrawn, the fallback is the pasted API token, not this.
+- **Registration happens per sign-in, after the loopback port is bound**, so the redirect URI
+  registered names a port the process already holds. RFC 8252 §7.3 requires any port to be accepted
+  on a loopback redirect; nothing says an undocumented endpoint follows that rule. The minted id is
+  stored on the account, and `session.rs` now prefers `integration_accounts.client_id` over the
+  configured registration — one OAuth client cannot exchange another's refresh token. That column
+  had never been written before this.
+- **Deterministic tools only, as an allowlist.** `searchAtlassian` and `fetchAtlassian` are the Rovo
+  natural-language layer; calling either would send the user's typed question to Atlassian, and
+  `Sidebar.tsx` promises on every screen that nothing they type leaves this machine. `DETERMINISTIC`
+  is checked before a request is built, and the test proves the refusal costs no request by making a
+  legitimate call afterwards — the first version passed with the check moved _after_ the send.
+- **Client capabilities are empty**, asserted against the bytes that go out rather than against the
+  constant. A server holding `sampling` can run its own agentic loop on the user's local model.
+- **Read-only is enforced at the authorization server**, because Atlassian's write scopes sit on the
+  same resource as its read scopes. Asking for none of them makes it a property of the grant rather
+  than a promise about this code — strictly better than the `repo` scope Chief settles for on
+  GitHub. D4 is where forfeiting it would be argued. **Confluence's scopes are deliberately not
+  requested yet**: a consent screen naming access no code path uses is what `repo` is criticised for
+  here, so the scope and the read land together.
+- **Discovery is followed for its paths, not for where it points.** The issuer is compared as a whole
+  origin against `auth.atlassian.com` before its metadata is fetched — scheme included, so
+  `http://` is not the same host over a transport anyone can rewrite. One MCP server surveyed for
+  the design spec published forged metadata naming an issuer it did not own.
+- Jira issues join the brief beside Linear's under one heading, because they answer the same
+  question — but they are two fields in `Gathered`, so a brief built from Jira alone does not report
+  its source as Linear.
+
 ## Background daemon
 
 `src-tauri/src/daemon.rs` keeps the work log current: ask GitHub what the user merged, ask the local
