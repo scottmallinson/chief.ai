@@ -82,12 +82,28 @@ const BUILT_IN = [
  * returns `SyncState[]` keyed on `accountId`, and answering it with the
  * account list would key the map on `undefined` and quietly render nothing.
  */
+/**
+ * What `finish_login` actually answers.
+ *
+ * Not the account list: the list alone cannot say whether a sign-in added an
+ * account or landed back on one already there, which is the whole of what
+ * "add another account" can get wrong. A stub answering an array here is the
+ * shortcut CLAUDE.md records taking the screen down three times — the hook
+ * reads `.accounts` off it and gets `undefined`.
+ */
+function connected(accounts: unknown[], reconnected = false) {
+  return { accounts, account: accounts.at(-1), reconnected };
+}
+
 function answering(value: unknown, syncStates: unknown[] = [], registrations = BUILT_IN) {
   invoke.mockImplementation((command: string) => {
     if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
     if (command === 'sync_status') return Promise.resolve(syncStates);
     if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
     if (command === 'sign_in_registrations') return Promise.resolve(registrations);
+    if (command === 'finish_login') {
+      return Promise.resolve(connected(Array.isArray(value) ? value : []));
+    }
 
     return Promise.resolve(value);
   });
@@ -236,6 +252,7 @@ describe('SettingsView', () => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
       if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
+      if (command === 'finish_login') return Promise.resolve(connected([octocat]));
       return Promise.resolve([octocat]);
     });
 
@@ -462,7 +479,7 @@ describe('SettingsView', () => {
   });
 
   it('ignores a sign-in that finishes after it was given up on', async () => {
-    let finish: (accounts: unknown[]) => void = () => {};
+    let finish: (result: unknown) => void = () => {};
 
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
@@ -481,12 +498,90 @@ describe('SettingsView', () => {
     // The poll in Rust cannot be called off, so it may still answer. An answer
     // nobody is waiting for must not connect an account behind the user.
     await act(async () => {
-      finish([octocat]);
+      finish(connected([octocat]));
       await Promise.resolve();
     });
 
     expect(screen.queryByRole('button', { name: 'Disconnect octocat' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeEnabled();
+  });
+
+  /**
+   * The defect this reports on: adding a second GitHub account looks exactly
+   * like adding nothing.
+   *
+   * The device flow authorises whoever the browser is signed in to, which is
+   * the account already connected unless the user changed it there. GitHub
+   * hands back that same login, `save` upserts onto its row, and the settings
+   * screen re-renders one account — the same one — and says nothing at all.
+   * The button reads as broken when what actually happened is that the sign-in
+   * worked and went to the wrong person.
+   *
+   * Proved by not reporting it, which is what this replaced:
+   *
+   * ```text
+   * Unable to find an element with the text: /signed in as octocat, which was
+   *   already connected/
+   * ```
+   */
+  it('says when adding an account signed in as the one already connected', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
+      if (command === 'connections') return Promise.resolve([octocat]);
+      if (command === 'start_login') return Promise.resolve(deviceLogin);
+      if (command === 'finish_login') return Promise.resolve(connected([octocat], true));
+      return Promise.resolve([]);
+    });
+
+    render(<SettingsView />);
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Add another GitHub account' }),
+    );
+
+    // Naming the account is the message: it is what tells the user the browser
+    // is the thing to change.
+    expect(
+      await screen.findByText(/signed in as octocat, which was already connected/),
+    ).toBeVisible();
+    expect(screen.getByText(/private window/)).toBeVisible();
+
+    // Nothing failed, so this is not an alert.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The same outcome, wanted. Pressing Reconnect on an account whose
+   * credential was refused is *asking* to come back as that account, so
+   * telling the user they did is noise — and noise on the amber that is
+   * supposed to mean they are needed.
+   */
+  it('says nothing when reconnecting the account that asked to be reconnected', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
+      if (command === 'connections') return Promise.resolve([octocat]);
+      if (command === 'start_login') return Promise.resolve(deviceLogin);
+      if (command === 'finish_login') return Promise.resolve(connected([octocat], true));
+      if (command === 'sync_status') {
+        return Promise.resolve([
+          {
+            accountId: 1,
+            source: 'github',
+            status: 'authRequired',
+            lastSyncedAt: '2026-09-01T09:00:00.000Z',
+            errorMessage: 'the credential was refused',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    render(<SettingsView />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Reconnect' }));
+
+    await waitFor(() => expect(screen.queryByText('WDJB-MJHT')).not.toBeInTheDocument());
+    expect(screen.queryByText(/was already connected/)).not.toBeInTheDocument();
   });
 
   it('says how long the code has left', async () => {

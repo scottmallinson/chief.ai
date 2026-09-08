@@ -93,8 +93,12 @@ function ConnectedAccount({
   };
 
   return (
-    <div className="flex items-center justify-between gap-4 border-t border-border py-3">
-      <div className="min-w-0 flex-1">
+    <div className="border-t border-border py-3">
+      {/* The field and the button are one line, so they are one flex row.
+          Centring the button against the whole column instead — the field
+          with its caption under it — put it half a caption low, which is
+          visible at a glance and was 8px. */}
+      <div className="flex items-center gap-4">
         <input
           type="text"
           aria-label={`Name for ${identity}`}
@@ -103,25 +107,25 @@ function ConnectedAccount({
           maxLength={NAME_LIMIT}
           onChange={(event) => setName(event.target.value)}
           onBlur={(event) => commit(event.target.value)}
-          className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm font-medium transition-colors duration-[120ms] ease-instrument placeholder:font-normal placeholder:text-muted-foreground hover:border-ring"
+          className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm font-medium transition-colors duration-[120ms] ease-instrument placeholder:font-normal placeholder:text-muted-foreground hover:border-ring"
         />
-        <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 px-[9px] micro text-muted-foreground">
-          <span>
-            {Number.isNaN(since.getTime())
-              ? 'Connected'
-              : `Connected ${connectedFormat.format(since)}`}
-          </span>
-          <span aria-hidden>·</span>
-          <Freshness state={sync} onReconnect={onReconnect} />
-        </p>
+        <DisconnectAccount
+          accountId={account.id}
+          name={accountName(account)}
+          verb="Disconnect"
+          leaving={leaving}
+          onConfirm={onDisconnect}
+        />
       </div>
-      <DisconnectAccount
-        accountId={account.id}
-        name={accountName(account)}
-        verb="Disconnect"
-        leaving={leaving}
-        onConfirm={onDisconnect}
-      />
+      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 px-[9px] micro text-muted-foreground">
+        <span>
+          {Number.isNaN(since.getTime())
+            ? 'Connected'
+            : `Connected ${connectedFormat.format(since)}`}
+        </span>
+        <span aria-hidden>·</span>
+        <Freshness state={sync} onReconnect={onReconnect} />
+      </p>
     </div>
   );
 }
@@ -163,6 +167,7 @@ function Integration({
     status,
     disconnecting,
     error,
+    notice,
     connect,
     cancel,
     disconnect,
@@ -184,6 +189,10 @@ function Integration({
   // no countdown of its own, so it is simply waited on.
   const waited = useElapsed(prompt !== null);
   const remaining = prompt?.kind === 'device' ? Math.max(0, prompt.expiresIn - waited) : 0;
+
+  // Named once: the sign-in button says it, and the client id field points at
+  // it by name, so the two cannot drift apart on screen.
+  const signInLabel = accounts.length > 0 ? addLabel : connectLabel;
 
   return (
     <SettingsSection
@@ -211,7 +220,7 @@ function Integration({
               onDisconnect={disconnect}
               leaving={disconnecting.includes(account.id)}
               sync={states.get(account.id)}
-              onReconnect={() => connect(service)}
+              onReconnect={() => connect(service, 'again')}
             />
           ))}
         </div>
@@ -284,19 +293,35 @@ function Integration({
         </p>
       )}
 
+      {/* Amber, not red: nothing failed. The user is the one who has to do
+          something about it, which is exactly what amber means here. */}
+      {notice !== null && (
+        <p
+          className="mt-4 rounded-md border border-attention bg-attention-surface px-3.5 py-3 text-[13px] leading-snug text-attention-text"
+          role="status"
+        >
+          {notice}
+        </p>
+      )}
+
       <div className="mt-4">
         <Button
           size="sm"
           variant={accounts.length > 0 ? 'outline' : 'default'}
-          onClick={() => connect(service)}
+          onClick={() => connect(service, accounts.length > 0 ? 'another' : 'first')}
           disabled={signingIn || status === 'loading'}
         >
           {icon}
-          {accounts.length > 0 ? addLabel : connectLabel}
+          {signInLabel}
         </Button>
       </div>
 
-      <SignInRegistration service={service} name={title} where={registrationHelp} />
+      <SignInRegistration
+        service={service}
+        name={title}
+        signInLabel={signInLabel}
+        where={registrationHelp}
+      />
     </SettingsSection>
   );
 }

@@ -259,6 +259,28 @@ pub async fn clear_sign_in_registration<R: Runtime>(
     sign_in_registrations(app).await
 }
 
+/// What a finished sign-in did.
+///
+/// **Not just the account list.** Signing in a *second* account is the one
+/// gesture whose success and whose failure look identical from outside:
+/// [`integrations::save`] upserts, so a sign-in that came back as the account
+/// already connected replaces that row and leaves the list exactly as long as
+/// it was. The settings screen re-rendered the same single account and said
+/// nothing, which reads as the button having done nothing at all.
+///
+/// So the outcome is reported rather than inferred from the list.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Connected {
+    /// Every account, whatever the service — what the screen renders.
+    pub accounts: Vec<Account>,
+    /// The account this sign-in landed on.
+    pub account: Account,
+    /// Whether that account was already connected, so this renewed a
+    /// credential rather than adding an account.
+    pub reconnected: bool,
+}
+
 /// Begin signing in and return what the user must do next.
 #[tauri::command]
 pub async fn start_login<R: Runtime>(
@@ -313,7 +335,7 @@ pub async fn finish_login<R: Runtime>(
     github_client: State<'_, Client>,
     microsoft_client: State<'_, microsoft::Client>,
     pending: State<'_, Pending>,
-) -> Result<Vec<Account>, Error> {
+) -> Result<Connected, Error> {
     known(&service)?;
 
     let started = pending
@@ -325,10 +347,20 @@ pub async fn finish_login<R: Runtime>(
 
     let pool = db::pool(&app).await?;
 
+    // Read before the write, because the write cannot be asked afterwards
+    // what it did: the upsert answers the same row whether it inserted one or
+    // replaced one, and `save` can additionally adopt a row an upgrade left
+    // behind. An id that was already here is the one fact that settles it.
+    let before: Vec<i64> = integrations::accounts(&pool, &service)
+        .await?
+        .into_iter()
+        .map(|account| account.id)
+        .collect();
+
     // Whichever provider it is, the shape is the same: finish the handshake,
     // ask who this is before storing so two accounts on one service cannot
     // collide on a placeholder key, then save.
-    match (service.as_str(), started) {
+    let stored = match (service.as_str(), started) {
         (MICROSOFT, Flow::Browser(started)) => {
             let client_id = microsoft::configured_client_id(&pool).await?;
             let tokens = microsoft_client.finish_login(&client_id, *started).await?;
@@ -352,7 +384,7 @@ pub async fn finish_login<R: Runtime>(
                     client_secret: None,
                 },
             )
-            .await?;
+            .await?
         }
         (_, Flow::Device(started)) => {
             let client_id = github::configured_client_id(&pool).await?;
@@ -375,14 +407,18 @@ pub async fn finish_login<R: Runtime>(
                     client_secret: None,
                 },
             )
-            .await?;
+            .await?
         }
         // Asking to finish a Microsoft sign-in while a GitHub one is pending,
         // or the reverse. Better said plainly than by using the wrong client.
         _ => return Err(Error::WrongFlow),
-    }
+    };
 
-    Ok(integrations::all_accounts(&pool).await?)
+    Ok(Connected {
+        accounts: integrations::all_accounts(&pool).await?,
+        reconnected: before.contains(&stored.id),
+        account: stored,
+    })
 }
 
 /// When a token that lasts `seconds` more runs out, as an ISO-8601 instant.
