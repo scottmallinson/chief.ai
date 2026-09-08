@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { FolderOpen, Github, Mail, RefreshCw } from 'lucide-react';
+import { FolderOpen, Github, Mail, RefreshCw, SquareKanban } from 'lucide-react';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,15 @@ import { useElapsed } from '@/hooks/use-elapsed';
 import { useIntegrations } from '@/hooks/use-integrations';
 import { useSyncState } from '@/hooks/use-sync-state';
 import type { SyncState } from '@/lib/sync-state';
-import { accountName, CALENDAR, GITHUB, LINEAR, MICROSOFT, type Account } from '@/lib/integrations';
+import {
+  accountName,
+  CALENDAR,
+  GITHUB,
+  ATLASSIAN,
+  LINEAR,
+  MICROSOFT,
+  type Account,
+} from '@/lib/integrations';
 
 interface SettingsSectionProps {
   title: string;
@@ -141,8 +149,24 @@ interface IntegrationProps {
   /** What it says when adding a second account. */
   addLabel: string;
   icon: ReactNode;
-  /** Where the user makes a registration of their own, in a sentence. */
-  registrationHelp: ReactNode;
+  /**
+   * Where the user makes a registration of their own, in a sentence.
+   *
+   * Optional, because not every provider has one to make. Atlassian registers
+   * Chief at sign-in and the client belongs to that account, so there is no id
+   * to paste and offering a field for one would be offering a setting that
+   * does nothing.
+   */
+  registrationHelp?: ReactNode;
+  /**
+   * What connecting actually permits, said before the button rather than
+   * after.
+   *
+   * Every provider Chief reads holds more than it needs — GitHub's `repo`
+   * scope is read *and* write across private repositories — and burying that
+   * is the omission this prop exists to prevent.
+   */
+  grants?: ReactNode;
 }
 
 /**
@@ -159,6 +183,7 @@ function Integration({
   addLabel,
   icon,
   registrationHelp,
+  grants,
 }: IntegrationProps) {
   const {
     accountsFor,
@@ -304,6 +329,10 @@ function Integration({
         </p>
       )}
 
+      {grants !== undefined && (
+        <p className="mt-4 text-[13px] leading-snug text-muted-foreground">{grants}</p>
+      )}
+
       <div className="mt-4">
         <Button
           size="sm"
@@ -316,12 +345,14 @@ function Integration({
         </Button>
       </div>
 
-      <SignInRegistration
-        service={service}
-        name={title}
-        signInLabel={signInLabel}
-        where={registrationHelp}
-      />
+      {registrationHelp !== undefined && (
+        <SignInRegistration
+          service={service}
+          name={title}
+          signInLabel={signInLabel}
+          where={registrationHelp}
+        />
+      )}
     </SettingsSection>
   );
 }
@@ -619,6 +650,14 @@ export function SettingsView() {
             connectLabel="Connect GitHub"
             addLabel="Add another GitHub account"
             icon={<Github aria-hidden />}
+            grants={
+              <>
+                Chief asks for the <span className="font-mono text-[12px]">repo</span> scope, which
+                is read <strong>and write</strong> across your public and private repositories. That
+                is broader than it needs: GitHub offers OAuth apps no read-only scope for private
+                repositories. Chief only reads.
+              </>
+            }
             registrationHelp={
               <>
                 Make an <strong>OAuth app</strong> on GitHub under Settings → Developer settings,
@@ -641,6 +680,24 @@ export function SettingsView() {
                 <span className="font-mono text-[12px]">http://localhost</span>, and paste its
                 application (client) id. It is not a secret — Chief signs in as a public client,
                 which has none.
+              </>
+            }
+          />
+          <Integration
+            service={ATLASSIAN}
+            title="Jira"
+            description="Lets Chief read the Jira issues assigned to you and not finished. Sign-in opens your browser and comes back to a port on this machine; the token is stored only here."
+            connectLabel="Connect Atlassian"
+            addLabel="Add another Atlassian account"
+            icon={<SquareKanban aria-hidden />}
+            grants={
+              <>
+                Chief asks for <strong>read-only</strong> scopes, and Atlassian enforces that at
+                sign-in rather than taking Chief's word for it — this connection cannot create, edit
+                or transition anything, and Chief would have to ask you to sign in again to gain
+                that. It also registers itself with Atlassian when you connect, so there is no
+                client id to paste and nothing about this copy of Chief is shared with anyone
+                else's.
               </>
             }
           />

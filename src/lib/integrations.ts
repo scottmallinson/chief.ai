@@ -12,6 +12,9 @@ export const CALENDAR = 'calendar';
 /** Linear, read with a personal API key rather than an OAuth grant. */
 export const LINEAR = 'linear';
 
+/** Jira and Confluence, through Atlassian's Remote MCP server. */
+export const ATLASSIAN = 'atlassian';
+
 /** One connected account, as the backend reports it. Carries no secret. */
 export interface Account {
   id: number;

@@ -152,13 +152,15 @@ describe('SettingsView', () => {
 
     render(<SettingsView />);
 
-    // GitHub, Outlook and Linear each say so; the calendar card says "None",
-    // because a subscription is not a connection. Waited for rather than read
-    // once: every card holds its own `useIntegrations`, so they settle
-    // independently and `findAllByText` returns as soon as the *first* one has.
-    await waitFor(() => expect(screen.getAllByText('Not connected')).toHaveLength(3));
+    // GitHub, Outlook, Linear and Atlassian each say so; the calendar card
+    // says "None", because a subscription is not a connection. Waited for
+    // rather than read once: every card holds its own `useIntegrations`, so
+    // they settle independently and `findAllByText` returns as soon as the
+    // *first* one has.
+    await waitFor(() => expect(screen.getAllByText('Not connected')).toHaveLength(4));
     expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Connect Outlook' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Atlassian' })).toBeInTheDocument();
     expect(screen.getByText('On this machine')).toBeInTheDocument();
 
     // The model is whatever this machine was given, not a name written into
@@ -867,6 +869,53 @@ describe('SettingsView', () => {
 
       expect(await screen.findByLabelText('Name for octocat')).toBeInTheDocument();
       expect(screen.getByText('Never synced')).toBeInTheDocument();
+    });
+  });
+
+  describe('what a connection permits', () => {
+    /**
+     * REC-22's acceptance criterion, and the reason the `grants` prop exists.
+     *
+     * Atlassian's write scopes sit on the same resource as its read scopes, so
+     * asking for none of them is what makes read-only enforceable at the
+     * authorization server rather than a promise about Chief's code. That is
+     * worth something to the reader only if the screen says it, so the screen
+     * is what this asserts — the scope list itself is guarded in Rust by
+     * `atlassian::tests::asks_for_no_write_scope`.
+     */
+    it('says on screen that Atlassian is connected read-only', async () => {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        return Promise.resolve([]);
+      });
+
+      render(<SettingsView />);
+
+      const stated = await screen.findByText(/read-only/, { selector: 'strong' });
+
+      expect(stated).toBeInTheDocument();
+      expect(stated.parentElement?.textContent).toMatch(
+        /cannot create, edit or transition anything/,
+      );
+    });
+
+    /**
+     * The same rule applied to the provider it is least comfortable for.
+     * GitHub's `repo` scope is read *and* write across private repositories,
+     * which is broader than Chief needs, and leaving that implied would be the
+     * omission this whole prop exists to prevent.
+     */
+    it('says on screen that GitHub grants more than Chief uses', async () => {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        return Promise.resolve([]);
+      });
+
+      render(<SettingsView />);
+
+      const scope = await screen.findByText('repo');
+
+      expect(scope.parentElement?.textContent).toMatch(/read .*and write/);
     });
   });
 });

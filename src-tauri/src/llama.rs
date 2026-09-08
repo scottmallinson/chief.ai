@@ -1212,11 +1212,18 @@ pub(crate) mod test_support {
     pub fn serve<B: Into<String>>(
         replies: Vec<(&'static str, B)>,
     ) -> (String, JoinHandle<Vec<String>>) {
-        let replies: Vec<(&'static str, String)> = replies
-            .into_iter()
-            .map(|(status_line, body)| (status_line, body.into()))
-            .collect();
+        let (host, listener) = reserve();
 
+        (host, serve_on(listener, replies))
+    }
+
+    /// Take a port and say where it is, without answering anything yet.
+    ///
+    /// For the tests whose replies have to *name* the server — a discovery
+    /// document pointing at its own authorization server, a redirect to
+    /// itself. Those cannot build a body before they know the port, and a
+    /// bind-then-drop to learn one is a race with whatever binds next.
+    pub fn reserve() -> (String, std::net::TcpListener) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind loopback");
         listener
             .set_nonblocking(true)
@@ -1226,7 +1233,20 @@ pub(crate) mod test_support {
             .expect("socket should have an address")
             .port();
 
-        let handle = tokio::spawn(async move {
+        (format!("http://127.0.0.1:{port}"), listener)
+    }
+
+    /// Answer `replies` on a port [`reserve`] already took.
+    pub fn serve_on<B: Into<String>>(
+        listener: std::net::TcpListener,
+        replies: Vec<(&'static str, B)>,
+    ) -> JoinHandle<Vec<String>> {
+        let replies: Vec<(&'static str, String)> = replies
+            .into_iter()
+            .map(|(status_line, body)| (status_line, body.into()))
+            .collect();
+
+        tokio::spawn(async move {
             let listener = TcpListener::from_std(listener).expect("should adopt the listener");
             let mut received = Vec::new();
 
@@ -1268,9 +1288,7 @@ pub(crate) mod test_support {
             }
 
             received
-        });
-
-        (format!("http://127.0.0.1:{port}"), handle)
+        })
     }
 
     /// A server that promises more body than it sends, and then hangs up.

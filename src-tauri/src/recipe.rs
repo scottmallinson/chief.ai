@@ -57,6 +57,8 @@ pub struct Context {
     pub calendar: crate::calendar::Client,
     /// Linear, read with a pasted key rather than an OAuth grant.
     pub linear: crate::linear::Client,
+    /// Jira and Confluence, over Atlassian's Remote MCP server.
+    pub atlassian: crate::atlassian::Client,
     pub engine: llama::Client,
     pub corpus: Corpus,
 }
@@ -114,9 +116,18 @@ struct Gathered {
     mine: Vec<String>,
     shipped: Vec<String>,
     inbox: Vec<String>,
-    /// What the tracker says is assigned and unfinished — the one question the
+    /// What Linear says is assigned and unfinished — the one question the
     /// other sources cannot answer, because they hold the *outputs* of work.
     assigned: Vec<String>,
+    /// The same question, asked of Jira.
+    ///
+    /// **Kept apart from [`Gathered::assigned`] only so [`Gathered::sources`]
+    /// can name which tracker answered.** They share a heading in the prompt —
+    /// a brief listing "Assigned in Linear" and "Assigned in Jira" separately
+    /// would make the reader do the merge Chief is for — but a brief built
+    /// from Jira alone must not report its source as Linear, which is what one
+    /// merged field would have said.
+    jira: Vec<String>,
     background: Vec<(String, String)>,
 }
 
@@ -132,6 +143,7 @@ impl Gathered {
             ("work log", self.shipped.is_empty()),
             ("inbox", self.inbox.is_empty()),
             ("Linear", self.assigned.is_empty()),
+            ("Jira", self.jira.is_empty()),
             ("corpus", self.background.is_empty()),
         ] {
             if !empty {
@@ -236,6 +248,7 @@ async fn gather(context: &Context) -> Gathered {
     }
 
     found.assigned = assigned_issues(context).await;
+    found.jira = jira_issues(context).await;
     found.background = background(context).await;
 
     found
@@ -328,6 +341,36 @@ async fn assigned_issues(context: &Context) -> Vec<String> {
     found
 }
 
+/// What every connected Atlassian account says is assigned and unfinished.
+///
+/// Reads through [`AtlassianSession`] rather than the client directly, so a
+/// token that expired between passes is renewed once instead of sending the
+/// user back to a browser. A site that will not answer fails that one source,
+/// the same rule every other source in `gather` follows.
+async fn jira_issues(context: &Context) -> Vec<String> {
+    let Ok(accounts) =
+        crate::integrations::accounts(&context.pool, crate::integrations::ATLASSIAN).await
+    else {
+        return Vec::new();
+    };
+
+    let mut found = Vec::new();
+
+    for account in accounts {
+        let session =
+            crate::session::AtlassianSession::new(&context.pool, &context.atlassian, account.id);
+
+        match session.assigned().await {
+            Ok(issues) => found.extend(issues.iter().map(crate::atlassian::describe)),
+            // Reported without the token, which is a credential — `atlassian::Error`
+            // carries none, which a test asserts.
+            Err(error) => eprintln!("an Atlassian account could not be read: {error}"),
+        }
+    }
+
+    found
+}
+
 /// The always-loaded corpus files, newest first.
 ///
 /// Read in full and slimmed, because these are short files written for exactly
@@ -385,6 +428,10 @@ fn assemble(found: &Gathered, present: &str) -> Result<String, Error> {
         push(&mut budget, path, &format!("## {path}\n{text}"));
     }
 
+    // The two trackers, under the heading they share. Built here rather than
+    // in `gather` so `Gathered::sources` can still say which of them answered.
+    let tracked = [found.assigned.as_slice(), found.jira.as_slice()].concat();
+
     for (heading, items) in [
         ("Today's meetings", &found.agenda),
         (
@@ -393,7 +440,7 @@ fn assemble(found: &Gathered, present: &str) -> Result<String, Error> {
         ),
         ("Your open pull requests", &found.mine),
         ("Unread mail", &found.inbox),
-        ("Assigned to you and not finished", &found.assigned),
+        ("Assigned to you and not finished", &tracked),
         ("Recently logged work", &found.shipped),
     ] {
         if items.is_empty() {
@@ -635,6 +682,7 @@ pub async fn context<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Con
         microsoft: app.state::<microsoft::Client>().inner().clone(),
         calendar: app.state::<crate::calendar::Client>().inner().clone(),
         linear: app.state::<crate::linear::Client>().inner().clone(),
+        atlassian: app.state::<crate::atlassian::Client>().inner().clone(),
         engine: app.state::<llama::Client>().inner().clone(),
     })
 }
@@ -702,6 +750,7 @@ mod tests {
             shipped: vec!["Shipped the loopback listener".to_string()],
             inbox: vec!["Dana Reid: Re: the migration".to_string()],
             assigned: vec!["REC-42 Read Linear [In Progress]".to_string()],
+            jira: vec!["PROJ-7 Migrate the tenant [In Review]".to_string()],
             background: vec![(
                 "context/agents/org/team_structure.md".to_string(),
                 "# Team\nSam owns auth.".to_string(),
@@ -788,6 +837,7 @@ mod tests {
                 "work log",
                 "inbox",
                 "Linear",
+                "Jira",
                 "corpus"
             ]
         );
@@ -795,6 +845,36 @@ mod tests {
         let empty = Gathered::default();
         assert!(empty.sources().is_empty());
         assert!(empty.is_empty());
+    }
+
+    /// The two trackers answer the same question and share a heading, which is
+    /// why they are two fields: merged into one, a brief built from Jira alone
+    /// would tell the reader it came from Linear.
+    #[test]
+    fn a_brief_built_from_jira_alone_does_not_claim_to_come_from_linear() {
+        let found = Gathered {
+            jira: vec!["PROJ-7 Migrate the tenant [In Review]".to_string()],
+            ..Gathered::default()
+        };
+
+        assert_eq!(found.sources(), ["Jira"]);
+    }
+
+    /// And they still arrive under one heading, so the reader is not asked to
+    /// merge two lists of the same thing.
+    #[test]
+    fn both_trackers_land_under_one_heading() {
+        let prompt = assemble(&gathered(), PRESENT).expect("should assemble");
+
+        assert_eq!(
+            prompt
+                .matches("## Assigned to you and not finished")
+                .count(),
+            1,
+            "{prompt}"
+        );
+        assert!(prompt.contains("REC-42"), "{prompt}");
+        assert!(prompt.contains("PROJ-7"), "{prompt}");
     }
 
     #[test]
@@ -892,6 +972,7 @@ mod tests {
             microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
             calendar: crate::calendar::Client::new().expect("client"),
             linear: crate::linear::Client::new().expect("client"),
+            atlassian: crate::atlassian::Client::new().expect("client"),
             engine: llama::Client::with_base_url("http://127.0.0.1:1").expect("client"),
             corpus,
         };
@@ -939,6 +1020,7 @@ mod tests {
                 microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
                 calendar: crate::calendar::Client::new().expect("client"),
                 linear: crate::linear::Client::new().expect("client"),
+                atlassian: crate::atlassian::Client::new().expect("client"),
                 engine: llama::Client::with_base_url(engine_host).expect("client"),
                 corpus,
             },
@@ -1166,6 +1248,7 @@ mod tests {
             microsoft: microsoft::Client::against("127.0.0.1:1").expect("client"),
             calendar: crate::calendar::Client::new().expect("client"),
             linear: crate::linear::Client::new().expect("client"),
+            atlassian: crate::atlassian::Client::new().expect("client"),
             engine: llama::Client::with_base_url(&host).expect("client"),
             corpus: Corpus::at(root),
         };

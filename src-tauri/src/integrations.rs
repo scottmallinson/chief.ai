@@ -22,6 +22,8 @@ pub const MICROSOFT: &str = "microsoft";
 pub const CALENDAR: &str = "calendar";
 /// Linear, read with a personal API key rather than an OAuth grant.
 pub const LINEAR: &str = "linear";
+/// Jira and Confluence, through Atlassian's Remote MCP server.
+pub const ATLASSIAN: &str = "atlassian";
 
 /// How a credential was obtained, so routing is explicit rather than inferred
 /// from which columns happen to be NULL.
@@ -33,6 +35,13 @@ pub const SUBSCRIPTION: &str = "subscription";
 /// A key the user pasted. Like [`SUBSCRIPTION`], a bearer credential that is
 /// never shown again once stored.
 pub const API_KEY: &str = "api_key";
+/// An OAuth grant whose *client* was minted at runtime by Dynamic Client
+/// Registration, rather than being one the build carried or the user pasted.
+///
+/// Distinct from [`OAUTH`] because the registration lives on the account —
+/// `client_id` and `client_secret` are set, and renewing with anything else
+/// would be renewing with somebody else's client. See `atlassian.rs`.
+pub const DCR: &str = "dcr";
 
 /// A connected account, as the settings screen sees it. Carries no secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
