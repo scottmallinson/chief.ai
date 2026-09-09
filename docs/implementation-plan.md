@@ -33,7 +33,9 @@ The current state of every step. **Update this table in the pull request that ch
 | 13    | Deterministic intent routing           | Shipped                        | REC-15           | #53       |
 | 14    | Proposed Actions, drafted              | Shipped                        | REC-17           | #55       |
 | 15    | The send path                          | **Not started — deliberately** | REC-18           | —         |
-| 16–21 | Integration fan-out                    | Not started                    | —                | —         |
+| 16–18 | Integration fan-out                    | Not started                    | —                | —         |
+| 19    | Jira and Confluence                    | **Auth and reads built**       | REC-22           | —         |
+| 20–21 | Integration fan-out                    | Not started                    | —                | —         |
 | 22    | Bootstrapping the corpus               | Shipped                        | REC-16           | #54       |
 | —     | Calendar by .ics subscription          | Shipped                        | REC-39           | #60       |
 | —     | Linear by pasted API key               | Shipped                        | REC-40           | #61       |
@@ -54,6 +56,15 @@ The current state of every step. **Update this table in the pull request that ch
 **Step 22 was built before step 14**, out of the numbered order and on the plan's own advice: an
 empty corpus is step 14's failure mode, and a draft written against seven empty starter files is
 the generic output that step exists to avoid.
+
+**Step 19 is built but not finishable here.** Everything that can be proved without an Atlassian
+site is: discovery, Dynamic Client Registration, PKCE, renewal, the MCP floor, the deterministic
+allowlist and the read, all against stub servers. What is left needs a paid Atlassian site and a
+browser — the registration endpoint is undocumented, so only a real sign-in can say whether it
+accepts a loopback redirect on an ephemeral port and what it echoes back. That is REC-22's first
+acceptance criterion and it is a person's to run. It was taken out of order for the same reason
+step 22 was: it needs no review from anybody, where steps 16–18 wait on Zoom's and Linear's
+research passes and on Google's verification paperwork.
 
 ### Decisions, as built
 
@@ -675,7 +686,7 @@ primary-source, adversarially verified research pass the other five got before t
 | 16   | **Zoom**                    | PKCE public client, loopback; device flow also available | Unverified: admin approval to leave development; distribution terms                  |
 | 17   | **Linear**                  | PKCE, `client_secret` optional — a genuine public client | Unverified: loopback redirect support; admin rights to create the app                |
 | 18   | **Google Calendar + Tasks** | Same machinery as step 9, reused                         | Verified domain, hosted privacy policy, demo video; 100-user cap until verified      |
-| 19   | **Jira + Confluence**       | DCR-over-MCP, PKCE, no shipped secret                    | Undocumented registration endpoint; paid plan; deterministic tools only              |
+| 19   | **Jira + Confluence**       | DCR-over-MCP, PKCE, no shipped secret                    | Undocumented registration endpoint; paid plan; deterministic tools only — see below  |
 | 20   | **Slack**                   | Bring-your-own internal app, REST                        | A distributed app is throttled to 1 req/min and 15 messages — BYO is strictly better |
 | 21   | **Gmail**                   | **Send first, read later**                               | `gmail.send` is _sensitive_; reading is _restricted_ and triggers annual paid CASA   |
 
@@ -686,6 +697,28 @@ Two rules from the branch's spec that survive into every one of these:
   machine" on every screen, and that promise is load-bearing.
 - **Never declare the MCP `sampling` capability.** A server that can request sampling can run its own
   agentic loop on the user's local model. Client capabilities must be empty, asserted by a test.
+
+**Step 19, as built — revision 7.** The spec's mechanism survived re-verification on 2026-09-08:
+`mcp.atlassian.com` still names one authorization server, that issuer still advertises a
+`registration_endpoint`, `S256`, a `refresh_token` grant and `token_endpoint_auth_methods_supported`
+including `none`. Three things the spec did not record, found while building:
+
+- **The issuer now also advertises `client_id_metadata_document_supported`.** That is the successor
+  MCP's own spec prefers over registration, and it is worse here for exactly the reason §"DCR is
+  deprecated" gives: a Client ID Metadata Document is a permanent off-machine dependency, and its
+  URL _is_ the client id. Chief stays on registration while registration exists. Its withdrawal is
+  now visible rather than hypothetical, and the pasted-API-token fallback is what it falls back to.
+- **The scope list is granular and read-only is expressible.** `read:jira-work`, `search:confluence`,
+  `read:page:confluence` and `read:space:confluence` have `write:` counterparts on the same
+  resource, so asking for none of them makes read-only a property of the grant. That is D4's
+  forfeit, stated precisely: taking `write:jira-work` later is what spends it. **Only the Jira
+  scopes are requested**, because Confluence's read is not built and a consent screen naming
+  access no code path uses is the thing `repo` is criticised for here.
+- **Registration happens per sign-in, after the loopback port is bound**, so the redirect URI
+  registered names a port this process already holds. RFC 8252 §7.3 requires an authorization
+  server to accept any port on a loopback redirect, but nothing says an undocumented endpoint
+  follows that rule, and an ephemeral port cannot be registered in advance. The minted id is stored
+  on the account, which is the first use `integration_accounts.client_id` has had.
 
 ### Step 22 — Bootstrapping the corpus
 
@@ -912,18 +945,22 @@ removes from it.**
 
 ### Unclaimed engineering
 
-| What                                       | Note                                                                                                                                                                                                                | Where       |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| **Tokens in the OS keychain**              | Stored as plain text, protected by the OS user account                                                                                                                                                              | —           |
-| **Reviewers in `team_structure.md`**       | GitHub's search response carries none, so it is a call per pull request                                                                                                                                             | REC-16      |
-| **`glib` GHSA-wrw7-89jp-8q8g**             | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                                                                                                | SECURITY.md |
-| **AC/battery polling cadence**             | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                                                                                                        | DLE-2       |
-| **A control for the pass interval**        | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it                                                                               | —           |
-| **Whether `work_logs` is ever pruned**     | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                                                                                             | DLE-8       |
-| **Chief is not on WAL, and cannot be**     | Neither sqlx nor `tauri-plugin-sql` offers a seam, and a migration cannot do it — see the settled note below. It needs a patched plugin or an `after_connect` hook                                                  | DLE-11      |
-| **FTS5 query semantics**                   | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                                                                                                       | DLE-0       |
-| **GitHub sign-in is not RFC 8252's flow**  | Blocked on GitHub supporting public clients, not on us. Outlook already is that flow; see the settled note below                                                                                                    | REC-61      |
-| **A changed client id voids older tokens** | `session.rs` renews with whatever registration is configured now, and one OAuth app cannot exchange another's refresh token. `integration_accounts.client_id` is the column for this and every caller writes `None` | —           |
+| What                                                           | Note                                                                                                                                                                                                                                                                   | Where       |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| **Tokens in the OS keychain**                                  | Stored as plain text, protected by the OS user account                                                                                                                                                                                                                 | —           |
+| **Atlassian is signed in but never synced**                    | It is read when a brief is assembled, like Linear, so it writes no `work_logs` rows and has no `sync_state`. D9 says a read question is answered from local storage; both trackers are outside that today                                                              | REC-22      |
+| **One Atlassian account row per sign-in, not per site**        | The credential reaches every site it lists and reads all of them, but the row is keyed on the lowest cloud id. Two sign-ins covering overlapping sites would be two rows reading the same issues                                                                       | REC-22      |
+| **The MCP tool names are the spec's, unverified**              | `searchJiraIssuesUsingJql`, `getJiraIssue`, `getConfluencePage`, `getAccessibleAtlassianResources`. A name Atlassian has since changed surfaces as "Atlassian did not recognise that request", not as silence                                                          | REC-22      |
+| **Confluence, the other half of step 19**                      | Its scopes are granular and available and are deliberately not requested yet: a consent screen naming Confluence for a read no code path makes is what Chief criticises `repo` for. The scope and the read land together                                               | REC-22      |
+| **Reviewers in `team_structure.md`**                           | GitHub's search response carries none, so it is a call per pull request                                                                                                                                                                                                | REC-16      |
+| **`glib` GHSA-wrw7-89jp-8q8g**                                 | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                                                                                                                                                   | SECURITY.md |
+| **AC/battery polling cadence**                                 | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                                                                                                                                                           | DLE-2       |
+| **A control for the pass interval**                            | `daemon.pass_interval_minutes` is read and clamped, but nothing writes it. DLE-3 showed freshness rather than adding a control for it                                                                                                                                  | —           |
+| **Whether `work_logs` is ever pruned**                         | DLE-8 rolls up and keeps every row. Pruning is a product call and needs evidence the table is a problem                                                                                                                                                                | DLE-8       |
+| **Chief is not on WAL, and cannot be**                         | Neither sqlx nor `tauri-plugin-sql` offers a seam, and a migration cannot do it — see the settled note below. It needs a patched plugin or an `after_connect` hook                                                                                                     | DLE-11      |
+| **FTS5 query semantics**                                       | OR-joined and `bm25()`-ranked, chosen because a read question is a recall problem. Revisit against real usage                                                                                                                                                          | DLE-0       |
+| **GitHub sign-in is not RFC 8252's flow**                      | Blocked on GitHub supporting public clients, not on us. Outlook already is that flow; see the settled note below                                                                                                                                                       | REC-61      |
+| **Tokens issued under a client id the user has since changed** | Half done. `session.rs` now prefers `integration_accounts.client_id` when the credential recorded one, which is what Atlassian's per-sign-in registration needs. GitHub and Outlook still write `None`, so changing their configured id still voids their older tokens | —           |
 
 ### Settled during implementation, recorded so it is not re-litigated
 

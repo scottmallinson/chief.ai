@@ -12,6 +12,7 @@
 
 use sqlx::SqlitePool;
 
+use crate::atlassian;
 use crate::github::{self, Client, PullRequest, State};
 use crate::integrations;
 use crate::microsoft;
@@ -99,8 +100,19 @@ impl<'a, P: Provider> Session<'a, P> {
     pub async fn renew(&self) -> Result<Option<String>, P::Error> {
         let credentials = self.credentials().await?;
 
-        let (Some(refresh_token), Some(client_id)) =
-            (&credentials.refresh_token, self.client_id().await)
+        // **The account's own registration wins.** One OAuth client cannot
+        // exchange another's refresh token, so a credential that recorded the
+        // client it was issued to has to be renewed with that one — whatever
+        // this machine has configured since. Until Atlassian there was no such
+        // credential and every caller wrote `None`, which is why this used to
+        // resolve the registration and nothing else; a client minted per
+        // sign-in makes the distinction load-bearing rather than theoretical.
+        let registration = match credentials.client_id.clone() {
+            minted @ Some(_) => minted,
+            None => self.client_id().await,
+        };
+
+        let (Some(refresh_token), Some(client_id)) = (&credentials.refresh_token, registration)
         else {
             return Ok(None);
         };
@@ -229,6 +241,51 @@ impl<'a> OutlookSession<'a> {
 }
 
 /// Reading GitHub on behalf of one connected account.
+/// Reading Jira for one connected Atlassian account.
+///
+/// The third of these, which is where the plan said an abstraction would be
+/// justified — and it still is not. What differs between them is the reading,
+/// and these bodies are the reading. What is shared is renewal, and
+/// [`Session`] already holds it.
+///
+/// Atlassian is the one provider whose renewal needs the account's own client,
+/// which [`Session::renew`] now prefers; nothing here has to know that.
+pub struct AtlassianSession<'a> {
+    session: Session<'a, atlassian::Client>,
+    client: &'a atlassian::Client,
+}
+
+impl<'a> AtlassianSession<'a> {
+    pub fn new(pool: &'a SqlitePool, client: &'a atlassian::Client, account_id: i64) -> Self {
+        Self {
+            session: Session::new(pool, client, account_id),
+            client,
+        }
+    }
+
+    /// What is assigned to this person and unfinished, across every site the
+    /// credential reaches.
+    ///
+    /// One MCP conversation for all of them: `initialize` is a round trip, and
+    /// opening one per site would pay it again for each.
+    pub async fn assigned(&self) -> Result<Vec<atlassian::Issue>, atlassian::Error> {
+        let token = self.session.token().await?;
+
+        self.session
+            .renewing(token, |token| async move {
+                let mcp = self.client.connect(&token).await?;
+                let mut found = Vec::new();
+
+                for site in mcp.sites().await? {
+                    found.extend(mcp.assigned(&site).await?);
+                }
+
+                Ok(found)
+            })
+            .await
+    }
+}
+
 pub struct GithubSession<'a> {
     session: Session<'a, Client>,
     client: &'a Client,

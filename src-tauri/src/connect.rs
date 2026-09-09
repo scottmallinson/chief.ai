@@ -11,12 +11,14 @@
 use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::Mutex;
 
+use crate::atlassian;
 use crate::calendar;
 use crate::corpus;
 use crate::db;
 use crate::github::{self, Client, DeviceLogin};
 use crate::integrations::{
-    self, Account, NewAccount, API_KEY, CALENDAR, GITHUB, LINEAR, MICROSOFT, OAUTH, SUBSCRIPTION,
+    self, Account, NewAccount, API_KEY, ATLASSIAN, CALENDAR, DCR, GITHUB, LINEAR, MICROSOFT, OAUTH,
+    SUBSCRIPTION,
 };
 use crate::linear;
 use crate::microsoft;
@@ -36,6 +38,11 @@ use crate::work_log;
 pub enum Flow {
     Device(github::PendingLogin),
     Browser(Box<microsoft::PendingLogin>),
+    /// The same browser round trip as [`Flow::Browser`], but carrying the
+    /// registration it minted on the way out — Atlassian's client id belongs
+    /// to this one sign-in and nothing else can spend the code it comes back
+    /// with. See `atlassian.rs`.
+    Atlassian(Box<atlassian::PendingLogin>),
 }
 
 /// The sign-in waiting to be completed, if any.
@@ -74,6 +81,8 @@ pub enum Error {
     WrongFlow,
     #[error("'{0}' is not signed into, so it has no client id")]
     NoSignIn(String),
+    #[error("Chief registers itself with '{0}' when you sign in, so there is no client id to set")]
+    MintsItsOwn(String),
     #[error(transparent)]
     BadClientId(#[from] registration::Invalid),
     #[error(transparent)]
@@ -82,6 +91,8 @@ pub enum Error {
     Calendar(#[from] calendar::Error),
     #[error(transparent)]
     Linear(#[from] linear::Error),
+    #[error(transparent)]
+    Atlassian(#[from] atlassian::Error),
     #[error(transparent)]
     Corpus(#[from] corpus::Error),
 }
@@ -95,7 +106,12 @@ impl serde::Serialize for Error {
 /// Reject a service Chief does not know, rather than failing later and less
 /// clearly.
 fn known(service: &str) -> Result<(), Error> {
-    if service == GITHUB || service == MICROSOFT || service == CALENDAR || service == LINEAR {
+    if service == GITHUB
+        || service == MICROSOFT
+        || service == CALENDAR
+        || service == LINEAR
+        || service == ATLASSIAN
+    {
         return Ok(());
     }
 
@@ -197,6 +213,14 @@ fn signs_in(service: &str) -> Result<(), Error> {
         return Ok(());
     }
 
+    // Atlassian *does* sign in, and still has no registration to configure:
+    // its client is minted per sign-in and belongs to the account it was
+    // minted for. Saying "not signed into" would be false, so it gets its own
+    // answer.
+    if service == ATLASSIAN {
+        return Err(Error::MintsItsOwn(service.to_string()));
+    }
+
     Err(Error::NoSignIn(service.to_string()))
 }
 
@@ -288,6 +312,7 @@ pub async fn start_login<R: Runtime>(
     app: AppHandle<R>,
     github_client: State<'_, Client>,
     microsoft_client: State<'_, microsoft::Client>,
+    atlassian_client: State<'_, atlassian::Client>,
     pending: State<'_, Pending>,
 ) -> Result<Login, Error> {
     known(&service)?;
@@ -302,6 +327,17 @@ pub async fn start_login<R: Runtime>(
         return Err(Error::NoSuchService(
             "Linear is connected with a personal API key, not by signing in".to_string(),
         ));
+    }
+
+    // Atlassian is the one provider with nothing to look up: it registers a
+    // client for this sign-in as part of starting it, so there is no stored id
+    // to resolve and no build-time one to fall back to.
+    if service == ATLASSIAN {
+        let (started, url) = atlassian_client.start_login().await?;
+
+        *pending.0.lock().await = Some(Flow::Atlassian(Box::new(started)));
+
+        return Ok(Login::Browser { url });
     }
 
     // The registration is read from this machine rather than from the build,
@@ -334,6 +370,7 @@ pub async fn finish_login<R: Runtime>(
     app: AppHandle<R>,
     github_client: State<'_, Client>,
     microsoft_client: State<'_, microsoft::Client>,
+    atlassian_client: State<'_, atlassian::Client>,
     pending: State<'_, Pending>,
 ) -> Result<Connected, Error> {
     known(&service)?;
@@ -386,6 +423,44 @@ pub async fn finish_login<R: Runtime>(
             )
             .await?
         }
+        (ATLASSIAN, Flow::Atlassian(started)) => {
+            let (tokens, registration) = atlassian_client.finish_login(*started).await?;
+
+            // One read, which both proves the grant works and says whose sites
+            // these are — the same shape as Linear's single query. A token
+            // that cannot list its own sites cannot read an issue either.
+            let sites = atlassian_client
+                .connect(&tokens.access_token)
+                .await?
+                .sites()
+                .await?;
+
+            let primary = sites.first().ok_or(atlassian::Error::NotConnected)?;
+
+            integrations::save(
+                &pool,
+                NewAccount {
+                    service: ATLASSIAN,
+                    // The lowest cloud id, which `sites` sorts for. Stable
+                    // across syncs, so reconnecting replaces this row rather
+                    // than making a second one — and reads still cover every
+                    // site the credential reaches, not only this one.
+                    account_key: &primary.id,
+                    identity: Some(site_name(&sites)).as_deref(),
+                    credential_kind: DCR,
+                    access_token: &tokens.access_token,
+                    refresh_token: tokens.refresh_token.as_deref(),
+                    expires_at: tokens.expires_in.map(expires_at).as_deref(),
+                    scopes: Some(&atlassian::SCOPES.join(" ")),
+                    // The one provider that writes these. The client was minted
+                    // for this account and renewal has to use it: no other
+                    // registration can exchange its refresh token.
+                    client_id: Some(&registration.client_id),
+                    client_secret: registration.client_secret.as_deref(),
+                },
+            )
+            .await?
+        }
         (_, Flow::Device(started)) => {
             let client_id = github::configured_client_id(&pool).await?;
             let (access_token, refresh_token) =
@@ -419,6 +494,29 @@ pub async fn finish_login<R: Runtime>(
         reconnected: before.contains(&stored.id),
         account: stored,
     })
+}
+
+/// What to show for an Atlassian account.
+///
+/// One site is named; several are counted, because the credential reaches all
+/// of them and naming only the first would say something false about what
+/// Chief is reading.
+fn site_name(sites: &[atlassian::Site]) -> String {
+    let first = sites
+        .first()
+        .map(|site| {
+            if site.name.is_empty() {
+                site.url.clone()
+            } else {
+                site.name.clone()
+            }
+        })
+        .unwrap_or_default();
+
+    match sites.len() {
+        0 | 1 => first,
+        more => format!("{first} and {} more", more - 1),
+    }
 }
 
 /// When a token that lasts `seconds` more runs out, as an ISO-8601 instant.

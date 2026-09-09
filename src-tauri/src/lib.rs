@@ -7,6 +7,7 @@
 
 mod adapter;
 mod agent;
+mod atlassian;
 mod calendar;
 mod clock;
 mod connect;
@@ -72,6 +73,7 @@ pub fn run() {
             app.manage(microsoft::Client::new()?);
             app.manage(calendar::Client::new()?);
             app.manage(linear::Client::new()?);
+            app.manage(atlassian::Client::new()?);
             app.manage(connect::Pending::default());
             app.manage(agent::Attention::default());
             // One ingestion pass at a time, whether the daemon asked or a
