@@ -110,6 +110,17 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 /// How long to wait before deciding Atlassian is not answering.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// What Chief calls itself on the wire.
+///
+/// `reqwest` sends **no** `User-Agent` at all unless one is set, and this
+/// module shipped without one. `github.rs` has always set the same string, and
+/// it is the only client here whose reads are known to work from the machine
+/// where Atlassian's failed — which is not proof, but a nameless request is
+/// the wrong thing to send a third party either way. `mcp.atlassian.com` is
+/// the one Atlassian host behind Cloudflare, whose managed rules commonly
+/// action exactly that.
+const USER_AGENT: &str = concat!("chief-ai/", env!("CARGO_PKG_VERSION"));
+
 /// What Chief asks for: reading Jira, and nothing else.
 ///
 /// **Every write scope Atlassian offers on this resource is deliberately
@@ -185,8 +196,23 @@ const ASSIGNED_JQL: &str = "assignee = currentUser() AND resolution = EMPTY ORDE
 pub enum Error {
     #[error("Atlassian is not connected")]
     NotConnected,
-    #[error("Atlassian could not be reached")]
-    Transport,
+    /// The connection never got as far as an answer: DNS, TLS, no route, a
+    /// timeout.
+    ///
+    /// **Carries why, and which host.** It used to be a bare "Atlassian could
+    /// not be reached", which is true of a name that does not resolve, a
+    /// certificate that does not verify, a firewall, and a 404 alike — and
+    /// being told that on a button press leaves the user and the next person
+    /// to debug it with nowhere to start. Ten call sites threw the cause away
+    /// with `map_err(|_| …)`; none do now.
+    #[error("{host} could not be reached: {because}")]
+    Unreachable { host: String, because: String },
+    /// The host answered, but not with success. Distinct from
+    /// [`Error::Unreachable`] because the network is fine and something is
+    /// refusing on purpose — which is a different thing for the user to do
+    /// something about.
+    #[error("{host} answered {status}")]
+    Answered { host: String, status: u16 },
     #[error("Atlassian answered with something unexpected")]
     Decode,
     #[error("Atlassian refused the sign-in: {0}")]
@@ -203,6 +229,73 @@ pub enum Error {
     Tool(String),
     #[error(transparent)]
     Storage(#[from] crate::db::Error),
+}
+
+/// The host a URL names, so an error can say where it was going without
+/// quoting a whole URL — and without ever quoting a query string, which is
+/// where a code or a token would be if one were ever put in one.
+#[must_use]
+fn host_of(url: &str) -> String {
+    url.split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split('/')
+        .next()
+        .unwrap_or(url)
+        .to_string()
+}
+
+/// Why a request failed, in the words of whatever actually failed.
+///
+/// `reqwest`'s own `Display` is "error sending request for url (…)" every
+/// time; the useful sentence — `dns error`, `certificate verify failed`,
+/// `connection refused`, `operation timed out` — is further down the source
+/// chain. Both ends are kept: the outer says what stage it was at and the
+/// inner says what went wrong.
+///
+/// **Nothing here can carry a credential.** A `reqwest::Error` holds a URL and
+/// an I/O cause, never headers, and the one request that carries a bearer
+/// token puts it in a header. A test asserts the rendering.
+#[must_use]
+fn because(error: &reqwest::Error) -> String {
+    let mut said = vec![error.to_string()];
+    let mut source = std::error::Error::source(error);
+
+    // Bounded: a cause chain is a linked list and a cycle would hang here.
+    while let Some(inner) = source.filter(|_| said.len() < 4) {
+        said.push(inner.to_string());
+        source = std::error::Error::source(inner);
+    }
+
+    said.dedup();
+    said.join(": ")
+}
+
+impl Error {
+    /// A failed request, named and explained.
+    ///
+    /// Also written to stderr, because `tauri dev` shows that stream and a
+    /// person debugging this is usually looking at it — the same reason
+    /// `engine.rs` reads the server's stderr rather than inheriting it.
+    fn unreachable(url: &str, error: &reqwest::Error) -> Self {
+        let host = host_of(url);
+        let because = because(error);
+
+        eprintln!("atlassian: {host} could not be reached: {because}");
+
+        Self::Unreachable { host, because }
+    }
+
+    /// A request that was answered, but not with success.
+    fn answered(url: &str, status: reqwest::StatusCode) -> Self {
+        let host = host_of(url);
+
+        eprintln!("atlassian: {host} answered {status}");
+
+        Self::Answered {
+            host,
+            status: status.as_u16(),
+        }
+    }
 }
 
 impl serde::Serialize for Error {
@@ -413,12 +506,16 @@ impl Client {
     fn build(host: String, issuer_origin: String) -> Result<Self, Error> {
         let http = reqwest::Client::builder()
             .timeout(TIMEOUT)
+            .user_agent(USER_AGENT)
             // No proxy, for the same reason every other credential-carrying
             // client here has none: a proxy is a third party to a conversation
             // that has two.
             .no_proxy()
             .build()
-            .map_err(|_| Error::Transport)?;
+            .map_err(|error| Error::Unreachable {
+                host: host_of(&host),
+                because: error.to_string(),
+            })?;
 
         Ok(Self {
             http,
@@ -492,10 +589,12 @@ impl Client {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|_| Error::Transport)?;
+            .map_err(|error| Error::unreachable(url, &error))?;
 
-        if !response.status().is_success() {
-            return Err(Error::Transport);
+        let status = response.status();
+
+        if !status.is_success() {
+            return Err(Error::answered(url, status));
         }
 
         response.json().await.map_err(|_| Error::Decode)
@@ -531,7 +630,7 @@ impl Client {
             .json(&body)
             .send()
             .await
-            .map_err(|_| Error::Transport)?;
+            .map_err(|error| Error::unreachable(registration_endpoint, &error))?;
 
         let status = response.status();
         let reply: RegistrationReply = response.json().await.map_err(|_| Error::Decode)?;
@@ -653,7 +752,7 @@ impl Client {
             .form(&form)
             .send()
             .await
-            .map_err(|_| Error::Transport)?;
+            .map_err(|error| Error::unreachable(token_endpoint, &error))?;
 
         let status = response.status();
         let reply: TokenReply = response.json().await.map_err(|_| Error::Decode)?;
@@ -671,7 +770,7 @@ impl Client {
         }
 
         if !status.is_success() {
-            return Err(Error::Transport);
+            return Err(Error::answered(token_endpoint, status));
         }
 
         Ok(Tokens {
@@ -881,10 +980,13 @@ impl Mcp<'_> {
             return Err(Error::Rejected);
         }
 
-        let body = response.text().await.map_err(|_| Error::Transport)?;
+        let body = response
+            .text()
+            .await
+            .map_err(|error| Error::unreachable(&self.client.mcp_url(), &error))?;
 
         if !status.is_success() {
-            return Err(Error::Transport);
+            return Err(Error::answered(&self.client.mcp_url(), status));
         }
 
         let envelope = envelope(&content_type, &body)?;
@@ -920,7 +1022,10 @@ impl Mcp<'_> {
             request = request.header("Mcp-Session-Id", session);
         }
 
-        request.send().await.map_err(|_| Error::Transport)
+        request
+            .send()
+            .await
+            .map_err(|error| Error::unreachable(&self.client.mcp_url(), &error))
     }
 }
 
@@ -1312,7 +1417,14 @@ mod tests {
 
         let errors = [
             Error::NotConnected,
-            Error::Transport,
+            Error::Unreachable {
+                host: "mcp.atlassian.com".to_string(),
+                because: secret.to_string(),
+            },
+            Error::Answered {
+                host: "mcp.atlassian.com".to_string(),
+                status: 403,
+            },
             Error::Decode,
             Error::Refused(secret.to_string()),
             Error::Rejected,
@@ -1322,28 +1434,116 @@ mod tests {
             Error::Tool(secret.to_string()),
         ];
 
-        // The three variants that take a string are handed one here on
-        // purpose: they carry what the *server* said, and the point of the
-        // test is the variants that could carry what Chief holds. Those are
-        // the ones with no field at all, which is the design — so this asserts
-        // the shape rather than the rendering, and the rendering of the rest.
+        // The variants that take a string are handed one here on purpose:
+        // they carry what the *server* or the transport said, and the point of
+        // the test is that nothing carries what Chief *holds*. Those are the
+        // variants with no free-text field at all, which is the design — so
+        // this asserts the shape, and the test below asserts the thing that
+        // actually matters against a real failure.
         for error in errors {
             let rendered = error.to_string();
-            let carries_server_text = matches!(
+            let quotes_what_it_was_told = matches!(
                 error,
                 Error::Refused(_)
                     | Error::Registration(_)
                     | Error::UntrustedIssuer(_)
                     | Error::NotDeterministic(_)
                     | Error::Tool(_)
+                    | Error::Unreachable { .. }
             );
 
             assert_eq!(
                 rendered.contains(secret),
-                carries_server_text,
-                "only what the server said may be quoted: {rendered}"
+                quotes_what_it_was_told,
+                "only what the server or the transport said may be quoted: {rendered}"
             );
         }
+    }
+
+    /// **A nameless request is what shipped**, because `reqwest` sends no
+    /// `User-Agent` unless one is set and this module never set one. Asserted
+    /// against the bytes on the wire rather than against the constant.
+    #[tokio::test]
+    async fn names_itself_on_every_request() {
+        let (host, server) = serve(vec![
+            ("HTTP/1.1 200 OK", initialized()),
+            ("HTTP/1.1 200 OK", "{}".to_string()),
+        ]);
+        let client = Client::against(&host).expect("client");
+
+        client.connect("token").await.expect("should initialize");
+
+        let sent = server.await.expect("server");
+
+        assert!(!sent.is_empty(), "nothing was sent, so this proves nothing");
+        // Lowercased: `HeaderName` normalises, so hyper puts `user-agent` on
+        // the wire whatever case it was given.
+        assert!(
+            sent[0].to_lowercase().contains("user-agent: chief-ai/"),
+            "every request should name Chief: {}",
+            sent[0]
+        );
+    }
+
+    /// Named without the path, and never with a query string — a code or a
+    /// token would be in one if anything ever put it there.
+    #[test]
+    fn names_the_host_without_the_rest_of_the_url() {
+        assert_eq!(host_of("https://mcp.atlassian.com"), "mcp.atlassian.com");
+        assert_eq!(
+            host_of("https://mcp.atlassian.com/.well-known/oauth-protected-resource"),
+            "mcp.atlassian.com"
+        );
+        assert_eq!(
+            host_of("https://auth.atlassian.com/VCeDsk/dcr/register?code=secret"),
+            "auth.atlassian.com"
+        );
+        assert_eq!(
+            host_of("http://127.0.0.1:49512/callback"),
+            "127.0.0.1:49512"
+        );
+    }
+
+    /// **The guard that matters, against a real failure rather than a
+    /// hand-built one.**
+    ///
+    /// `Error::Unreachable` now quotes the transport's own words, and the one
+    /// request that carries a bearer token is the MCP call. A `reqwest::Error`
+    /// holds a URL and an I/O cause and never headers — but that is a fact
+    /// about a dependency, which is exactly the kind of fact that changes
+    /// under you. So this drives a real failing request with a real token and
+    /// reads what reaches the screen.
+    ///
+    /// Port 1 is never listening, so the failure is immediate and is the
+    /// connection itself rather than anything Atlassian said.
+    #[tokio::test]
+    async fn a_failed_request_never_renders_the_token_it_carried() {
+        let token = "atl-bearer-do-not-print";
+        let client = Client::against("http://127.0.0.1:1").expect("client");
+
+        let Err(error) = client.connect(token).await else {
+            panic!("nothing is listening on port 1, so this cannot succeed");
+        };
+
+        let rendered = error.to_string();
+
+        assert!(
+            matches!(error, Error::Unreachable { .. }),
+            "a refused connection is unreachable, not something Atlassian said: {error:?}"
+        );
+        assert!(
+            !rendered.contains(token),
+            "the bearer token reached the screen: {rendered}"
+        );
+        // Asserted as the *opening* of the message rather than as "appears
+        // somewhere", which was the first version and proved nothing: removing
+        // `{host}` from the Display left it green, because `because` embeds
+        // reqwest's own URL and that contains the host too. Two things say it;
+        // only this pins the one the message is built from.
+        assert!(
+            rendered.starts_with("127.0.0.1:1 "),
+            "the message should open by naming where it was going: {rendered}"
+        );
     }
 
     // ---------------------------------------------------------------------

@@ -566,6 +566,16 @@ mechanism is undocumented.
 - Jira issues join the brief beside Linear's under one heading, because they answer the same
   question — but they are two fields in `Gathered`, so a brief built from Jira alone does not report
   its source as Linear.
+- **A failed request says which host and why.** The module shipped with ten call sites that threw
+  the cause away with `map_err(|_| Error::Transport)`, so a name that does not resolve, a
+  certificate that does not verify, a firewall and a 404 all reached the screen as "Atlassian could
+  not be reached" — true, and useless to the person reading it or the next one debugging it.
+  `Unreachable` now carries the host and the transport's own words (`because` walks the source
+  chain, since reqwest's outer message is "error sending request for url" every time), `Answered`
+  carries a status, and both are written to stderr so `tauri dev` shows them. The token is never in
+  either: a `reqwest::Error` holds a URL and an I/O cause, never headers, and
+  `a_failed_request_never_renders_the_token_it_carried` drives a real failing request with a real
+  token rather than trusting that.
 
 ## Background daemon
 
