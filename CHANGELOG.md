@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.5.0 (2026-09-14)
+
+### Features
+
+- **ui:** publish the changelog as a page on the site ([e1c4107](https://github.com/scottmallinson/chief.ai/commit/e1c4107e4b9cb7d46cc0521d6dd8720247fb4041))
+- **repo:** add the marketing website ([f6ca6b4](https://github.com/scottmallinson/chief.ai/commit/f6ca6b4c774a682ff3d109d079ef3741ee919fd8))
+- **integrations:** read Jira and Confluence with a pasted API token ([ca3e5c0](https://github.com/scottmallinson/chief.ai/commit/ca3e5c086e9286e6b6bec8f626a2b28885739180))
+- **integrations:** read Jira through Atlassian's MCP server ([6822535](https://github.com/scottmallinson/chief.ai/commit/68225357c7f8689c632b779fb8ae5f62826abd6b))
+- **daemon:** ingest the work the log has to answer questions about ([a0c07ec](https://github.com/scottmallinson/chief.ai/commit/a0c07ec33ab0476f46ed6d39cbe6a3c688d208b2))
+- **daemon:** make Refresh read the accounts, and say what it found ([94c1db9](https://github.com/scottmallinson/chief.ai/commit/94c1db93c5d86bfa2bbdcb2186dba34d72e049c8))
+
+### Fixes
+
+- **ui:** align the site header on one baseline, and fit it on a phone ([0f35e21](https://github.com/scottmallinson/chief.ai/commit/0f35e21015e9bbc1b982cda51975beaf6cfd59a8))
+- **ui:** restore the source links, and make the header button legible ([c8e782b](https://github.com/scottmallinson/chief.ai/commit/c8e782b6fffb36cbdb37fb92f1dd9bf06d8a5fa0))
+- **deps:** take the patched fast-uri and js-yaml ([a43593b](https://github.com/scottmallinson/chief.ai/commit/a43593b617c9525889480235f1d95fbb54c37381))
+- **integrations:** name a certificate failure rather than blaming the network ([801e40a](https://github.com/scottmallinson/chief.ai/commit/801e40aa10b8dfd96c3aa60dcb38aa05bc59cf59))
+- **integrations:** say why Atlassian could not be reached, and name Chief ([2fd5c33](https://github.com/scottmallinson/chief.ai/commit/2fd5c3363f441be6374027c3828b2a378cb8460d))
+- **ui:** line a connected account's button up with its field ([598a469](https://github.com/scottmallinson/chief.ai/commit/598a469e47b32463541cdab98cf1f53ad35d56f9))
+- **auth:** say what happened when a second account is added ([cea5058](https://github.com/scottmallinson/chief.ai/commit/cea505884436c549f60ff42e911da7605f88306b))
+- **agent:** stream the brief, so silence means silence ([011c407](https://github.com/scottmallinson/chief.ai/commit/011c407dd96aee7ec5ad15a3a70206cb266f4359))
+- **agent:** stop the brief being handed a list of dates to echo ([61d40ea](https://github.com/scottmallinson/chief.ai/commit/61d40ea7e6bc21fcd6515f89a15ebc3086144677))
+- **ui:** keep a work-log row inside the card it is in ([2949617](https://github.com/scottmallinson/chief.ai/commit/2949617d73ec410918a1e6887c602d6f99775019))
+- **agent:** say what is missing rather than letting the model invent it ([d9c4222](https://github.com/scottmallinson/chief.ai/commit/d9c4222140020aea7cfcf45ee0bf56ceecf21802))
+- **auth:** open GitHub with the code already in it ([f327c5c](https://github.com/scottmallinson/chief.ai/commit/f327c5cf938c44862baba87a6180e5509f4f2bba))
+- **auth:** let this machine say which OAuth registration to sign in with ([3ee5f67](https://github.com/scottmallinson/chief.ai/commit/3ee5f678ecca2891ce8e028b46bdf9ade419126b))
+- **agent:** answer with what happened, not with the word for its state ([dfbe45d](https://github.com/scottmallinson/chief.ai/commit/dfbe45d090ce0cc64979a70fc854b9b44b87a26c))
+- **agent:** route the questions Chief itself suggests ([ca657f6](https://github.com/scottmallinson/chief.ai/commit/ca657f6c9c93c2160ebcbffc8664fef98738bf0f))
+- **daemon:** stop the background pass failing silently ([0505335](https://github.com/scottmallinson/chief.ai/commit/050533572ca0c9737614212089102231cfd3854a))
+- **ui:** keep today reachable, so a brief can always be asked for ([dc126b8](https://github.com/scottmallinson/chief.ai/commit/dc126b8dde5bfed283c97726f6ecd283c0e4203b))
+
 ## 0.4.0 (2026-09-03)
 
 ### Features

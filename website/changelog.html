@@ -93,15 +93,148 @@
         Every release of Chief since the first one. The list is written from the commits at release
         time rather than by hand, so it says what actually shipped — and a release only happens when
         something a person can download has changed. Version
-        <span data-version>0.4.0</span> is current.
+        <span data-version>0.5.0</span> is current.
       </p>
 
       <div class="changelog">
+        <section class="release" id="v0-5-0">
+          <div class="release-mark">
+            <p class="release-version">0.5.0</p>
+            <p class="release-date mono">2026-09-14</p>
+            <p class="release-latest">current release</p>
+          </div>
+          <div class="release-changes">
+            <div class="release-group">
+              <p class="micro">Features</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">ui</span>
+                  <span class="change-subject">publish the changelog as a page on the site</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/e1c4107e4b9cb7d46cc0521d6dd8720247fb4041">e1c4107</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">repo</span>
+                  <span class="change-subject">add the marketing website</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/f6ca6b4c774a682ff3d109d079ef3741ee919fd8">f6ca6b4</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">integrations</span>
+                  <span class="change-subject">read Jira and Confluence with a pasted API token</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/ca3e5c086e9286e6b6bec8f626a2b28885739180">ca3e5c0</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">integrations</span>
+                  <span class="change-subject">read Jira through Atlassian's MCP server</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/68225357c7f8689c632b779fb8ae5f62826abd6b">6822535</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">daemon</span>
+                  <span class="change-subject">ingest the work the log has to answer questions about</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/a0c07ec33ab0476f46ed6d39cbe6a3c688d208b2">a0c07ec</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">daemon</span>
+                  <span class="change-subject">make Refresh read the accounts, and say what it found</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/94c1db93c5d86bfa2bbdcb2186dba34d72e049c8">94c1db9</a>
+                </li>
+              </ul>
+            </div>
+            <div class="release-group">
+              <p class="micro">Fixes</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">ui</span>
+                  <span class="change-subject">align the site header on one baseline, and fit it on a phone</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/0f35e21015e9bbc1b982cda51975beaf6cfd59a8">0f35e21</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">ui</span>
+                  <span class="change-subject">restore the source links, and make the header button legible</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/c8e782b6fffb36cbdb37fb92f1dd9bf06d8a5fa0">c8e782b</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">deps</span>
+                  <span class="change-subject">take the patched fast-uri and js-yaml</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/a43593b617c9525889480235f1d95fbb54c37381">a43593b</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">integrations</span>
+                  <span class="change-subject">name a certificate failure rather than blaming the network</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/801e40aa10b8dfd96c3aa60dcb38aa05bc59cf59">801e40a</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">integrations</span>
+                  <span class="change-subject">say why Atlassian could not be reached, and name Chief</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/2fd5c3363f441be6374027c3828b2a378cb8460d">2fd5c33</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">ui</span>
+                  <span class="change-subject">line a connected account's button up with its field</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/598a469e47b32463541cdab98cf1f53ad35d56f9">598a469</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">auth</span>
+                  <span class="change-subject">say what happened when a second account is added</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/cea505884436c549f60ff42e911da7605f88306b">cea5058</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">stream the brief, so silence means silence</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/011c407dd96aee7ec5ad15a3a70206cb266f4359">011c407</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">stop the brief being handed a list of dates to echo</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/61d40ea7e6bc21fcd6515f89a15ebc3086144677">61d40ea</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">ui</span>
+                  <span class="change-subject">keep a work-log row inside the card it is in</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/2949617d73ec410918a1e6887c602d6f99775019">2949617</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">say what is missing rather than letting the model invent it</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/d9c4222140020aea7cfcf45ee0bf56ceecf21802">d9c4222</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">auth</span>
+                  <span class="change-subject">open GitHub with the code already in it</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/f327c5cf938c44862baba87a6180e5509f4f2bba">f327c5c</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">auth</span>
+                  <span class="change-subject">let this machine say which OAuth registration to sign in with</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/3ee5f678ecca2891ce8e028b46bdf9ade419126b">3ee5f67</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">answer with what happened, not with the word for its state</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/dfbe45d090ce0cc64979a70fc854b9b44b87a26c">dfbe45d</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">route the questions Chief itself suggests</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/ca657f6c9c93c2160ebcbffc8664fef98738bf0f">ca657f6</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">daemon</span>
+                  <span class="change-subject">stop the background pass failing silently</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/050533572ca0c9737614212089102231cfd3854a">0505335</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">ui</span>
+                  <span class="change-subject">keep today reachable, so a brief can always be asked for</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/dc126b8dde5bfed283c97726f6ecd283c0e4203b">dc126b8</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
         <section class="release" id="v0-4-0">
           <div class="release-mark">
             <p class="release-version">0.4.0</p>
             <p class="release-date mono">2026-09-03</p>
-            <p class="release-latest">current release</p>
           </div>
           <div class="release-changes">
             <div class="release-group">
