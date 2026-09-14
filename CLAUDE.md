@@ -636,19 +636,20 @@ helps, so there has to be a second way in.
 
 ## Background daemon
 
-`src-tauri/src/daemon.rs` keeps the work log current: ask GitHub what the user merged, ask the local
-model to turn each merge into a one-sentence achievement, and write it to `work_logs`.
+`src-tauri/src/daemon.rs` keeps the work log current: ask GitHub what the user has been doing, turn
+each item into a row through `ingest`, and write it to `work_logs`.
 
+- **The model is not involved**, and the module doc says so in those words. A pass used to spend one
+  generation per item writing a one-sentence achievement; `ingest.rs` derives the same fields from
+  what GitHub already said. That is what makes the interval a setting rather than a compromise with
+  `engine::IDLE_TIMEOUT`, and it is why a caught-up pass costs nothing.
 - It runs shortly after launch and then on an interval. A failing pass is never fatal — GitHub may
-  be unreachable or the engine may still be loading — so it reports and tries again next time.
+  be unreachable — so it reports and tries again next time.
 - Every pass is **idempotent**: entries carry the pull request's identifier in `external_id`, and
   the unique index added in migration v2 means the same merge is never logged twice. Entries the
   user writes by hand have no `external_id`, which is why that index is partial.
-- Work already in the log is skipped _before_ the model is asked, so a caught-up pass costs nothing.
 - A pass stops between items when `Attention` says the user is waiting on an answer. The rest keeps
   until the next pass; their question is worth more than the log being current.
-- If summarising fails, nothing is written for that item. Writing an unsummarised row would mean it
-  is never revisited, since the dedupe key would already be present.
 - `run_once` takes a `Context` rather than an `AppHandle`, so a whole pass runs in tests against an
   in-memory database and stub GitHub and engine servers.
 
@@ -948,6 +949,11 @@ order from step 8 to step 22, decisions D1–D8 with what each one costs, the ha
 It is **a living document, updated in the pull request that changes it** — see its §8. A step that
 lands without moving its row in §0 has left the plan describing something that is no longer true,
 which is the state it was in when it sat unmerged on a branch for seven steps.
+
+**[`docs/on-device-intelligence.md`](docs/on-device-intelligence.md)** answers REC-31: whether Chief
+should use the language model the operating system already ships — Apple's Foundation Models, and
+Windows' Phi Silica and its replacement. The short answer is not for the agent loop, and not yet;
+the reasons are dated, because both platforms move, and the document says what would change them.
 
 Three things to do with it rather than around it:
 
