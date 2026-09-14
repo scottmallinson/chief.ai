@@ -301,6 +301,23 @@ svg {
   flex-wrap: wrap;
 }
 
+/* The third thing beside the download button is a link rather than a third
+   button: two buttons and a link is a hierarchy, three buttons is a menu. */
+.hero-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: 4px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.hero-link:hover {
+  color: var(--graphite);
+}
+
 .hero-note {
   margin-top: 14px;
   font-size: 13px;
@@ -1237,6 +1254,128 @@ pre {
   color: var(--muted);
 }
 
+/* ---- Changelog ----
+   Generated into website/changelog.html from CHANGELOG.md, so these rules
+   dress a shape no one hand-writes. The release number is a machine fact and
+   so is the date, which is why both are mono and the date stays ISO: this is
+   an instrument, and a reader comparing it to a tag or a filename should not
+   have to translate. */
+
+.changelog {
+  margin-top: 40px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.release {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 40px;
+  padding: 34px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.release-mark {
+  /* Held beside its changes while a long release scrolls past. 84px is the
+     68px header plus room to breathe under it. */
+  position: sticky;
+  top: 84px;
+  align-self: start;
+}
+
+.release-version {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.release-date {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.release-latest {
+  margin-top: 13px;
+  display: inline-block;
+  border: 1px solid var(--verified);
+  border-radius: 4px;
+  padding: 3px 9px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--verified-text);
+}
+
+.release-group + .release-group {
+  margin-top: 28px;
+}
+
+.release-group .micro {
+  /* The section titles come from the changelog as "Features" and "Fixes"; the
+     micro label lowercases them the way every other label on the site is. */
+  text-transform: lowercase;
+  letter-spacing: 0.1em;
+}
+
+.change-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.change {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  padding: 11px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.change-scope {
+  flex: none;
+  /* Wide enough for `integrations`, the longest scope commitlint allows, so
+     every subject in a release starts at the same x. A ragged left edge down
+     seventy lines is the difference between a table and a list. */
+  min-width: 96px;
+  font-size: 12px;
+  color: var(--slate);
+}
+
+.change-subject {
+  flex: 1 1 240px;
+  text-wrap: pretty;
+}
+
+.change-sha {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.change-sha:hover {
+  color: var(--graphite);
+}
+
+/* Amber, because a breaking change is the one line in a release that needs
+   the reader rather than telling them something. A tinted fill with dark
+   text, never solid colour behind 10px type. */
+.change-breaking {
+  flex: none;
+  border-radius: 4px;
+  background: var(--attention-surface);
+  padding: 2px 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--attention-text);
+}
+
 /* ---- Footer ---- */
 
 .site-footer {
@@ -1373,6 +1512,31 @@ pre {
     grid-template-columns: 1fr;
     gap: 4px;
   }
+
+  /* The version rail stops being a rail: sticky beside 40px of nothing is
+     worse than a heading on top of what it names. */
+  .release {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 28px 0;
+  }
+
+  .release-mark {
+    position: static;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .release-date,
+  .release-latest {
+    margin-top: 0;
+  }
+
+  /* No column to line up with once the subject wraps under its scope. */
+  .change-scope {
+    min-width: 0;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1417,6 +1581,28 @@ pre {
 
   .frame-body {
     height: 380px;
+  }
+}
+
+@media (max-width: 560px) {
+  /* A change is two lines on a phone rather than three columns: the scope and
+     the commit it links to sit on one row, and the sentence gets the width. */
+  .change {
+    gap: 4px 10px;
+  }
+
+  .change-scope,
+  .change-sha {
+    order: 1;
+  }
+
+  .change-sha {
+    margin-left: auto;
+  }
+
+  .change-subject {
+    order: 2;
+    flex: 1 1 100%;
   }
 }
 

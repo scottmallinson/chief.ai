@@ -86,7 +86,11 @@ jobs:
           git config user.name 'Scott Mallinson'
           git config user.email 'scott@scottmallinson.com'
 
-          git add package.json CHANGELOG.md src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          # website/support.js carries the version the download links are built
+          # from, and website/changelog.html is generated from the changelog
+          # this run just wrote. Both ship with the site, so both are part of
+          # the release commit rather than a follow-up nobody remembers.
+          git add package.json CHANGELOG.md src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock website/support.js website/changelog.html
           git commit -m "chore(repo): release $VERSION"
           git tag "$TAG"
 

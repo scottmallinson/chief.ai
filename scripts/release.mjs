@@ -13,6 +13,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { buildPage } from './changelog-page.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
@@ -230,6 +232,9 @@ function main() {
   if (write) {
     writeVersion(version);
     writeChangelog(entry);
+    // The website's changelog page is generated from the markdown, so it is
+    // written in the same breath rather than left for somebody to notice.
+    buildPage();
   }
 
   report({ releasing: 'true', version, tag: `v${version}`, bump });
