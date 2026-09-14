@@ -124,6 +124,33 @@ describe('SettingsView', () => {
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
   });
 
+  /**
+   * **One read of the connections to render one screen.**
+   *
+   * Every card used to call `useIntegrations` itself — three `Integration`
+   * cards plus the calendar and Linear — so the table was read five times and
+   * each card held its own copy of the answer. Cheap, since it is local
+   * SQLite, and wrong in a way that shows: after an action the cards disagree
+   * until whichever one owns the change reloads, and they settle at five
+   * different moments.
+   *
+   * Counted against the stub rather than assumed, because the number is the
+   * whole claim.
+   */
+  it('reads the connections once, not once per card', async () => {
+    answering([]);
+
+    render(<SettingsView />);
+
+    // Waited on the last card to settle, so this counts a finished render
+    // rather than however far through one the assertion happened to land.
+    expect(await screen.findByRole('button', { name: 'Connect Atlassian' })).toBeInTheDocument();
+
+    const reads = invoke.mock.calls.filter(([command]) => command === 'connections');
+
+    expect(reads).toHaveLength(1);
+  });
+
   const corpus = {
     root: '/Users/someone/Chief',
     exists: true,
@@ -153,11 +180,12 @@ describe('SettingsView', () => {
     render(<SettingsView />);
 
     // GitHub, Outlook, Linear and Atlassian each say so; the calendar card
-    // says "None", because a subscription is not a connection. Waited for
-    // rather than read once: every card holds its own `useIntegrations`, so
-    // they settle independently and `findAllByText` returns as soon as the
-    // *first* one has.
-    await waitFor(() => expect(screen.getAllByText('Not connected')).toHaveLength(4));
+    // says "None", because a subscription is not a connection. A plain
+    // assertion again since REC-42: one hook serves every card, so they settle
+    // in one render and the first match means all of them. It was a `waitFor`
+    // on the count for as long as each card held its own hook and they landed
+    // at four different moments — the test working around the design.
+    expect(await screen.findAllByText('Not connected')).toHaveLength(4);
     expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Connect Outlook' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Connect Atlassian' })).toBeInTheDocument();
@@ -365,6 +393,48 @@ describe('SettingsView', () => {
     expect(
       await screen.findByRole('button', { name: 'Add another GitHub account' }),
     ).toBeInTheDocument();
+  });
+
+  /**
+   * **One answer, shared — so nothing has to be told twice.**
+   *
+   * When each card held its own `useIntegrations`, a disconnect updated the
+   * list the acting card was holding and left every other card's copy as it
+   * was. Nothing visibly broke, because the cards partition by service, but
+   * the screen held five lists that were free to disagree and the only cure
+   * was another read.
+   *
+   * Asserted as the absence of that read: the change lands, and the table is
+   * not consulted again to make it land.
+   */
+  it('carries a disconnect to every card without reading the table again', async () => {
+    answering([octocat]);
+    invoke.mockImplementation((command: string) => {
+      if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'sync_status') return Promise.resolve([]);
+      if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
+      if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
+      if (command === 'disconnect') return Promise.resolve([]);
+
+      return Promise.resolve([octocat]);
+    });
+
+    render(<SettingsView />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Disconnect octocat' }));
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Delete octocat and everything it stored' }),
+    );
+
+    // The account is gone from the card that owned it.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Disconnect octocat' })).not.toBeInTheDocument(),
+    );
+
+    // And the whole screen agrees, having read the connections exactly once —
+    // at mount, before any of this.
+    expect(invoke.mock.calls.filter(([command]) => command === 'connections')).toHaveLength(1);
+    await waitFor(() => expect(screen.getAllByText('Not connected')).toHaveLength(4));
   });
 
   it('disconnects the account whose button was pressed', async () => {

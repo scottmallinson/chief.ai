@@ -108,9 +108,17 @@ describe('useIntegrations', () => {
 
     act(() => result.current.connect('github'));
 
-    await waitFor(() => expect(result.current.error).toBe('sign-in was declined on GitHub'));
+    await waitFor(() =>
+      expect(result.current.errorFor('github')).toBe('sign-in was declined on GitHub'),
+    );
     expect(result.current.login).toBeNull();
     expect(result.current.status).toBe('idle');
+
+    // **And on no other card.** One hook serves every card on the settings
+    // screen now, so a failure that is not attributed is a failure shown
+    // everywhere — which is exactly what REC-42's first cut did.
+    expect(result.current.errorFor('microsoft')).toBeNull();
+    expect(result.current.errorFor('atlassian')).toBeNull();
   });
 
   it('forgets one account without touching the others', async () => {
