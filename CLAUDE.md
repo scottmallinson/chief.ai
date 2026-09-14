@@ -608,6 +608,13 @@ helps, so there has to be a second way in.
   says nothing about which Jira to send it to. `rest::site` normalises what people actually type —
   a bare `acme`, `acme.atlassian.net`, or a URL pasted out of the address bar with a board path
   still on it — into one origin.
+- **Atlassian Cloud only, and that is a decision rather than an oversight.** Data Center and Server
+  take a _Personal Access Token_ — a different object from a Cloud API token — as
+  `Authorization: Bearer`, with no email. Adding it is small and is left out because nobody can
+  test it here, which is recorded in §9 of the plan. `site` still accepts a custom domain and must
+  keep doing so: **a Cloud site can be on one**, so the host name does not tell the products apart,
+  and narrowing to `.atlassian.net` would lock out Cloud customers to catch a case Chief does not
+  claim to serve. A Data Center host is accepted and refused at the first request.
 - **`http://` is refused rather than upgraded.** The calendar rewrites `webcal://` because that is
   the scheme providers hand out; nobody hands out an `http://` Jira, so upgrading it would hide a
   mistake rather than fix one. A port or an `@` is refused too: both are ways to make an address

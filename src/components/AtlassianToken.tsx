@@ -146,6 +146,16 @@ export function AtlassianToken({ onChanged }: AtlassianTokenProps) {
               be just your organisation&rsquo;s name.
             </p>
 
+            {/* Said before the attempt rather than after it. A Data Center
+                personal access token is a different object that authenticates
+                a different way, and it would otherwise be refused here as
+                though the token itself were wrong. */}
+            <p className="text-[13px] leading-snug text-muted-foreground">
+              This works with <strong>Atlassian Cloud</strong>. Jira and Confluence{' '}
+              <strong>Data Center</strong> and Server use a different kind of token and are not
+              supported yet.
+            </p>
+
             {error !== null && (
               <p className="text-[13px] leading-snug text-attention-text" role="alert">
                 {error}

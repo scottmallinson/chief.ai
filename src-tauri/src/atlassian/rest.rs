@@ -30,6 +30,28 @@
 //!   endpoint are the user-search ones (`user`, `user.accountid`), not the
 //!   content ones.
 //!
+//! ## Atlassian Cloud only, deliberately
+//!
+//! Everything above is Cloud's contract. **Jira and Confluence Data Center
+//! and Server are a different one** and are not supported: their credential
+//! is a *Personal Access Token*, which is a different object from a Cloud API
+//! token, and it authenticates as `Authorization: Bearer <token>` with no
+//! email at all. The two names get used interchangeably in conversation and
+//! are not interchangeable on the wire.
+//!
+//! Supporting it would be small — an empty email meaning `Bearer` — and it is
+//! left out because **nobody can test it here**. Cloud is what this project
+//! can reach, and a second auth scheme that has never met a real server is a
+//! branch that looks supported and is not. Recorded in §9 of the
+//! implementation plan rather than built on a guess.
+//!
+//! A Data Center host is therefore *accepted* by [`site`] and fails at the
+//! first request with [`Error::Rejected`]. That is not a mistake to fix by
+//! narrowing [`site`] to `.atlassian.net`: **a Cloud site can be on a custom
+//! domain**, so the host name does not tell the two apart, and refusing
+//! custom domains would lock out Cloud customers to catch a case Chief does
+//! not claim to serve.
+//!
 //! ## The token is a credential and the site is a decision
 //!
 //! The token is stored beside the OAuth tokens, never logged, never put in an
@@ -432,6 +454,12 @@ mod tests {
 
     /// A site on a custom domain is still a site — completion is for the bare
     /// name, not a rule about where Jira may live.
+    ///
+    /// **This is why `site` cannot be narrowed to `.atlassian.net` to keep
+    /// Data Center out.** A Cloud site can be on a custom domain, so the host
+    /// does not say which product is behind it; a Data Center host is
+    /// accepted here and refused at the first request instead. See the module
+    /// docs.
     #[test]
     fn leaves_a_host_that_already_has_a_domain_alone() {
         assert_eq!(

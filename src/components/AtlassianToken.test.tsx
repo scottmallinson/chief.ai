@@ -60,6 +60,18 @@ describe('AtlassianToken', () => {
     expect(screen.getByText(/administrator can\s+switch off/i)).toBeInTheDocument();
   });
 
+  /**
+   * A Data Center personal access token is a different object that
+   * authenticates a different way (`Bearer`, no email), so pasting one here
+   * fails as though the token were wrong. Saying so costs a sentence; not
+   * saying so costs somebody an afternoon.
+   */
+  it('says which Atlassian this works with', async () => {
+    await open();
+
+    expect(screen.getByText(/Data Center/)).toBeInTheDocument();
+  });
+
   it('is honest that the token carries full access', async () => {
     await open();
 
