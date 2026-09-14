@@ -31,7 +31,7 @@
     "rust:lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --all-features",
     "fix": "pnpm format && pnpm lint:fix && pnpm rust:fmt",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm check:migrations && pnpm test",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm check:migrations && pnpm check:changelog && pnpm test",
     "verify:commits": "commitlint --from origin/main --to HEAD",
     "verify:frontend": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
     "verify:layout": "pnpm test:e2e",
@@ -39,7 +39,9 @@
     "verify:app": "pnpm engine:fetch && pnpm tauri build --no-bundle",
     "verify": "pnpm verify:commits && pnpm verify:frontend && pnpm verify:layout && pnpm verify:rust && pnpm verify:app",
     "prepare": "husky",
-    "check:migrations": "node scripts/check-migrations.mjs"
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "changelog": "node scripts/changelog-page.mjs",
+    "check:changelog": "node scripts/changelog-page.mjs --check"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.3.0",
