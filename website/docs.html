@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install Chief — Docs</title>
+    <meta
+      name="description"
+      content="Install Chief on macOS or Windows, let it fetch a model, and connect your first tool."
+    />
+    <meta name="theme-color" content="#F4F5F3" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="support.js" defer></script>
+  </head>
+  <body>
+    <svg class="sprite" aria-hidden="true">
+      <defs>
+        <symbol
+          id="i-shield-check"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+          />
+          <path d="m9 12 2 2 4-4" />
+        </symbol>
+        <symbol
+          id="i-download"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" x2="12" y1="15" y2="3" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <header class="site-header">
+      <div class="shell">
+        <a class="wordmark" href="index.html">
+          <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="#14171A" />
+            <path
+              d="M21.5 11.3a7 7 0 1 0 0 9.4"
+              fill="none"
+              stroke="#F4F5F3"
+              stroke-width="3.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <p>Chief</p>
+        </a>
+        <nav class="site-nav">
+          <a href="security.html">Security</a>
+          <a href="docs.html" aria-current="page">Docs</a>
+          <a class="btn btn-primary btn-sm" href="index.html#get">
+            <svg width="15" height="15" aria-hidden="true"><use href="#i-download" /></svg>
+            Download
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="shell docs">
+      <nav class="docs-nav">
+        <div class="docs-nav-group">
+          <p class="micro">start</p>
+          <div class="docs-nav-links">
+            <a class="is-current" href="#install">Install</a>
+            <a href="#model">The model</a>
+            <a href="#connect">Connect a tool</a>
+          </div>
+        </div>
+        <div class="docs-nav-group">
+          <p class="micro">using chief</p>
+          <div class="docs-nav-links">
+            <a href="#brief">The Today brief</a>
+            <a href="#worklog">Work log</a>
+            <a href="#asking">Asking questions</a>
+          </div>
+        </div>
+        <div class="docs-nav-group">
+          <p class="micro">if something is wrong</p>
+          <div class="docs-nav-links">
+            <a href="#trouble">Troubleshooting</a>
+          </div>
+        </div>
+      </nav>
+
+      <article class="docs-article">
+        <p class="mono docs-crumb">docs / start / install</p>
+        <h1 id="install">Install Chief</h1>
+        <p class="docs-lede">
+          Chief needs one thing on the machine: the app. The llama.cpp engine is bundled inside it,
+          and the model is fetched on first run. There is no runtime to install and no account to
+          create.
+        </p>
+
+        <h2>1 · The app</h2>
+        <p>
+          Download the build for your machine. Chief ships for macOS — Apple silicon and Intel — and
+          for Windows on x64. There is no Linux build.
+        </p>
+
+        <div class="note is-attention">
+          <p>
+            <strong>Builds are not yet signed.</strong> macOS will say the app cannot be verified:
+            open it from the Finder context menu with <code>Open</code> the first time, rather than
+            by double-clicking. Windows SmartScreen will warn once — choose
+            <code>More info</code> then <code>Run anyway</code>. Signing and notarisation are not in
+            place yet, so this is expected rather than a sign that something is wrong.
+          </p>
+        </div>
+
+        <h2 id="model">2 · The model</h2>
+        <p>
+          First run checks for the weights and offers to fetch them: one button, a progress bar, and
+          a download that resumes where it left off if the connection drops. The file comes from
+          Hugging Face over HTTPS, carrying no token and no cookie, and it is the only request Chief
+          makes to a host you did not connect yourself.
+        </p>
+        <p class="mt-12">
+          Chief chooses the model from the machine — you do not pick one. A laptop with 16 GB of
+          memory and four or more physical cores gets the 3B; anything smaller gets the 1B, which
+          answers less well but answers.
+        </p>
+
+        <div class="grid-table">
+          <div class="grid-table-head micro">
+            <span>model</span><span>download</span><span>resident</span><span>chosen when</span>
+          </div>
+          <div class="grid-table-row">
+            <span class="mono">Llama 3.2 3B Instruct</span>
+            <span>2.0 GB</span>
+            <span>~2.4 GB</span>
+            <span>16 GB of memory and 4+ cores</span>
+          </div>
+          <div class="grid-table-row">
+            <span class="mono">Llama 3.2 1B Instruct</span>
+            <span>0.8 GB</span>
+            <span>~1.1 GB</span>
+            <span>Anything less</span>
+          </div>
+        </div>
+
+        <div class="note">
+          <p>
+            <strong>Offline from here.</strong> Once the weights are on disk, the Today brief, the
+            work log and the conversation all work with the network off. Only your integrations need
+            connectivity.
+          </p>
+        </div>
+
+        <h2 id="connect">3 · Connect a tool</h2>
+        <p>
+          Settings has a card for each integration. GitHub is the one to start with, and it signs in
+          by device code: Chief shows a short code, opens your browser with the code already filled
+          in, and waits while you authorise it.
+        </p>
+        <p class="mt-12">
+          Outlook mail and calendar sign in through your browser as well. Linear takes a personal
+          API key you paste; Jira registers Chief with Atlassian at sign-in and asks for no write
+          scopes at all. Any calendar that publishes an iCalendar address — Google, iCloud,
+          Fastmail, Outlook — works by pasting that address, with no OAuth application involved.
+        </p>
+
+        <h2 id="brief">The Today brief</h2>
+        <p>
+          The brief opens on what is waiting on you, and it keeps two questions apart on purpose: a
+          review somebody requested of you is a request, and your own open pull request is not. They
+          sit under separate headings rather than in one pile.
+        </p>
+
+        <h2 id="worklog">Work log</h2>
+        <p>
+          Once GitHub is connected, Chief periodically looks for pull requests you merged, asks the
+          local model to turn each into a one-sentence achievement, and records it. Passes are
+          idempotent, so the same merge is never logged twice, and a pass steps aside whenever you
+          are waiting on an answer — your question is worth more than the log being current.
+        </p>
+
+        <h2 id="asking">Asking questions</h2>
+        <p>
+          Some questions never reach the model at all. <code>/brief</code>, <code>/prep</code> and
+          <code>/log</code>, and a written list of everyday phrasings, are answered from this
+          machine's own disk — which is most of the speed you will notice on a laptop. Everything
+          else goes to the model with the tools it needs, and streams back as it is written.
+        </p>
+
+        <h2 id="trouble">If something is wrong</h2>
+        <div class="faq">
+          <div class="faq-item">
+            <p>“Starting…” on the setup screen</p>
+            <p>
+              The engine is reading the weights. A couple of gigabytes takes a few seconds, and the
+              screen re-checks itself until it resolves. This is a state, not a failure.
+            </p>
+          </div>
+          <div class="faq-item">
+            <p>Answers are slow</p>
+            <p>
+              Speed follows the hardware. The status line under an answer names the step actually
+              running; past three seconds it adds elapsed time, and past fifteen it says outright
+              that nothing has stalled. A smaller machine is patient rather than silent.
+            </p>
+          </div>
+          <div class="faq-item">
+            <p>The engine will not start</p>
+            <p>
+              Chief keeps the last lines the server wrote and shows them rather than guessing. The
+              usual causes are a machine without room for the model and, on macOS 12, a missing
+              system library that arrived in 13.3.
+            </p>
+          </div>
+          <div class="faq-item">
+            <p>Where is my data?</p>
+            <p>
+              One SQLite file in the app data directory, set to mode 0600, plus your notes as
+              markdown in a folder you chose. Deleting the file deletes the log — there is no second
+              copy anywhere.
+            </p>
+          </div>
+        </div>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-top">
+        <div>
+          <div class="wordmark">
+            <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden="true">
+              <rect width="32" height="32" rx="8" fill="#14171A" />
+              <path
+                d="M21.5 11.3a7 7 0 1 0 0 9.4"
+                fill="none"
+                stroke="#F4F5F3"
+                stroke-width="3.4"
+                stroke-linecap="round"
+              />
+            </svg>
+            <p>Chief</p>
+          </div>
+          <p class="footer-blurb">
+            An on-device chief of staff for people whose work log is nobody else’s business.
+          </p>
+        </div>
+        <div class="footer-cols">
+          <div class="footer-col">
+            <p class="micro">product</p>
+            <a href="index.html#get">Download</a>
+            <a href="docs.html">Docs</a>
+          </div>
+          <div class="footer-col">
+            <p class="micro">trust</p>
+            <a href="security.html">Security</a>
+            <a href="security.html#collect">What it doesn’t collect</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-base">
+        <div class="shell">
+          <p class="mono">© 2026 Chief · no accounts, no telemetry</p>
+          <p class="footer-badge">
+            <svg width="14" height="14" aria-hidden="true"><use href="#i-shield-check" /></svg>
+            on-device only
+          </p>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

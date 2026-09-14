@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Security — Chief</title>
+    <meta
+      name="description"
+      content="Chief has no backend. Every host the app talks to, what it is for, and where your data sits on disk."
+    />
+    <meta name="theme-color" content="#F4F5F3" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="support.js" defer></script>
+  </head>
+  <body>
+    <svg class="sprite" aria-hidden="true">
+      <defs>
+        <symbol
+          id="i-shield-check"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+          />
+          <path d="m9 12 2 2 4-4" />
+        </symbol>
+        <symbol
+          id="i-download"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" x2="12" y1="15" y2="3" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <header class="site-header">
+      <div class="shell">
+        <a class="wordmark" href="index.html">
+          <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="#14171A" />
+            <path
+              d="M21.5 11.3a7 7 0 1 0 0 9.4"
+              fill="none"
+              stroke="#F4F5F3"
+              stroke-width="3.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <p>Chief</p>
+        </a>
+        <nav class="site-nav">
+          <a href="security.html" aria-current="page">Security</a>
+          <a href="docs.html">Docs</a>
+          <a class="btn btn-primary btn-sm" href="index.html#get">
+            <svg width="15" height="15" aria-hidden="true"><use href="#i-download" /></svg>
+            Download
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="shell page">
+      <p class="micro">security</p>
+      <h1>What leaves the machine, and when.</h1>
+      <p class="page-sub">
+        Chief has no backend. There is no Chief account, no Chief server and no Chief telemetry
+        endpoint. Outbound traffic goes to the tools you connected yourself, on tokens you issued,
+        plus one download of the model weights — listed below in full.
+      </p>
+
+      <div class="arch">
+        <p class="micro">architecture</p>
+        <div class="arch-grid">
+          <div class="arch-node">
+            <p>Chief (Tauri app)</p>
+            <p class="mono">your desktop session</p>
+          </div>
+          <p class="arch-arrow">HTTP →<br />loopback</p>
+          <div class="arch-node is-engine">
+            <p>llama-server</p>
+            <p class="mono">127.0.0.1:11435 · Llama 3.2 3B</p>
+          </div>
+          <p class="arch-arrow">reads →</p>
+          <div class="arch-node">
+            <p>SQLite work log</p>
+            <p class="mono">app data dir · mode 0600</p>
+          </div>
+        </div>
+        <div class="arch-foot">
+          <span class="tag-attention">engine is bundled</span>
+          <p>
+            The llama.cpp server ships inside the installer and is started and stopped by Chief as a
+            child process on loopback. There is no separate runtime to install, nothing left running
+            once you close the app, and no hosted model anywhere in the path.
+          </p>
+        </div>
+      </div>
+
+      <div class="cards-2">
+        <div class="card-lg" id="collect">
+          <p>Data at rest</p>
+          <div class="prose-list">
+            <p>
+              <strong>Work log —</strong> one SQLite file in the app data directory, set to mode
+              0600 so only your user account can read it. Delete the file and the log is gone; there
+              is no copy.
+            </p>
+            <p>
+              <strong>Integration tokens —</strong> in that same SQLite file, as plain text,
+              protected by your OS user account rather than by encryption. Moving them into the OS
+              keychain is a known improvement and is not done yet. They are never logged and never
+              returned to the interface.
+            </p>
+            <p>
+              <strong>Your notes and drafts —</strong> ordinary markdown files in a folder you
+              choose, editable in your own editor and readable long after Chief is gone.
+            </p>
+            <p>
+              <strong>Model weights —</strong> one GGUF file in the app data directory, downloaded
+              once and never re-fetched.
+            </p>
+            <p>
+              <strong>Questions and answers —</strong> kept locally. No third party retains them
+              because no third party sees them.
+            </p>
+          </div>
+        </div>
+
+        <div class="card-lg">
+          <p>Network, in full</p>
+          <div class="table">
+            <div class="table-row">
+              <span class="mono">127.0.0.1:11435</span>
+              <span>Model inference — the bundled engine</span>
+            </div>
+            <div class="table-row">
+              <span class="mono">huggingface.co</span>
+              <span>Model weights, once. No token, no cookie</span>
+            </div>
+            <div class="table-row">
+              <span class="mono">github.com · api.github.com</span>
+              <span>If you connect GitHub</span>
+            </div>
+            <div class="table-row">
+              <span class="mono">login.microsoftonline.com · graph.microsoft.com</span>
+              <span>If you connect Outlook</span>
+            </div>
+            <div class="table-row">
+              <span class="mono">api.linear.app</span>
+              <span>If you paste a Linear key</span>
+            </div>
+            <div class="table-row">
+              <span class="mono">auth.atlassian.com · mcp.atlassian.com</span>
+              <span>If you connect Jira</span>
+            </div>
+            <div class="table-row">
+              <span class="mono">your calendar provider</span>
+              <span>If you paste a subscription address</span>
+            </div>
+          </div>
+          <p class="after-note">
+            That is the whole list, and every row after the first two is a service you connected
+            yourself. There is no update check and no crash reporter. The inference client refuses
+            any address that is not loopback — a test asserts it rejects a public host — so a
+            misconfigured base URL fails closed rather than sending your log elsewhere.
+          </p>
+        </div>
+      </div>
+
+      <div class="cards-3 is-tight">
+        <div class="card">
+          <h3>Your own OAuth registration</h3>
+          <p>
+            An organisation that would rather not use Chief’s registration can point the app at its
+            own GitHub OAuth app or Entra registration — an environment variable, or a client ID
+            pasted into Settings. No rebuild.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Air-gapped</h3>
+          <p>
+            Once the weights are on disk, the brief, the work log and the conversation all run with
+            the network off — the engine is already on the machine. Integrations simply stay
+            disconnected.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Verify it yourself</h3>
+          <p>
+            The source is public and the paths above are the ones in it. Run the app behind a proxy
+            and compare — that is the point of shipping local.
+          </p>
+        </div>
+      </div>
+
+      <div class="note is-attention mt-24">
+        <p>
+          <strong>Two things to know before a security review.</strong> Builds are not yet
+          code-signed or notarised, so macOS and Windows will warn on first launch. And Chief asks
+          GitHub for the <code>repo</code> scope, which is read and write across public and private
+          repositories — broader than it uses, because GitHub offers OAuth apps no read-only scope
+          for private repositories. Jira is the opposite case: no write scope is requested at all,
+          so read-only there is enforced by Atlassian rather than promised by Chief.
+        </p>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-top">
+        <div>
+          <div class="wordmark">
+            <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden="true">
+              <rect width="32" height="32" rx="8" fill="#14171A" />
+              <path
+                d="M21.5 11.3a7 7 0 1 0 0 9.4"
+                fill="none"
+                stroke="#F4F5F3"
+                stroke-width="3.4"
+                stroke-linecap="round"
+              />
+            </svg>
+            <p>Chief</p>
+          </div>
+          <p class="footer-blurb">
+            An on-device chief of staff for people whose work log is nobody else’s business.
+          </p>
+        </div>
+        <div class="footer-cols">
+          <div class="footer-col">
+            <p class="micro">product</p>
+            <a href="index.html#get">Download</a>
+            <a href="docs.html">Docs</a>
+          </div>
+          <div class="footer-col">
+            <p class="micro">trust</p>
+            <a href="security.html">Security</a>
+            <a href="security.html#collect">What it doesn’t collect</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-base">
+        <div class="shell">
+          <p class="mono">© 2026 Chief · no accounts, no telemetry</p>
+          <p class="footer-badge">
+            <svg width="14" height="14" aria-hidden="true"><use href="#i-shield-check" /></svg>
+            on-device only
+          </p>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
