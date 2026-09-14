@@ -114,5 +114,28 @@ export default tseslint.config(
     },
   },
 
+  // The marketing site is plain browser JS rather than Node tooling, and it
+  // holds to the same rule the renderer does: it makes no requests. Everything
+  // it decides — which build to offer, which currency to print — it decides
+  // from what the browser already knows. Resolving the current release through
+  // GitHub's API would work and would also hand every visitor's IP address to
+  // GitHub on page load, which is the opposite of what the page claims.
+  {
+    files: ['website/**/*.js'],
+    languageOptions: {
+      globals: globals.browser,
+    },
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'fetch',
+          message:
+            'The website makes no requests. The release version is stamped in by scripts/release.mjs instead.',
+        },
+      ],
+    },
+  },
+
   prettier,
 );

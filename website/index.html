@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chief — an on-device AI chief of staff</title>
+    <meta
+      name="description"
+      content="Chief tracks what is waiting on you, writes your work log as you go, and answers questions about your own week — on a model that runs on your machine."
+    />
+    <meta name="theme-color" content="#F4F5F3" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="support.js" defer></script>
+  </head>
+  <body>
+    <svg class="sprite" aria-hidden="true">
+      <defs>
+        <symbol
+          id="i-shield-check"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+          />
+          <path d="m9 12 2 2 4-4" />
+        </symbol>
+        <symbol
+          id="i-download"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" x2="12" y1="15" y2="3" />
+        </symbol>
+        <symbol
+          id="i-sun"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="4" />
+          <path
+            d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"
+          />
+        </symbol>
+        <symbol
+          id="i-message-square"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </symbol>
+        <symbol
+          id="i-notebook-text"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M2 6h4M2 10h4M2 14h4M2 18h4" />
+          <rect width="16" height="20" x="4" y="2" rx="2" />
+          <path d="M9.5 8h5M9.5 12h5M9.5 16h3" />
+        </symbol>
+        <symbol
+          id="i-settings"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2"
+          />
+          <circle cx="12" cy="12" r="3" />
+        </symbol>
+        <symbol
+          id="i-arrow-right"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M5 12h14M12 5l7 7-7 7" />
+        </symbol>
+        <symbol
+          id="i-apple"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.22A4.91 4.91 0 0 0 17 5c-2.22 0-4 1.44-5 2-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06Z"
+          />
+          <path d="M10 2c1 .5 2 2 2 5" />
+        </symbol>
+        <symbol
+          id="i-monitor"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <rect width="20" height="14" x="2" y="3" rx="2" />
+          <line x1="8" x2="16" y1="21" y2="21" />
+          <line x1="12" x2="12" y1="17" y2="21" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <header class="site-header">
+      <div class="shell">
+        <a class="wordmark" href="index.html">
+          <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="#14171A" />
+            <path
+              d="M21.5 11.3a7 7 0 1 0 0 9.4"
+              fill="none"
+              stroke="#F4F5F3"
+              stroke-width="3.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <p>Chief</p>
+        </a>
+        <nav class="site-nav">
+          <a href="security.html">Security</a>
+          <a href="docs.html">Docs</a>
+          <a class="btn btn-primary btn-sm" href="#get">
+            <svg width="15" height="15" aria-hidden="true"><use href="#i-download" /></svg>
+            Download
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="shell hero">
+        <div class="hero-grid">
+          <div>
+            <p class="chip-verified">
+              <svg width="13" height="13" aria-hidden="true"><use href="#i-shield-check" /></svg>
+              on-device only
+            </p>
+            <h1>Your work log never leaves your laptop.</h1>
+            <p class="hero-sub">
+              Chief tracks what is waiting on you, writes your work log as you go, and answers
+              questions about your own week — on a model that runs on your machine.
+            </p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href="#get" data-download-primary>
+                <svg width="16" height="16" aria-hidden="true"><use href="#i-download" /></svg>
+                <span data-download-label>Download</span>
+              </a>
+              <a class="btn btn-ghost" href="security.html">What leaves the machine</a>
+            </div>
+            <p class="hero-note" data-download-note>Version 0.4.0 · no account, no telemetry</p>
+            <div class="hero-stats">
+              <div>
+                <strong>0 bytes</strong>
+                <span>to a server of ours</span>
+              </div>
+              <div>
+                <strong>1 port</strong>
+                <span>on localhost</span>
+              </div>
+              <div>
+                <strong data-zero>$0</strong>
+                <span>per token, ever</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="frame motion-loop">
+            <div class="frame-bar">
+              <span class="frame-dot"></span><span class="frame-dot"></span
+              ><span class="frame-dot"></span>
+              <span class="frame-title">Chief</span>
+            </div>
+            <div class="frame-body">
+              <div class="rail">
+                <div class="rail-tile is-active">
+                  <svg width="15" height="15" aria-hidden="true"><use href="#i-sun" /></svg>
+                  <span class="rail-badge"></span>
+                </div>
+                <div class="rail-tile">
+                  <svg width="15" height="15" aria-hidden="true">
+                    <use href="#i-message-square" />
+                  </svg>
+                </div>
+                <div class="rail-tile">
+                  <svg width="15" height="15" aria-hidden="true">
+                    <use href="#i-notebook-text" />
+                  </svg>
+                </div>
+                <div class="rail-tile">
+                  <svg width="15" height="15" aria-hidden="true"><use href="#i-settings" /></svg>
+                </div>
+                <div class="rail-activity"><span></span><span></span><span></span></div>
+              </div>
+
+              <div class="list-pane">
+                <div class="pane-head">
+                  <p>Today</p>
+                  <p class="mono">20 Aug</p>
+                </div>
+                <div class="pane-count micro">waiting on you · 3</div>
+                <div class="list-row is-active">
+                  <p class="mono">chief.ai#52</p>
+                  <p class="sub">Blocked two people · 2d</p>
+                </div>
+                <div class="list-row">
+                  <p class="mono">chief.ai#51</p>
+                  <p class="sub">Caption bar drag · 1d</p>
+                </div>
+                <div class="list-row">
+                  <p class="mono">CHF-18</p>
+                  <p class="sub">Assigned to you · 4h</p>
+                </div>
+              </div>
+
+              <div class="detail-pane">
+                <div class="pane-head">
+                  <p class="mono is-flush">chief.ai#52 · checked 14:02</p>
+                </div>
+                <div class="detail-body">
+                  <p class="is-attention-text micro">do this first</p>
+                  <p class="detail-head">
+                    Review chief.ai#52. It has blocked two people since Tuesday.
+                  </p>
+                  <div class="pill-row">
+                    <span class="pill pill-solid">Open the pull request</span>
+                    <span class="pill pill-quiet">Not today</span>
+                  </div>
+                  <div class="hairline"></div>
+                  <div>
+                    <p class="is-panel-muted micro">you · 14:04</p>
+                    <p class="question">Anything else before the cut?</p>
+                  </div>
+                  <div class="answer">
+                    <p class="answer-status">
+                      <span class="sweep"><span></span></span>
+                      local · 3 sources · 2s
+                    </p>
+                    <p class="answer-text">
+                      Only #51 — a one-line fix Ravi opened yesterday<span class="caret"></span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="band">
+        <div class="shell section">
+          <h2>Three things it does without being asked</h2>
+          <div class="cards-3">
+            <div class="card">
+              <svg width="20" height="20" aria-hidden="true"><use href="#i-sun" /></svg>
+              <h3>Tells you what to do first</h3>
+              <p>
+                One recommendation at the top of the day with the reason attached. A review that has
+                blocked two people beats an empty inbox.
+              </p>
+            </div>
+            <div class="card">
+              <svg width="20" height="20" aria-hidden="true"><use href="#i-notebook-text" /></svg>
+              <h3>Writes your work log</h3>
+              <p>
+                Pull requests you merge are summarised into a sentence each as they happen, so
+                standups, one-to-ones and reviews are already written when you need them.
+              </p>
+            </div>
+            <div class="card">
+              <svg width="20" height="20" aria-hidden="true"><use href="#i-message-square" /></svg>
+              <h3>Answers about your own week</h3>
+              <p>
+                “What did I ship?” “What is waiting on me?” Grounded in your log, with the sources
+                listed, answered by a model on your machine.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="shell section">
+        <div class="panel">
+          <div class="panel-grid">
+            <div>
+              <p class="micro">why local matters here</p>
+              <h2>Your work log is the most sensitive document you own.</h2>
+              <p class="panel-sub">
+                It is every unshipped feature, every slipped date and every awkward thread, in one
+                place. Chief keeps it in a SQLite file in your own app directory and asks a model on
+                the same machine to read it. There is no account, no sync, and no vendor with a
+                copy.
+              </p>
+              <a class="btn btn-light" href="security.html">
+                Read how it works
+                <svg width="15" height="15" aria-hidden="true"><use href="#i-arrow-right" /></svg>
+              </a>
+            </div>
+            <div class="ledger">
+              <div class="ledger-row">
+                <span>Your questions and answers</span>
+                <span class="mono">never leave</span>
+              </div>
+              <div class="ledger-row">
+                <span>Your work log database</span>
+                <span class="mono">local file</span>
+              </div>
+              <div class="ledger-row">
+                <span>Your notes and drafts</span>
+                <span class="mono">markdown you own</span>
+              </div>
+              <div class="ledger-row">
+                <span>Usage analytics</span>
+                <span class="mono is-quiet">none collected</span>
+              </div>
+              <div class="ledger-row">
+                <span>Requests to your tools</span>
+                <span class="mono is-quiet">outbound, your token</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="band">
+        <div class="shell section">
+          <h2>Running in four minutes</h2>
+          <div class="steps">
+            <div class="step">
+              <p class="mono">01</p>
+              <h3>Install the app</h3>
+              <p>
+                Builds for macOS and Windows. The llama.cpp engine is bundled, so there is no
+                separate runtime to install and no installer account.
+              </p>
+            </div>
+            <div class="step">
+              <p class="mono">02</p>
+              <h3>Download a model, once</h3>
+              <p>
+                First run fetches Llama 3.2 3B — about 2 GB, with a progress bar and a resumable
+                download. After that it is yours offline.
+              </p>
+              <div class="meter"><span class="is-62"></span></div>
+              <p class="mono mt-8">1245 of 2019 MB</p>
+            </div>
+            <div class="step">
+              <p class="mono">03</p>
+              <h3>Connect one tool</h3>
+              <p>
+                GitHub first, via device code in your browser. The token is stored on this machine
+                only.
+              </p>
+              <p class="code-word">B7C4-9QLD</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="shell section" id="get">
+        <div class="get">
+          <div>
+            <h2>Get Chief</h2>
+            <p class="get-sub">
+              Version <span data-version>0.4.0</span>. No account, no telemetry, no card.
+            </p>
+          </div>
+          <div class="get-grid">
+            <a class="get-tile" data-build="macos-arm64" href="#">
+              <span class="get-tile-name">
+                <svg width="15" height="15" aria-hidden="true"><use href="#i-apple" /></svg>
+                macOS
+              </span>
+              <span class="get-tile-meta" data-build-meta>Apple silicon · .dmg</span>
+            </a>
+            <a class="get-tile" data-build="macos-x64" href="#">
+              <span class="get-tile-name">
+                <svg width="15" height="15" aria-hidden="true"><use href="#i-apple" /></svg>
+                macOS
+              </span>
+              <span class="get-tile-meta" data-build-meta>Intel · .dmg</span>
+            </a>
+            <a class="get-tile" data-build="windows" href="#">
+              <span class="get-tile-name">
+                <svg width="15" height="15" aria-hidden="true"><use href="#i-monitor" /></svg>
+                Windows
+              </span>
+              <span class="get-tile-meta" data-build-meta>x64 · .exe</span>
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-top">
+        <div>
+          <div class="wordmark">
+            <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden="true">
+              <rect width="32" height="32" rx="8" fill="#14171A" />
+              <path
+                d="M21.5 11.3a7 7 0 1 0 0 9.4"
+                fill="none"
+                stroke="#F4F5F3"
+                stroke-width="3.4"
+                stroke-linecap="round"
+              />
+            </svg>
+            <p>Chief</p>
+          </div>
+          <p class="footer-blurb">
+            An on-device chief of staff for people whose work log is nobody else’s business.
+          </p>
+        </div>
+        <div class="footer-cols">
+          <div class="footer-col">
+            <p class="micro">product</p>
+            <a href="#get">Download</a>
+            <a href="docs.html">Docs</a>
+          </div>
+          <div class="footer-col">
+            <p class="micro">trust</p>
+            <a href="security.html">Security</a>
+            <a href="security.html#collect">What it doesn’t collect</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-base">
+        <div class="shell">
+          <p class="mono">© 2026 Chief · no accounts, no telemetry</p>
+          <p class="footer-badge">
+            <svg width="14" height="14" aria-hidden="true"><use href="#i-shield-check" /></svg>
+            on-device only
+          </p>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

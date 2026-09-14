@@ -150,6 +150,12 @@ export const VERSIONED = [
   // at build time anyway, but leaving it stale means every later build shows a
   // dirty tree.
   { file: 'src-tauri/Cargo.lock', pattern: /^name = "Chief"\nversion = "[^"]+"$/m },
+  // The website builds its download URLs from this constant. GitHub's release
+  // assets are version-stamped, so `releases/latest/download/` cannot resolve
+  // them — and resolving them through the API instead would hand every visitor's
+  // IP address to GitHub on page load. Stamping it here costs the site no
+  // request at all.
+  { file: 'website/support.js', pattern: /^const VERSION = '[^']+';$/m },
 ];
 
 export function writeVersion(version, root = ROOT) {
