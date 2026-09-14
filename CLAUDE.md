@@ -47,6 +47,7 @@ pnpm fix                  # format + lint --fix + rustfmt — run this before `c
 pnpm check                # format:check + lint + typecheck + test — run before every commit
 pnpm test:watch           # vitest in watch mode
 pnpm test:e2e             # layout tests in a real browser (builds first; not part of `check`)
+pnpm changelog            # regenerate website/changelog.html from CHANGELOG.md
 pnpm build                # typecheck + build the frontend bundle
 pnpm tauri build --no-bundle   # compile the desktop binary without packaging installers
 pnpm rust:fmt             # cargo fmt
@@ -57,8 +58,8 @@ pnpm verify               # everything CI runs, on this machine — before every
 
 ### Verifying without CI
 
-`pnpm verify` is one command per CI job, in the same order, cheapest first, so a branch can be
-taken as far as CI would take it without a runner. Each job can be run on its own while working on
+`pnpm verify` is one command per CI job, in the same order, quickest first, so a branch can be
+taken as far as CI would take it without waiting for a runner. Each job can be run on its own while working on
 that part:
 
 | Command                | CI job               | Roughly                    |
@@ -80,7 +81,16 @@ with the pinned build does nothing — and CI runs it as part of setting a job u
 
 ### What CI does with its minutes
 
-Runner time is the one cost this project has, so the workflows are written to spend it once.
+This repository is public and every job runs on a GitHub-hosted standard runner, so none of these
+minutes are billed — GitHub Actions is free for public repositories on standard runners, whatever
+platform they are. Nothing below is an argument about money, and a change that spends a few more
+minutes to answer a question properly is the right change.
+
+What runner time still costs is **the wait**. A pull request is not done until its checks are, so
+every minute in the slowest job is a minute the author is holding the change; a macOS runner can
+queue before it starts; and a release is a chain of jobs between a merge and something a person can
+download. So the workflows are still written to do each piece of work once, and to fail fast when
+they are going to fail — for the feedback loop rather than for the invoice.
 
 - The setup every job repeats lives in `.github/actions/`, not in each job.
   `setup-node` is corepack, Node with a pnpm store cache, and `pnpm install`; `setup-tauri` is that
@@ -91,10 +101,10 @@ Runner time is the one cost this project has, so the workflows are written to sp
   pull request; Release calls it before it bundles anything. That is what makes "a release depends
   on CI being green" true by construction — a release runs the same jobs against the very commit
   it is about to ship, rather than trusting that some earlier run on some other commit was green.
-- **A draft pays for nothing.** `ci.yml`'s single job is skipped while the pull request is a
-  draft, which is the cheapest saving available: the checks it calls include the two paid
-  platforms, and nobody reads a red draft. The author runs `pnpm verify` instead — the same jobs
-  in the same order, on the machine they are already at. Two details make it work rather than
+- **A draft runs nothing.** `ci.yml`'s single job is skipped while the pull request is a draft:
+  the checks it calls include two app builds, and nobody reads a red draft. The author runs
+  `pnpm verify` instead — the same jobs in the same order, on the machine they are already at, and
+  faster than waiting for a runner. Two details make it work rather than
   quietly break things. `ready_for_review` has to be added to the trigger's `types`, because it is
   not one of the defaults and `Checks / Complete` is a required check: without it a pull request
   marked ready would sit forever waiting for a run that never starts. And the guard tests
@@ -110,35 +120,41 @@ Runner time is the one cost this project has, so the workflows are written to sp
 - **Build where nothing else is looking.** The app is built on macOS and Windows, and not on
   Linux: the Rust job already compiles the whole crate there, but `#[cfg(windows)]` code is
   compiled on Windows and nowhere else — `engine.rs:493` is where the last two fixes on `main`
-  went. macOS bills at 10× a Linux runner and Windows at 2×, so this is most of what CI costs; it
-  buys the only proof that the platform-conditional code compiles at all.
+  went. These two jobs are most of how long CI takes, and they buy the only proof that the
+  platform-conditional code compiles at all.
 - **Chief ships macOS Apple silicon, macOS Intel and Windows.** There is no Linux bundle, and no
   Linux app build: that job was the only thing proving a link nobody installs. Linux is still
-  where every cheap job runs — Frontend, Layout, Rust, commitlint — and the `linux-x64` engine is
+  where every quick job runs — Frontend, Layout, Rust, commitlint — and the `linux-x64` engine is
   still fetched there, because Tauri's build script wants the sidecar on disk even for
   `cargo test`.
 - **Don't build it at all when the change can't reach it.** The `changes` job spends a Linux
   minute working out whether a pull request touches `src-tauri/`, `scripts/`, the manifests,
   `.github/actions/` or `checks.yml`, and the app build is skipped when it does not. A change
   under `src/` is proved by the Frontend job's `pnpm build`; it cannot break platform-conditional
-  Rust. Deliberately not all of `.github/workflows/`: `App build (macos-latest)` is the largest
-  single line in this repository's bill, and rebuilding the app on two paid platforms says nothing
-  about a change to `release.yml`, which bundles what is already built, or to `ci.yml`, which only
-  decides who calls `checks.yml`.
+  Rust. Deliberately not all of `.github/workflows/`: `App build (macos-latest)` is the longest job
+  here, and rebuilding the app on two platforms says nothing about a change to `release.yml`, which
+  bundles what is already built, or to `ci.yml`, which only decides who calls `checks.yml`. The
+  website is the same case from the other side — a change under `website/` reaches no Rust, and
+  `Layout` is what proves it, so it never starts an app build.
 - **Fail in seconds, not in minutes.** `setup-tauri` checks the engine is on disk under the name
   the target expects, immediately after fetching it. Tauri only notices a missing sidecar part-way
   through its build script, so the first release to reach bundling spent six macOS minutes
-  compiling before saying the file was not there — on a runner billed at 10×, the most expensive
-  possible way to learn that. A quarter of the runner time this repository spent in its first two
-  weeks went on jobs that failed, most of it compiling before the failure.
+  compiling before saying the file was not there. Six minutes to be told a file is missing is six
+  minutes of somebody waiting on a release, which is the whole of the objection.
 - **The app build only runs where it answers something.** On a pull request it builds `--debug`,
   because the question is whether the platform-conditional code compiles and links, and
   optimisation is not part of that. A release skips it entirely: the bundle jobs compile the same
   two platforms straight afterwards, in the profile that actually ships.
-- **A release is asked for, not triggered.** `workflow_dispatch` and nothing else. Three bundles,
-  two of them macOS at 10×, make it the most expensive thing here — releasing on every merge spent
-  that on each pull request separately. Releasing by hand lets several merges go out together, and
-  lets a person choose when. It takes a `ref`, defaulting to `main`.
+- **A release follows a merge, and can also be asked for.** `push` to `main`, plus
+  `workflow_dispatch` taking a `ref` that defaults to `main`. It was dispatch-only for a while, to
+  spend fewer minutes on the three bundles — minutes that turn out not to be billed at all, while
+  the thing it really cost was `main` sitting on a shipped fix nobody could download because
+  releasing was something a person had to remember. `scripts/release.mjs` still decides whether
+  there is anything to release, so a merge of `docs` or `chore` commits ends in seconds with
+  `releasing=false` and builds nothing. Two merges close together raise two runs; the concurrency
+  group serialises them, the first releases both, and the second finds nothing left to do. The
+  `version` job checks out `main` rather than the commit that triggered it for exactly that reason,
+  and replays its release commit if something lands while the checks run.
 - **Compile a dependency once per target.** Release keys its cargo cache on the target rather than
   the runner — `shared-key: tauri-<target>` — so one release restores what the last one built.
   This matters most on macOS, where both bundles are built on one arm64 runner into different
@@ -149,7 +165,8 @@ Runner time is the one cost this project has, so the workflows are written to sp
   Chief's own crates are never cached, only its dependencies.
 - **One dependency pull request a month, not twenty.** Every bump touches a lockfile, which is
   exactly what makes the app build run, so Dependabot groups minor and patch updates per ecosystem
-  and runs monthly. Majors stay on their own — a batch that has to be reverted for one breaking
+  and runs monthly — twenty pull requests a month is twenty things to read, which is the cost that
+  did not go away. Majors stay on their own — a batch that has to be reverted for one breaking
   change takes the rest with it — and security updates ignore the schedule entirely.
 
 Building the desktop app on Linux needs the WebKitGTK toolchain:
@@ -169,8 +186,10 @@ src/                     React frontend
   lib/                   Shared helpers (cn, navigation model)
   styles/globals.css     Tailwind entry point and design tokens
   test/setup.ts          Vitest + Testing Library setup
-e2e/                     Layout tests driven through a real browser
-scripts/                 Build-time tooling (fetching the llama.cpp engine)
+e2e/                     Layout tests driven through a real browser — the app, and the site
+scripts/                 Build-time tooling (the llama.cpp engine, releases, the changelog page)
+website/                 The public site: static HTML, deployed by Vercel
+  changelog.html         Generated from CHANGELOG.md — do not edit
 src-tauri/               Rust backend
   src/lib.rs             Tauri builder — plugins and command registration
   src/main.rs            Desktop entry point
@@ -734,6 +753,40 @@ pane between the rail and the detail. Neither is here: the title bar is still th
 and the list pane needs per-view content the app does not have yet. Both are additions to the
 shell rather than changes to it.
 
+## The website
+
+`website/` is the public site — hand-written static HTML deployed by Vercel, with no build step and
+no framework. It shares the app's design system: the tokens in `website/styles.css` mirror
+`src/styles/globals.css`, and a colour or a size that changes in one changes in the other.
+
+- **Nothing is fetched from anywhere.** `vercel.json` sets a Content-Security-Policy of
+  `default-src 'none'` with `script-src`, `style-src` and `font-src` at `'self'`, which is why the
+  fonts are in `website/fonts/` and why no page carries an inline `style` attribute. A site whose
+  headline is that nothing about you is sent anywhere must not open with a request to a font CDN.
+- **The header is aligned on the baseline, not on the centre of each box.** Its three text runs are
+  19px, 14px and 13px, and centring boxes of three different heights leaves their baselines a
+  couple of pixels apart. Baseline alignment needs every item to expose a real one, which a flex
+  container does not — its baseline is synthesised from its first flex item, and in all three of
+  these that item is an icon. So the wordmark, the GitHub link and the header button are laid out
+  inline rather than as flex containers, and each icon is placed by an explicit `vertical-align`
+  offset that centres it on the x-height of the text beside it.
+- **The header is one row at every width, down to 320px.** It tightens rather than wraps: below
+  560px the GitHub link keeps its icon and its label is clipped rather than removed, so it is still
+  the link's accessible name; below 400px the link leaves the header altogether, because it is the
+  only item there that is also in every footer and the alternative is the download button going off
+  the edge — which is exactly what was reported.
+- **`website/changelog.html` is generated, not written.** `scripts/changelog-page.mjs` renders it
+  from `CHANGELOG.md`, `scripts/release.mjs` runs it as part of writing a release, and
+  `pnpm check:changelog` — which `pnpm check` runs — fails if the committed page is not what the
+  script would write from the markdown beside it. Edit the markdown or the script; never the page.
+  The parse is strict on purpose: a line it cannot read stops the build rather than being dropped,
+  because a page missing a release looks perfectly fine.
+- **The site's layout is measured in a browser, like the app's.** `e2e/website.spec.ts` runs under
+  its own Playwright project against the static files, because the two things above — whether three
+  type sizes share a baseline, and whether a header fits across a phone — are exactly what jsdom
+  reports as zero. Baselines are measured with an empty inline-block probe, whose own baseline is
+  its bottom edge, rather than calculated from font metrics.
+
 ## Conventions
 
 **TypeScript**
@@ -766,6 +819,9 @@ shell rather than changes to it.
 - jsdom has no layout engine: it reports every height as zero, so it cannot see a scrollbar, a
   clipped composer or a window that scrolls when it should not. Anything that depends on layout
   belongs in `e2e/`, which runs the built app in Chromium under Playwright and measures the result.
+  The same directory holds `website.spec.ts`, which runs under its own project against the static
+  site rather than the app — `testIgnore`/`testMatch` keep the two apart, and Playwright starts a
+  server for each.
 - `e2e/fixtures.ts` replaces `window.__TAURI_INTERNALS__` rather than the components, so the real
   views, the real CSS and the real event plumbing run against answers a test chooses. It can hold a
   question open and push `agent-stream` updates, which is how the streaming states are measured.
@@ -898,33 +954,42 @@ Linux-only crate is not in any of them.
 
 ## Releases
 
-A release is cut deliberately, and it can carry several pull requests at once.
-`.github/workflows/release.yml` is started by hand from the Actions tab. It runs the checks
-first, and then one Linux job decides whether what has landed since the last tag is worth
-releasing. If it is, that job _is_ the release: the new version is
-written into the four files that carry it, `CHANGELOG.md` gains an entry, both are committed back
-to `main` and tagged, and the three bundles — two macOS architectures and Windows — build and
-publish against that tag.
+**A merge to `main` releases, when there is something to release.**
+`.github/workflows/release.yml` runs on every push to `main`, and can still be started by hand
+from the Actions tab for a specific `ref`. It runs the checks first, and then one Linux job decides
+whether what has landed since the last tag is worth releasing. If it is, that job _is_ the release:
+the new version is written into the five files that carry it, `CHANGELOG.md` gains an entry, the
+website's changelog page is regenerated from it, all of them are committed back to `main` and
+tagged, and the three bundles — two macOS architectures and Windows — build and publish against
+that tag.
 
 `scripts/release.mjs` holds the decision, which is why it is a tested script rather than a heap of
-YAML — a person chooses _when_ to release, but nothing between that click and a published release
-is checked by hand. `pnpm test` covers it.
+YAML — nothing between a merge and a published release is checked by hand. `pnpm test` covers it.
 
 - **A `feat`, `fix`, `perf` or `revert` releases. Nothing else does.** A `docs`, `ci`, `chore`,
-  `style`, `test` or `refactor` commit changes nothing a person can download, and a release is
-  three bundles — two of them macOS at 10× a Linux runner, so on the order of 200 billed minutes.
-  Those commits neither cause a release nor appear in one.
+  `style`, `test` or `refactor` commit changes nothing a person can download, so those commits
+  neither cause a release nor appear in one. This is what keeps a trigger on every merge from
+  meaning a version number on every merge: most merges end at the `version` job having built
+  nothing.
 - **The version is derived, never chosen.** A `feat` is a minor and anything else releasable is a
   patch. A breaking change — `feat!:` or a `BREAKING CHANGE:` footer — is a major, except before
   1.0.0, where it is a minor: a project that is not finished should not be forced to call itself
   1.0 by its first breaking change.
-- **Four files carry the version** — `package.json`, `src-tauri/tauri.conf.json`,
-  `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock` — and the script rewrites exactly one version
-  string in each, failing if it finds none or several. A test asserts each pattern still matches
-  its real file, so reformatting one of them breaks a test rather than a release.
+- **Five files carry the version** — `package.json`, `src-tauri/tauri.conf.json`,
+  `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `website/support.js`, which builds the site's
+  download links from it — and the script rewrites exactly one version string in each, failing if
+  it finds none or several. A test asserts each pattern still matches its real file, so
+  reformatting one of them breaks a test rather than a release. Every one of them is named in the
+  workflow's `git add`: a file the script rewrites and the commit leaves behind is a change thrown
+  away, which is what happened to `website/support.js` until it was noticed.
 - **The release commit starts nothing.** It is pushed with `GITHUB_TOKEN`, and GitHub deliberately
-  raises no workflow runs for those. Nothing runs on a push to `main` anyway, but this also keeps
-  the commit from tripping anything added there later.
+  raises no workflow runs for those. That is now load-bearing rather than incidental: releasing on
+  a push to `main` and pushing to `main` from the release would otherwise be a loop.
+- **A merge landing mid-release does not fail it.** The `version` job checks out `main`, not the
+  commit that triggered the run, so two merges in quick succession make one release rather than a
+  non-fast-forward. If something lands while the checks run, the release commit is replayed onto it
+  and pushed again — up to three times, and never through a conflict, which would mean something
+  other than a release had written one of those files.
 - **Drafted, filled, then published.** The release is created as a draft so nobody is told about a
   release they cannot download; the `publish` job takes it out of draft once every bundle is
   attached. If that job never runs, the release sits there as a draft with its assets and one click
@@ -937,7 +1002,8 @@ is checked by hand. `pnpm test` covers it.
   entirely — so the ruleset grants a bypass to the GitHub Actions app, and to nothing else. If
   releasing ever fails on a protected-branch error, that bypass is the first thing to check.
 - `CHANGELOG.md` is in `.prettierignore`. It is generated, and a formatting check failing on a
-  release commit would block releasing entirely.
+  release commit would block releasing entirely. `website/changelog.html` is there for the same
+  reason, and is checked more strictly than formatting would: see the website section below.
 
 ## Roadmap
 
