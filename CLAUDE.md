@@ -941,13 +941,29 @@ is checked by hand. `pnpm test` covers it.
 
 ## Roadmap
 
-**[`docs/implementation-plan.md`](docs/implementation-plan.md) is the roadmap.** It holds the build
-order from step 8 to step 22, decisions D1–D8 with what each one costs, the hardware budget, and
-§0's ledger of what is actually built. Steps 1–7 shipped before it was written.
+**The roadmap is the _Chief — Implementation Plan_ document in the Chief project in Linear**, not a
+file in this repository. It holds the build order from step 8 to step 22, decisions D1–D9 with what
+each one costs, the hardware budget, and §0's ledger of what is actually built. Steps 1–7 shipped
+before it was written.
 
-It is **a living document, updated in the pull request that changes it** — see its §8. A step that
-lands without moving its row in §0 has left the plan describing something that is no longer true,
-which is the state it was in when it sat unmerged on a branch for seven steps.
+Two other documents live beside it there, and both are the authority on their subject:
+_Integrations: priority order and a generic integration layer_ — primary-source, adversarially
+verified research into six providers — and _Generic Integration Layer — Implementation Plan_, the
+task-by-task plan that produced step 7.
+
+**They are internal, which is why they are in Linear rather than here.** This repository is public.
+A roadmap, a hardware budget and a list of open questions are for whoever is building Chief; they
+are not part of what is published, and a public repository is the wrong place to keep working
+notes about what is not finished yet.
+
+It is **a living document** — see its §8. **Update it before the issue whose work changed it is
+marked Done**, never in a later sweep. A step that lands without moving its row in §0 has left the
+plan describing something that is no longer true, which is the state it was in when it sat unmerged
+on a branch for seven steps.
+
+That rule used to enforce itself: the plan was a file, so the edit was in the same diff as the code
+and a reviewer saw both. It no longer is, so **the pull request description says which rows it
+moved** — that is the cheapest substitute for the diff, and it is what makes the omission visible.
 
 Three things to do with it rather than around it:
 
