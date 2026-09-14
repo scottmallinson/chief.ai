@@ -75,6 +75,22 @@
 //! request sampling can run its own agentic loop on the user's local model.
 //! [`CAPABILITIES`] is empty, and a test reads what actually went out to prove
 //! it.
+//!
+//! ## Two ways in, and the second is not a lesser one
+//!
+//! This file is the MCP path. [`rest`] is the other: an API token the user
+//! pastes, used as HTTP Basic against their own site. The design spec kept it
+//! deliberately — "the answer for Free-tier sites and for organisations that
+//! disable the MCP server" — and an organisation restricting Rovo is exactly
+//! that case, reported from a real tenant. Neither path is a fallback in the
+//! sense of being worse: the token reaches Confluence, which the MCP path
+//! still does not.
+//!
+//! What they share lives here: [`Error`] and its classification, [`Issue`],
+//! [`Site`], [`describe`], and the read limit. What differs is the whole
+//! transport, which is why they are two files rather than one with branches.
+
+pub mod rest;
 
 use std::time::Duration;
 
@@ -109,6 +125,17 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// How long to wait before deciding Atlassian is not answering.
 const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What Chief calls itself on the wire.
+///
+/// `reqwest` sends **no** `User-Agent` at all unless one is set, and this
+/// module shipped without one. `github.rs` has always set the same string, and
+/// it is the only client here whose reads are known to work from the machine
+/// where Atlassian's failed — which is not proof, but a nameless request is
+/// the wrong thing to send a third party either way. `mcp.atlassian.com` is
+/// the one Atlassian host behind Cloudflare, whose managed rules commonly
+/// action exactly that.
+const USER_AGENT: &str = concat!("chief-ai/", env!("CARGO_PKG_VERSION"));
 
 /// What Chief asks for: reading Jira, and nothing else.
 ///
@@ -185,8 +212,42 @@ const ASSIGNED_JQL: &str = "assignee = currentUser() AND resolution = EMPTY ORDE
 pub enum Error {
     #[error("Atlassian is not connected")]
     NotConnected,
-    #[error("Atlassian could not be reached")]
-    Transport,
+    /// The connection never got as far as an answer: DNS, TLS, no route, a
+    /// timeout.
+    ///
+    /// **Carries why, and which host.** It used to be a bare "Atlassian could
+    /// not be reached", which is true of a name that does not resolve, a
+    /// certificate that does not verify, a firewall, and a 404 alike — and
+    /// being told that on a button press leaves the user and the next person
+    /// to debug it with nowhere to start. Ten call sites threw the cause away
+    /// with `map_err(|_| …)`; none do now.
+    #[error("{host} could not be reached: {because}")]
+    Unreachable { host: String, because: String },
+    /// The TLS certificate did not verify.
+    ///
+    /// **Split out of [`Error::Unreachable`] because it is the one failure
+    /// this module was actually reported for, and because it is not a network
+    /// problem the user can wait out.** On the machine that reported it,
+    /// corporate DNS resolved `mcp.atlassian.com` to a network that is not
+    /// Atlassian's, and Windows then refused the substituted certificate with
+    /// `CRYPT_E_NO_REVOCATION_CHECK` — while `api.github.com`, which was not
+    /// redirected, answered 200. "Could not be reached" sends somebody to
+    /// check their wifi; naming the certificate sends them to the right place.
+    ///
+    /// Chief does **not** offer a way to skip verification, and must not grow
+    /// one. An intercepted connection to a host holding somebody's Jira is
+    /// exactly the thing certificate verification is for.
+    #[error(
+        "the certificate for {host} could not be verified, so Chief stopped rather than \
+         trusting it. Something on this network may be inspecting HTTPS traffic: {because}"
+    )]
+    Untrusted { host: String, because: String },
+    /// The host answered, but not with success. Distinct from
+    /// [`Error::Unreachable`] because the network is fine and something is
+    /// refusing on purpose — which is a different thing for the user to do
+    /// something about.
+    #[error("{host} answered {status}")]
+    Answered { host: String, status: u16 },
     #[error("Atlassian answered with something unexpected")]
     Decode,
     #[error("Atlassian refused the sign-in: {0}")]
@@ -199,10 +260,126 @@ pub enum Error {
     UntrustedIssuer(String),
     #[error("'{0}' is not a tool Chief is allowed to call")]
     NotDeterministic(String),
+    /// The site address the user typed is not one. Carries what they typed,
+    /// which is not a credential — the token is, and it is in a header.
+    #[error("{0}")]
+    Site(String),
     #[error("Atlassian did not recognise that request: {0}")]
     Tool(String),
     #[error(transparent)]
     Storage(#[from] crate::db::Error),
+}
+
+/// The host a URL names, so an error can say where it was going without
+/// quoting a whole URL — and without ever quoting a query string, which is
+/// where a code or a token would be if one were ever put in one.
+#[must_use]
+pub(crate) fn host_of(url: &str) -> String {
+    url.split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split('/')
+        .next()
+        .unwrap_or(url)
+        .to_string()
+}
+
+/// Why a request failed, in the words of whatever actually failed.
+///
+/// `reqwest`'s own `Display` is "error sending request for url (…)" every
+/// time; the useful sentence — `dns error`, `certificate verify failed`,
+/// `connection refused`, `operation timed out` — is further down the source
+/// chain. Both ends are kept: the outer says what stage it was at and the
+/// inner says what went wrong.
+///
+/// **Nothing here can carry a credential.** A `reqwest::Error` holds a URL and
+/// an I/O cause, never headers, and the one request that carries a bearer
+/// token puts it in a header. A test asserts the rendering.
+#[must_use]
+pub(crate) fn because(error: &reqwest::Error) -> String {
+    let mut said = vec![error.to_string()];
+    let mut source = std::error::Error::source(error);
+
+    // Bounded: a cause chain is a linked list and a cycle would hang here.
+    while let Some(inner) = source.filter(|_| said.len() < 4) {
+        said.push(inner.to_string());
+        source = std::error::Error::source(inner);
+    }
+
+    said.dedup();
+    said.join(": ")
+}
+
+/// Whether a transport failure was the certificate rather than the network.
+///
+/// Matched on the text, because that is all a `reqwest::Error` offers: the
+/// certificate failure is raised inside the TLS stack and arrives as a string
+/// by the time it reaches here. Deliberately a short list of unambiguous
+/// markers rather than anything clever — a false positive would tell somebody
+/// their network is inspecting traffic when their wifi is simply off, which is
+/// worse than the generic message it replaces.
+///
+/// The `revocation` entry is the one that was actually reported:
+/// `CRYPT_E_NO_REVOCATION_CHECK`, from Windows refusing a certificate it could
+/// not check a revocation list for.
+#[must_use]
+fn is_certificate_failure(because: &str) -> bool {
+    const MARKERS: [&str; 6] = [
+        "certificate",
+        "cert_",
+        "crypt_e_no_revocation",
+        "unknownissuer",
+        "certificate verify failed",
+        "invalid peer certificate",
+    ];
+
+    let said = because.to_lowercase();
+
+    MARKERS.iter().any(|marker| said.contains(marker))
+}
+
+impl Error {
+    /// A failed request, named and explained.
+    ///
+    /// Also written to stderr, because `tauri dev` shows that stream and a
+    /// person debugging this is usually looking at it — the same reason
+    /// `engine.rs` reads the server's stderr rather than inheriting it.
+    fn unreachable(url: &str, error: &reqwest::Error) -> Self {
+        Self::from_transport(host_of(url), because(error))
+    }
+
+    /// Which failure a transport error was, given what the transport said.
+    ///
+    /// **Split out of [`Error::unreachable`] and pure, because the branch was
+    /// otherwise untestable**: disabling the classification left the whole
+    /// suite green, since one test covered [`is_certificate_failure`] and
+    /// another covered the rendering, and nothing joined them. A
+    /// `reqwest::Error` cannot be constructed by hand, so taking the string
+    /// instead is what makes the wiring provable.
+    pub(crate) fn from_transport(host: String, because: String) -> Self {
+        if is_certificate_failure(&because) {
+            eprintln!(
+                "atlassian: {host} presented a certificate Chief could not verify: {because}"
+            );
+
+            return Self::Untrusted { host, because };
+        }
+
+        eprintln!("atlassian: {host} could not be reached: {because}");
+
+        Self::Unreachable { host, because }
+    }
+
+    /// A request that was answered, but not with success.
+    pub(crate) fn answered(url: &str, status: reqwest::StatusCode) -> Self {
+        let host = host_of(url);
+
+        eprintln!("atlassian: {host} answered {status}");
+
+        Self::Answered {
+            host,
+            status: status.as_u16(),
+        }
+    }
 }
 
 impl serde::Serialize for Error {
@@ -413,12 +590,16 @@ impl Client {
     fn build(host: String, issuer_origin: String) -> Result<Self, Error> {
         let http = reqwest::Client::builder()
             .timeout(TIMEOUT)
+            .user_agent(USER_AGENT)
             // No proxy, for the same reason every other credential-carrying
             // client here has none: a proxy is a third party to a conversation
             // that has two.
             .no_proxy()
             .build()
-            .map_err(|_| Error::Transport)?;
+            .map_err(|error| Error::Unreachable {
+                host: host_of(&host),
+                because: error.to_string(),
+            })?;
 
         Ok(Self {
             http,
@@ -492,10 +673,12 @@ impl Client {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|_| Error::Transport)?;
+            .map_err(|error| Error::unreachable(url, &error))?;
 
-        if !response.status().is_success() {
-            return Err(Error::Transport);
+        let status = response.status();
+
+        if !status.is_success() {
+            return Err(Error::answered(url, status));
         }
 
         response.json().await.map_err(|_| Error::Decode)
@@ -531,7 +714,7 @@ impl Client {
             .json(&body)
             .send()
             .await
-            .map_err(|_| Error::Transport)?;
+            .map_err(|error| Error::unreachable(registration_endpoint, &error))?;
 
         let status = response.status();
         let reply: RegistrationReply = response.json().await.map_err(|_| Error::Decode)?;
@@ -653,7 +836,7 @@ impl Client {
             .form(&form)
             .send()
             .await
-            .map_err(|_| Error::Transport)?;
+            .map_err(|error| Error::unreachable(token_endpoint, &error))?;
 
         let status = response.status();
         let reply: TokenReply = response.json().await.map_err(|_| Error::Decode)?;
@@ -671,7 +854,7 @@ impl Client {
         }
 
         if !status.is_success() {
-            return Err(Error::Transport);
+            return Err(Error::answered(token_endpoint, status));
         }
 
         Ok(Tokens {
@@ -881,10 +1064,13 @@ impl Mcp<'_> {
             return Err(Error::Rejected);
         }
 
-        let body = response.text().await.map_err(|_| Error::Transport)?;
+        let body = response
+            .text()
+            .await
+            .map_err(|error| Error::unreachable(&self.client.mcp_url(), &error))?;
 
         if !status.is_success() {
-            return Err(Error::Transport);
+            return Err(Error::answered(&self.client.mcp_url(), status));
         }
 
         let envelope = envelope(&content_type, &body)?;
@@ -920,7 +1106,10 @@ impl Mcp<'_> {
             request = request.header("Mcp-Session-Id", session);
         }
 
-        request.send().await.map_err(|_| Error::Transport)
+        request
+            .send()
+            .await
+            .map_err(|error| Error::unreachable(&self.client.mcp_url(), &error))
     }
 }
 
@@ -1312,7 +1501,18 @@ mod tests {
 
         let errors = [
             Error::NotConnected,
-            Error::Transport,
+            Error::Unreachable {
+                host: "mcp.atlassian.com".to_string(),
+                because: secret.to_string(),
+            },
+            Error::Answered {
+                host: "mcp.atlassian.com".to_string(),
+                status: 403,
+            },
+            Error::Untrusted {
+                host: "mcp.atlassian.com".to_string(),
+                because: secret.to_string(),
+            },
             Error::Decode,
             Error::Refused(secret.to_string()),
             Error::Rejected,
@@ -1322,28 +1522,200 @@ mod tests {
             Error::Tool(secret.to_string()),
         ];
 
-        // The three variants that take a string are handed one here on
-        // purpose: they carry what the *server* said, and the point of the
-        // test is the variants that could carry what Chief holds. Those are
-        // the ones with no field at all, which is the design — so this asserts
-        // the shape rather than the rendering, and the rendering of the rest.
+        // The variants that take a string are handed one here on purpose:
+        // they carry what the *server* or the transport said, and the point of
+        // the test is that nothing carries what Chief *holds*. Those are the
+        // variants with no free-text field at all, which is the design — so
+        // this asserts the shape, and the test below asserts the thing that
+        // actually matters against a real failure.
         for error in errors {
             let rendered = error.to_string();
-            let carries_server_text = matches!(
+            let quotes_what_it_was_told = matches!(
                 error,
                 Error::Refused(_)
                     | Error::Registration(_)
                     | Error::UntrustedIssuer(_)
                     | Error::NotDeterministic(_)
                     | Error::Tool(_)
+                    | Error::Unreachable { .. }
+                    | Error::Untrusted { .. }
             );
 
             assert_eq!(
                 rendered.contains(secret),
-                carries_server_text,
-                "only what the server said may be quoted: {rendered}"
+                quotes_what_it_was_told,
+                "only what the server or the transport said may be quoted: {rendered}"
             );
         }
+    }
+
+    /// **A nameless request is what shipped**, because `reqwest` sends no
+    /// `User-Agent` unless one is set and this module never set one. Asserted
+    /// against the bytes on the wire rather than against the constant.
+    #[tokio::test]
+    async fn names_itself_on_every_request() {
+        let (host, server) = serve(vec![
+            ("HTTP/1.1 200 OK", initialized()),
+            ("HTTP/1.1 200 OK", "{}".to_string()),
+        ]);
+        let client = Client::against(&host).expect("client");
+
+        client.connect("token").await.expect("should initialize");
+
+        let sent = server.await.expect("server");
+
+        assert!(!sent.is_empty(), "nothing was sent, so this proves nothing");
+        // Lowercased: `HeaderName` normalises, so hyper puts `user-agent` on
+        // the wire whatever case it was given.
+        assert!(
+            sent[0].to_lowercase().contains("user-agent: chief-ai/"),
+            "every request should name Chief: {}",
+            sent[0]
+        );
+    }
+
+    /// **The real strings, including the one that was reported.** Windows
+    /// raised `CRYPT_E_NO_REVOCATION_CHECK` on a certificate substituted by
+    /// something between the machine and Atlassian; rustls and OpenSSL word
+    /// the same class of failure differently, so all three are here.
+    #[test]
+    fn tells_a_certificate_failure_from_a_network_one() {
+        for certificate in [
+            "schannel: next InitializeSecurityContext failed: CRYPT_E_NO_REVOCATION_CHECK \
+             (0x80092012) - The revocation function was unable to check revocation for the \
+             certificate.",
+            "invalid peer certificate: UnknownIssuer",
+            "certificate verify failed: unable to get local issuer certificate",
+            "invalid peer certificate: Expired",
+        ] {
+            assert!(
+                is_certificate_failure(certificate),
+                "should read as a certificate failure: {certificate}"
+            );
+        }
+
+        // A false positive here would tell somebody their network is
+        // inspecting traffic when their wifi is off, which is worse than the
+        // generic message it replaces.
+        for network in [
+            "dns error: failed to lookup address information: Name or service not known",
+            "tcp connect error: Connection refused (os error 111)",
+            "operation timed out",
+            "connection closed before message completed",
+        ] {
+            assert!(
+                !is_certificate_failure(network),
+                "should stay a plain transport failure: {network}"
+            );
+        }
+    }
+
+    /// **The wiring, not the pieces.** `is_certificate_failure` and the
+    /// rendering each had a test; neither noticed when the branch joining them
+    /// was disabled. This drives the function every failed request goes
+    /// through.
+    #[test]
+    fn a_failed_request_is_sorted_into_the_right_failure() {
+        let reported = "schannel: next InitializeSecurityContext failed: \
+                        CRYPT_E_NO_REVOCATION_CHECK (0x80092012) - The revocation function was \
+                        unable to check revocation for the certificate.";
+
+        assert!(
+            matches!(
+                Error::from_transport("mcp.atlassian.com".to_string(), reported.to_string()),
+                Error::Untrusted { .. }
+            ),
+            "the reported failure should read as a certificate, not as the network"
+        );
+
+        assert!(
+            matches!(
+                Error::from_transport(
+                    "mcp.atlassian.com".to_string(),
+                    "tcp connect error: Connection refused (os error 111)".to_string(),
+                ),
+                Error::Unreachable { .. }
+            ),
+            "and a refused connection should stay a plain transport failure"
+        );
+    }
+
+    /// The variant exists to be actionable, so the words are part of it.
+    #[test]
+    fn a_certificate_failure_says_what_to_suspect() {
+        let rendered = Error::Untrusted {
+            host: "mcp.atlassian.com".to_string(),
+            because: "invalid peer certificate: UnknownIssuer".to_string(),
+        }
+        .to_string();
+
+        assert!(rendered.contains("mcp.atlassian.com"), "{rendered}");
+        assert!(rendered.contains("certificate"), "{rendered}");
+        assert!(
+            rendered.contains("inspecting HTTPS traffic"),
+            "the actionable half is the point: {rendered}"
+        );
+    }
+
+    /// Named without the path, and never with a query string — a code or a
+    /// token would be in one if anything ever put it there.
+    #[test]
+    fn names_the_host_without_the_rest_of_the_url() {
+        assert_eq!(host_of("https://mcp.atlassian.com"), "mcp.atlassian.com");
+        assert_eq!(
+            host_of("https://mcp.atlassian.com/.well-known/oauth-protected-resource"),
+            "mcp.atlassian.com"
+        );
+        assert_eq!(
+            host_of("https://auth.atlassian.com/VCeDsk/dcr/register?code=secret"),
+            "auth.atlassian.com"
+        );
+        assert_eq!(
+            host_of("http://127.0.0.1:49512/callback"),
+            "127.0.0.1:49512"
+        );
+    }
+
+    /// **The guard that matters, against a real failure rather than a
+    /// hand-built one.**
+    ///
+    /// `Error::Unreachable` now quotes the transport's own words, and the one
+    /// request that carries a bearer token is the MCP call. A `reqwest::Error`
+    /// holds a URL and an I/O cause and never headers — but that is a fact
+    /// about a dependency, which is exactly the kind of fact that changes
+    /// under you. So this drives a real failing request with a real token and
+    /// reads what reaches the screen.
+    ///
+    /// Port 1 is never listening, so the failure is immediate and is the
+    /// connection itself rather than anything Atlassian said.
+    #[tokio::test]
+    async fn a_failed_request_never_renders_the_token_it_carried() {
+        let token = "atl-bearer-do-not-print";
+        let client = Client::against("http://127.0.0.1:1").expect("client");
+
+        let Err(error) = client.connect(token).await else {
+            panic!("nothing is listening on port 1, so this cannot succeed");
+        };
+
+        let rendered = error.to_string();
+
+        assert!(
+            matches!(error, Error::Unreachable { .. }),
+            "a refused connection is unreachable, not something Atlassian said: {error:?}"
+        );
+        assert!(
+            !rendered.contains(token),
+            "the bearer token reached the screen: {rendered}"
+        );
+        // Asserted as the *opening* of the message rather than as "appears
+        // somewhere", which was the first version and proved nothing: removing
+        // `{host}` from the Display left it green, because `because` embeds
+        // reqwest's own URL and that contains the host too. Two things say it;
+        // only this pins the one the message is built from.
+        assert!(
+            rendered.starts_with("127.0.0.1:1 "),
+            "the message should open by naming where it was going: {rendered}"
+        );
     }
 
     // ---------------------------------------------------------------------

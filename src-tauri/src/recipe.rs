@@ -59,6 +59,9 @@ pub struct Context {
     pub linear: crate::linear::Client,
     /// Jira and Confluence, over Atlassian's Remote MCP server.
     pub atlassian: crate::atlassian::Client,
+    /// The same two, with an API token, for the organisations that restrict
+    /// the MCP server.
+    pub atlassian_rest: crate::atlassian::rest::Rest,
     pub engine: llama::Client,
     pub corpus: Corpus,
 }
@@ -128,6 +131,13 @@ struct Gathered {
     /// from Jira alone must not report its source as Linear, which is what one
     /// merged field would have said.
     jira: Vec<String>,
+    /// Confluence pages this person has been writing.
+    ///
+    /// Reachable only with an API token: the MCP path does not request
+    /// Confluence's scopes, because it would be asking for access no code
+    /// path used. The token carries whatever its owner already has, so there
+    /// is nothing extra to ask for and the read simply works.
+    pages: Vec<String>,
     background: Vec<(String, String)>,
 }
 
@@ -144,6 +154,7 @@ impl Gathered {
             ("inbox", self.inbox.is_empty()),
             ("Linear", self.assigned.is_empty()),
             ("Jira", self.jira.is_empty()),
+            ("Confluence", self.pages.is_empty()),
             ("corpus", self.background.is_empty()),
         ] {
             if !empty {
@@ -248,7 +259,9 @@ async fn gather(context: &Context) -> Gathered {
     }
 
     found.assigned = assigned_issues(context).await;
-    found.jira = jira_issues(context).await;
+    let (jira, pages) = atlassian(context).await;
+    found.jira = jira;
+    found.pages = pages;
     found.background = background(context).await;
 
     found
@@ -341,34 +354,109 @@ async fn assigned_issues(context: &Context) -> Vec<String> {
     found
 }
 
-/// What every connected Atlassian account says is assigned and unfinished.
+/// What every connected Atlassian account holds, by whichever route it was
+/// connected.
 ///
-/// Reads through [`AtlassianSession`] rather than the client directly, so a
-/// token that expired between passes is renewed once instead of sending the
-/// user back to a browser. A site that will not answer fails that one source,
-/// the same rule every other source in `gather` follows.
-async fn jira_issues(context: &Context) -> Vec<String> {
+/// **The credential decides the transport, not a setting.** An account
+/// connected through the MCP server carries a client minted for it and reads
+/// over JSON-RPC; one connected with a pasted token carries the token and
+/// reads Atlassian's REST API directly. `credential_kind` says which, which is
+/// the column's whole purpose — "explicit, so a pasted credential is not
+/// inferred from which columns happen to be NULL".
+///
+/// A site that will not answer fails that one source, the same rule every
+/// other source in `gather` follows.
+/// Where one account's reads go, decided from what it stored.
+///
+/// Pure, and separate from the loop, because a branch inside an `async fn`
+/// that reaches two servers is provable only by standing both of them up —
+/// and one of those is an MCP server. `Error::from_transport` was pulled out
+/// of `atlassian.rs` for the same reason: a test for the matcher and a test
+/// for the wording, with nothing joining them, left the branch itself free to
+/// be deleted.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// Atlassian's REST API, with HTTP Basic over the pasted token.
+    Rest { site: String, email: String },
+    /// The MCP server, over the client this account registered for itself.
+    Mcp,
+}
+
+fn route(account: &integrations::Account, credentials: &integrations::Credentials) -> Route {
+    if credentials.kind != crate::integrations::API_KEY {
+        return Route::Mcp;
+    }
+
+    Route::Rest {
+        // `account_key` holds the bare host, so the scheme is put back rather
+        // than stored — there is no other scheme this may be.
+        site: format!("https://{}", account.account_key),
+        // Basic auth is `email:token`, and for this provider `identity` is
+        // documented as what to send as the user half.
+        email: account.identity.clone().unwrap_or_default(),
+    }
+}
+
+async fn atlassian(context: &Context) -> (Vec<String>, Vec<String>) {
     let Ok(accounts) =
         crate::integrations::accounts(&context.pool, crate::integrations::ATLASSIAN).await
     else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
 
-    let mut found = Vec::new();
+    let mut issues = Vec::new();
+    let mut pages = Vec::new();
 
     for account in accounts {
-        let session =
-            crate::session::AtlassianSession::new(&context.pool, &context.atlassian, account.id);
+        let Ok(Some(credentials)) =
+            crate::integrations::credentials(&context.pool, account.id).await
+        else {
+            continue;
+        };
 
-        match session.assigned().await {
-            Ok(issues) => found.extend(issues.iter().map(crate::atlassian::describe)),
-            // Reported without the token, which is a credential — `atlassian::Error`
-            // carries none, which a test asserts.
-            Err(error) => eprintln!("an Atlassian account could not be read: {error}"),
+        let Route::Rest { site, email } = route(&account, &credentials) else {
+            let session = crate::session::AtlassianSession::new(
+                &context.pool,
+                &context.atlassian,
+                account.id,
+            );
+
+            match session.assigned().await {
+                Ok(found) => issues.extend(found.iter().map(crate::atlassian::describe)),
+                Err(error) => eprintln!("an Atlassian account could not be read: {error}"),
+            }
+
+            continue;
+        };
+
+        {
+            match context
+                .atlassian_rest
+                .assigned(&site, &email, &credentials.access_token)
+                .await
+            {
+                Ok(found) => issues.extend(found.iter().map(crate::atlassian::describe)),
+                // Reported without the token, which is a credential.
+                Err(error) => eprintln!("an Atlassian site could not be read: {error}"),
+            }
+
+            match context
+                .atlassian_rest
+                .pages(&site, &email, &credentials.access_token)
+                .await
+            {
+                Ok(found) => pages.extend(found.iter().map(crate::atlassian::rest::describe)),
+                // Confluence is a separate product and a separate permission:
+                // a token that reads Jira may legitimately not reach it, and
+                // that must not cost the Jira half of the same account.
+                Err(error) => {
+                    eprintln!("an Atlassian site's Confluence could not be read: {error}")
+                }
+            }
         }
     }
 
-    found
+    (issues, pages)
 }
 
 /// The always-loaded corpus files, newest first.
@@ -441,6 +529,7 @@ fn assemble(found: &Gathered, present: &str) -> Result<String, Error> {
         ("Your open pull requests", &found.mine),
         ("Unread mail", &found.inbox),
         ("Assigned to you and not finished", &tracked),
+        ("Pages you have been writing", &found.pages),
         ("Recently logged work", &found.shipped),
     ] {
         if items.is_empty() {
@@ -683,6 +772,7 @@ pub async fn context<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Con
         calendar: app.state::<crate::calendar::Client>().inner().clone(),
         linear: app.state::<crate::linear::Client>().inner().clone(),
         atlassian: app.state::<crate::atlassian::Client>().inner().clone(),
+        atlassian_rest: app.state::<crate::atlassian::rest::Rest>().inner().clone(),
         engine: app.state::<llama::Client>().inner().clone(),
     })
 }
@@ -751,6 +841,7 @@ mod tests {
             inbox: vec!["Dana Reid: Re: the migration".to_string()],
             assigned: vec!["REC-42 Read Linear [In Progress]".to_string()],
             jira: vec!["PROJ-7 Migrate the tenant [In Review]".to_string()],
+            pages: vec!["Tenant migration runbook [ENG]".to_string()],
             background: vec![(
                 "context/agents/org/team_structure.md".to_string(),
                 "# Team\nSam owns auth.".to_string(),
@@ -838,6 +929,7 @@ mod tests {
                 "inbox",
                 "Linear",
                 "Jira",
+                "Confluence",
                 "corpus"
             ]
         );
@@ -973,6 +1065,7 @@ mod tests {
             calendar: crate::calendar::Client::new().expect("client"),
             linear: crate::linear::Client::new().expect("client"),
             atlassian: crate::atlassian::Client::new().expect("client"),
+            atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url("http://127.0.0.1:1").expect("client"),
             corpus,
         };
@@ -1021,11 +1114,69 @@ mod tests {
                 calendar: crate::calendar::Client::new().expect("client"),
                 linear: crate::linear::Client::new().expect("client"),
                 atlassian: crate::atlassian::Client::new().expect("client"),
+                atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
                 engine: llama::Client::with_base_url(engine_host).expect("client"),
                 corpus,
             },
             Scratch(root),
         )
+    }
+
+    // ---------------------------------------------------------------------
+    // Which transport an Atlassian account reads over.
+    // ---------------------------------------------------------------------
+
+    fn account_keyed(key: &str, identity: Option<&str>) -> integrations::Account {
+        integrations::Account {
+            id: 1,
+            service: integrations::ATLASSIAN.to_string(),
+            account_key: key.to_string(),
+            label: None,
+            identity: identity.map(str::to_string),
+            connected_at: "2026-09-14T09:00:00Z".to_string(),
+        }
+    }
+
+    fn credentials_of(kind: &str) -> integrations::Credentials {
+        integrations::Credentials {
+            id: 1,
+            kind: kind.to_string(),
+            access_token: "a-token".to_string(),
+            refresh_token: None,
+            expires_at: None,
+            client_id: None,
+            client_secret: None,
+        }
+    }
+
+    /// **The credential decides the transport, and nothing else does.** A
+    /// pasted token cannot be exchanged for an MCP session and a minted client
+    /// cannot sign HTTP Basic, so getting this wrong is not a degraded read —
+    /// it is a connected account that returns nothing, for a reason no error
+    /// on screen would explain.
+    #[test]
+    fn a_pasted_token_reads_over_rest_and_a_minted_client_does_not() {
+        assert_eq!(
+            route(
+                &account_keyed("acme.atlassian.net", Some("scott@example.com")),
+                &credentials_of(integrations::API_KEY),
+            ),
+            Route::Rest {
+                site: "https://acme.atlassian.net".to_string(),
+                email: "scott@example.com".to_string(),
+            }
+        );
+
+        for kind in [integrations::DCR, integrations::OAUTH] {
+            assert_eq!(
+                route(
+                    &account_keyed("acme.atlassian.net", Some("scott@example.com")),
+                    &credentials_of(kind),
+                ),
+                Route::Mcp,
+                "{kind} is a sign-in, not a pasted credential"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1249,6 +1400,7 @@ mod tests {
             calendar: crate::calendar::Client::new().expect("client"),
             linear: crate::linear::Client::new().expect("client"),
             atlassian: crate::atlassian::Client::new().expect("client"),
+            atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(&host).expect("client"),
             corpus: Corpus::at(root),
         };

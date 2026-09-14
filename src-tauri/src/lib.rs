@@ -74,6 +74,7 @@ pub fn run() {
             app.manage(calendar::Client::new()?);
             app.manage(linear::Client::new()?);
             app.manage(atlassian::Client::new()?);
+            app.manage(atlassian::rest::Rest::new()?);
             app.manage(connect::Pending::default());
             app.manage(agent::Attention::default());
             // One ingestion pass at a time, whether the daemon asked or a
@@ -106,6 +107,7 @@ pub fn run() {
             agent::ask_agent,
             connect::add_calendar,
             connect::add_linear_key,
+            connect::add_atlassian_token,
             daemon::sync_now,
             connect::start_login,
             connect::finish_login,

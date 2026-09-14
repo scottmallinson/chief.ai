@@ -1421,6 +1421,7 @@ mod calendar_tests {
             calendar: crate::calendar::Client::new().expect("client"),
             linear: crate::linear::Client::new().expect("client"),
             atlassian: crate::atlassian::Client::new().expect("client"),
+            atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(&engine_host).expect("client"),
             corpus,
         };

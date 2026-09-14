@@ -522,10 +522,13 @@ pastes the address their provider already publishes.
 - **GraphQL answers 200 with an `errors` array**, so status alone is not enough — `read` inspects
   the body and separates an authentication failure, which is the user's to fix, from anything else.
 
-## Jira, over an MCP server that registers Chief at runtime
+## Jira and Confluence, two ways in
 
-`src-tauri/src/atlassian.rs` is the odd one out, and the module docs carry the evidence because the
-mechanism is undocumented.
+`src-tauri/src/atlassian/` is the odd one out, and the module docs carry the evidence because the
+mechanism is undocumented. `mod.rs` reads Jira over Atlassian's Remote MCP server, which registers
+Chief per installation; `rest.rs` reads Jira and Confluence over Atlassian's own REST API with a
+token the user pastes. **`integration_accounts.credential_kind` decides which**, per account, and
+`recipe::route` is the pure function that reads it.
 
 - **Classic 3LO is impossible, not merely awkward.** Atlassian's discovery document offers
   `client_secret_basic` and `client_secret_post` and no `none`, so every 3LO client is confidential.
@@ -556,9 +559,10 @@ mechanism is undocumented.
 - **Read-only is enforced at the authorization server**, because Atlassian's write scopes sit on the
   same resource as its read scopes. Asking for none of them makes it a property of the grant rather
   than a promise about this code — strictly better than the `repo` scope Chief settles for on
-  GitHub. D4 is where forfeiting it would be argued. **Confluence's scopes are deliberately not
-  requested yet**: a consent screen naming access no code path uses is what `repo` is criticised for
-  here, so the scope and the read land together.
+  GitHub. D4 is where forfeiting it would be argued. **Confluence's scopes are still deliberately not
+  requested**: a consent screen naming access no code path uses is what `repo` is criticised for
+  here, and the Confluence read that now exists is on the token path, which does not consent to
+  scopes at all. The scope and an MCP-side read land together or not at all.
 - **Discovery is followed for its paths, not for where it points.** The issuer is compared as a whole
   origin against `auth.atlassian.com` before its metadata is fetched — scheme included, so
   `http://` is not the same host over a transport anyone can rewrite. One MCP server surveyed for
@@ -566,6 +570,69 @@ mechanism is undocumented.
 - Jira issues join the brief beside Linear's under one heading, because they answer the same
   question — but they are two fields in `Gathered`, so a brief built from Jira alone does not report
   its source as Linear.
+- **A failed request says which host and why.** The module shipped with ten call sites that threw
+  the cause away with `map_err(|_| Error::Transport)`, so a name that does not resolve, a
+  certificate that does not verify, a firewall and a 404 all reached the screen as "Atlassian could
+  not be reached" — true, and useless to the person reading it or the next one debugging it.
+  `Unreachable` now carries the host and the transport's own words (`because` walks the source
+  chain, since reqwest's outer message is "error sending request for url" every time), `Answered`
+  carries a status, and both are written to stderr so `tauri dev` shows them. The token is never in
+  either: a `reqwest::Error` holds a URL and an I/O cause, never headers, and
+  `a_failed_request_never_renders_the_token_it_carried` drives a real failing request with a real
+  token rather than trusting that.
+- **A certificate failure is its own error, because it is the one that was reported.** On the
+  machine that hit it, corporate DNS resolved `mcp.atlassian.com` to `185.166.141.x` — not
+  Atlassian's `104.192.142.x` — and Windows refused the substituted certificate with
+  `CRYPT_E_NO_REVOCATION_CHECK`, while `api.github.com`, which was not redirected, answered 200.
+  "Could not be reached" sends somebody to check their wifi; `Untrusted` names the certificate and
+  says something on the network may be inspecting HTTPS. **Chief offers no way to skip
+  verification and must not grow one** — an intercepted connection to a host holding somebody's
+  Jira is exactly what verification is for. The classification is matched on the transport's text,
+  since that is all a `reqwest::Error` offers, and it lives in a pure `Error::from_transport` so
+  the branch is provable: the first version had a test for the matcher and a test for the wording
+  and nothing joining them, and disabling the branch entirely left the suite green.
+
+### The token path, for when the MCP server is not reachable
+
+`src-tauri/src/atlassian/rest.rs`. The MCP route can be taken away by somebody who is not the
+user — the server is part of Rovo, so an administrator switching that off ends it, and the
+intercepting proxy above ends it just as completely. When it has been, no amount of retrying
+helps, so there has to be a second way in.
+
+- **It is worse, and it is offered second.** A pasted token cannot be scoped, has no read-only
+  kind, and is revoked at Atlassian rather than here — everything the MCP grant does better. So
+  the Settings card folds it away behind one click under the sign-in button, and says in those
+  words that it carries everything its owner can already see. The same sentence Linear's key gets,
+  for the same reason.
+- **Three fields, because Basic auth is `email:token` and the site is the user's own.** A token
+  says nothing about which Jira to send it to. `rest::site` normalises what people actually type —
+  a bare `acme`, `acme.atlassian.net`, or a URL pasted out of the address bar with a board path
+  still on it — into one origin.
+- **Atlassian Cloud only, and that is a decision rather than an oversight.** Data Center and Server
+  take a _Personal Access Token_ — a different object from a Cloud API token — as
+  `Authorization: Bearer`, with no email. Adding it is small and is left out because nobody can
+  test it here, which is recorded in §9 of the plan. `site` still accepts a custom domain and must
+  keep doing so: **a Cloud site can be on one**, so the host name does not tell the products apart,
+  and narrowing to `.atlassian.net` would lock out Cloud customers to catch a case Chief does not
+  claim to serve. A Data Center host is accepted and refused at the first request.
+- **`http://` is refused rather than upgraded.** The calendar rewrites `webcal://` because that is
+  the scheme providers hand out; nobody hands out an `http://` Jira, so upgrading it would hide a
+  mistake rather than fix one. A port or an `@` is refused too: both are ways to make an address
+  read as one host and reach another, and this is an address a person types with a credential
+  behind it.
+- **The credential is a header, never a query parameter**, on both verbs. A URL is logged by every
+  proxy it crosses; a header is not. `never_puts_the_credential_in_the_url` covers the GET as well
+  as the POST, because `pages` already builds a query string and one more pair there looks like
+  the others.
+- **Jira's old search endpoint is gone.** `POST /rest/api/3/search/jql`, which pages on a
+  `nextPageToken` and reports no total; `GET /rest/api/3/search` answers 410. Confluence's path
+  includes `/wiki`, and the URL it returns for a hit is relative to that rather than to the site.
+- **Open is `resolution = EMPTY`**, never a workflow state called "Done", for the same reason
+  Linear's is `completedAt`/`canceledAt` being null: every workspace renames its states and none
+  of them can rename that.
+- **Confluence failing does not cost the Jira half.** They are separate products and separate
+  permissions on the same token, so `recipe::atlassian` catches them separately. Pages land under
+  their own heading — the brief already reports which sources had something to say.
 
 ## Background daemon
 

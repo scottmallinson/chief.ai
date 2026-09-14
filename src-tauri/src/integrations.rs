@@ -78,6 +78,14 @@ pub struct NewAccount<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
     pub id: i64,
+    /// How this credential was obtained: [`OAUTH`], [`DCR`], [`API_KEY`] or
+    /// [`SUBSCRIPTION`].
+    ///
+    /// Read rather than inferred, which is what the column was added for.
+    /// Atlassian is the first service reachable two ways — a client minted
+    /// over MCP, or a token the user pasted — and the caller cannot tell them
+    /// apart from which of `client_id` and `access_token` happen to be set.
+    pub kind: String,
     pub access_token: String,
     pub refresh_token: Option<String>,
     /// ISO-8601, or `None` for a token that does not expire.
@@ -258,13 +266,15 @@ pub async fn credentials(pool: &SqlitePool, id: i64) -> Result<Option<Credential
         (
             i64,
             String,
+            String,
             Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
         ),
     >(
-        "SELECT id, access_token, refresh_token, expires_at, client_id, client_secret
+        "SELECT id, credential_kind, access_token, refresh_token, expires_at,
+                client_id, client_secret
            FROM integration_accounts WHERE id = ?1",
     )
     .bind(id)
@@ -272,13 +282,16 @@ pub async fn credentials(pool: &SqlitePool, id: i64) -> Result<Option<Credential
     .await?;
 
     Ok(row.map(
-        |(id, access_token, refresh_token, expires_at, client_id, client_secret)| Credentials {
-            id,
-            access_token,
-            refresh_token,
-            expires_at,
-            client_id,
-            client_secret,
+        |(id, kind, access_token, refresh_token, expires_at, client_id, client_secret)| {
+            Credentials {
+                id,
+                kind,
+                access_token,
+                refresh_token,
+                expires_at,
+                client_id,
+                client_secret,
+            }
         },
     ))
 }

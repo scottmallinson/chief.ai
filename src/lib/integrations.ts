@@ -115,6 +115,21 @@ export function addCalendar(url: string, label: string | null): Promise<Account>
 }
 
 /**
+ * Connect Jira and Confluence with an Atlassian API token.
+ *
+ * The other way in, for organisations whose administrator has switched off the
+ * Rovo MCP server. Atlassian's Basic auth takes three things — the site, the
+ * email the token belongs to, and the token — and the token is a bearer
+ * credential, so it goes straight to Rust and is never returned or displayed.
+ *
+ * The site may be typed as a bare name: "acme" becomes
+ * "https://acme.atlassian.net".
+ */
+export function addAtlassianToken(site: string, email: string, token: string): Promise<Account> {
+  return invoke<Account>('add_atlassian_token', { site, email, token });
+}
+
+/**
  * Connect Linear with a personal API key.
  *
  * The key is a bearer credential carrying that person's whole Linear access, so
