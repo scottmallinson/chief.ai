@@ -15,7 +15,7 @@ import { SignInRegistration } from '@/components/SignInRegistration';
 import { runDoctor, type Report } from '@/lib/doctor';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
-import { useIntegrations } from '@/hooks/use-integrations';
+import { useIntegrations, type UseIntegrations } from '@/hooks/use-integrations';
 import { useSyncState } from '@/hooks/use-sync-state';
 import type { SyncState } from '@/lib/sync-state';
 import {
@@ -141,6 +141,16 @@ function ConnectedAccount({
 
 /** One provider's row: how it signs in, and which accounts are connected. */
 interface IntegrationProps {
+  /**
+   * The screen's one reading of the connections.
+   *
+   * Passed in rather than read here. Every card calling `useIntegrations`
+   * itself read the table once per card and kept its own copy of the answer,
+   * so after an action they disagreed until whichever card owned the change
+   * reloaded — and they settled at five different moments, which a test had
+   * to `waitFor` around (REC-42).
+   */
+  integrations: UseIntegrations;
   /** The value stored in `integration_accounts.service`. */
   service: string;
   title: string;
@@ -188,6 +198,7 @@ interface IntegrationProps {
  * takes the service by name, and the only thing that differed was the words.
  */
 function Integration({
+  integrations,
   service,
   title,
   description,
@@ -204,18 +215,22 @@ function Integration({
     connecting,
     status,
     disconnecting,
-    error,
-    notice,
+    errorFor,
+    noticeFor,
     connect,
     cancel,
     disconnect,
     rename,
     reload,
-  } = useIntegrations();
+  } = integrations;
 
   const { states } = useSyncState();
 
   const accounts = accountsFor(service);
+  // Asked for by name. One hook serves every card, so a flat `error` would
+  // put GitHub's failure on the Outlook and Jira cards too.
+  const error = errorFor(service);
+  const notice = noticeFor(service);
   // Only the sign-in flow blocks, and only the sign-in button: a browser tab
   // the user has not come back from is no reason another account cannot be
   // renamed or removed.
@@ -590,8 +605,8 @@ function ThisMachine() {
  * account to name at the provider and nothing to disconnect from — which is
  * the entire reason it works where Outlook does not.
  */
-function Calendars() {
-  const { accountsFor, reload } = useIntegrations();
+function Calendars({ integrations }: { integrations: UseIntegrations }) {
+  const { accountsFor, reload, status } = integrations;
   const subscriptions = accountsFor(CALENDAR);
 
   return (
@@ -599,7 +614,14 @@ function Calendars() {
       title="Calendar subscriptions"
       description="Any calendar that publishes an address — Google, Outlook, iCloud, Fastmail. Nothing to register and nobody to ask, and Chief reads it straight from the provider."
       state={
-        subscriptions.length > 0 ? (
+        // "Checking" until it has been, like every `Integration` card. Reading
+        // the count alone said "None" on the first frame, before the
+        // connections had been read at all — a card asserting something it had
+        // not yet looked up, and the reason a test had to wait for the count
+        // rather than assert it.
+        status === 'loading' ? (
+          <Chip tone="quiet">Checking</Chip>
+        ) : subscriptions.length > 0 ? (
           <Chip tone="verified" dot>
             {subscriptions.length === 1 ? '1 calendar' : `${subscriptions.length} calendars`}
           </Chip>
@@ -619,8 +641,8 @@ function Calendars() {
  * Its own card for the same reason the calendar has one: there is no sign-in
  * flow, so an `Integration` would be a browser round trip that never happens.
  */
-function Linear() {
-  const { accountsFor, reload } = useIntegrations();
+function Linear({ integrations }: { integrations: UseIntegrations }) {
+  const { accountsFor, reload, status } = integrations;
   const workspaces = accountsFor(LINEAR);
 
   return (
@@ -628,7 +650,10 @@ function Linear() {
       title="Linear"
       description="What is assigned to you and not finished — the one thing pull requests and mail cannot tell Chief, because they are the outputs of work rather than the record of it."
       state={
-        workspaces.length > 0 ? (
+        // As the calendar card, and for the same reason.
+        status === 'loading' ? (
+          <Chip tone="quiet">Checking</Chip>
+        ) : workspaces.length > 0 ? (
           <Chip tone="verified" dot>
             {workspaces.length === 1 ? '1 workspace' : `${workspaces.length} workspaces`}
           </Chip>
@@ -643,6 +668,12 @@ function Linear() {
 }
 
 export function SettingsView() {
+  // **Read once, here.** Every card below is handed this rather than calling
+  // the hook itself, so the connections are read once per screen and every
+  // card is looking at the same answer — connect or disconnect in one and the
+  // rest move with it, without a reload.
+  const integrations = useIntegrations();
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="px-7 py-6">
@@ -657,9 +688,10 @@ export function SettingsView() {
             <ProfileBootstrap />
           </SettingsSection>
           <ThisMachine />
-          <Calendars />
-          <Linear />
+          <Calendars integrations={integrations} />
+          <Linear integrations={integrations} />
           <Integration
+            integrations={integrations}
             service={GITHUB}
             title="GitHub"
             description="Lets Chief read your pull requests. Sign-in happens in your browser and the token is stored only on this machine."
@@ -683,6 +715,7 @@ export function SettingsView() {
             }
           />
           <Integration
+            integrations={integrations}
             service={MICROSOFT}
             title="Outlook"
             description="Lets Chief read your mail and calendar. Sign-in opens your browser and comes back to a port on this machine; the token is stored only here."
@@ -700,6 +733,7 @@ export function SettingsView() {
             }
           />
           <Integration
+            integrations={integrations}
             service={ATLASSIAN}
             title="Jira"
             description="Lets Chief read the Jira issues assigned to you and not finished, and — connected with a token — the Confluence pages you have been writing. Sign-in opens your browser and comes back to a port on this machine; the token is stored only here."
