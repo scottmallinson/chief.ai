@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 
 import { BriefList } from '@/components/BriefList';
 import { ChiefMark } from '@/components/ChiefMark';
@@ -132,6 +133,7 @@ function App() {
           <DraftEditor proposal={editing} onSaved={proposals.reload} />
         )}
       </Drawer>
+      <Analytics />
     </>
   );
 }
