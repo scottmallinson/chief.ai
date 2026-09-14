@@ -6,6 +6,13 @@ import type { ShellOptions } from './e2e/fixtures';
 const PORT = 4173;
 const BASE_URL = `http://localhost:${PORT}`;
 
+/** And where the marketing site is, which is static and needs no build. */
+const SITE_PORT = 4174;
+const SITE_URL = `http://localhost:${SITE_PORT}`;
+
+/** The site's tests, which run against a different server from the app's. */
+const SITE_TESTS = /website\.spec\.ts/;
+
 const isCi = process.env.CI !== undefined;
 
 /**
@@ -35,11 +42,13 @@ export default defineConfig<ShellOptions>({
     {
       // A comfortable window.
       name: 'desktop',
+      testIgnore: SITE_TESTS,
       use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 800 } },
     },
     {
       // Small enough that everything competes for height at once.
       name: 'small window',
+      testIgnore: SITE_TESTS,
       use: { ...devices['Desktop Chrome'], viewport: { width: 720, height: 480 } },
     },
     {
@@ -51,6 +60,7 @@ export default defineConfig<ShellOptions>({
       // whatever the flags say, so `classicScrollbars` also has the fixture
       // style the scrollbar, which forces a non-overlay one on any host.
       name: 'classic scrollbars',
+      testIgnore: SITE_TESTS,
       use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 1085, height: 660 },
@@ -58,12 +68,34 @@ export default defineConfig<ShellOptions>({
         launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] },
       },
     },
+    {
+      // The website, which is hand-written HTML with no build step. Its header
+      // is one row of three different type sizes on a shared baseline, and at
+      // phone widths it has to stay one row without pushing the download
+      // button off the edge — neither of which jsdom can see.
+      name: 'website',
+      testMatch: SITE_TESTS,
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: SITE_URL,
+        viewport: { width: 1280, height: 900 },
+      },
+    },
   ],
 
-  webServer: {
-    command: `pnpm build && pnpm exec vite preview --port ${PORT} --strictPort`,
-    url: BASE_URL,
-    reuseExistingServer: !isCi,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: `pnpm build && pnpm exec vite preview --port ${PORT} --strictPort`,
+      url: BASE_URL,
+      reuseExistingServer: !isCi,
+      timeout: 120_000,
+    },
+    {
+      // Served as it ships: static files, no bundler in front of them.
+      command: `pnpm exec vite preview --outDir website --port ${SITE_PORT} --strictPort`,
+      url: `${SITE_URL}/index.html`,
+      reuseExistingServer: !isCi,
+      timeout: 60_000,
+    },
+  ],
 });

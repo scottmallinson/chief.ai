@@ -134,12 +134,33 @@ svg {
   border-bottom: 1px solid var(--rule);
 }
 
+/* The row is aligned on the baseline, not on the centre of each box. The
+   three text runs in it are set at three different sizes — 19px wordmark,
+   14px links, 13px button label — and centring boxes of three different
+   heights leaves their baselines a pixel or two apart, which reads as a
+   mistake rather than as a decision.
+ 
+   Baseline alignment costs something: an inline-flex box does not expose the
+   baseline of its text. A flex container's baseline is synthesised from its
+   first flex item, which in all three of these is an icon, so the row would
+   line up on the bottom edges of the icons instead. The wordmark, the GitHub
+   link and the header button are therefore laid out inline rather than as
+   flex containers, which gives each of them a real text baseline, and each
+   icon is placed by an explicit `vertical-align` offset that centres it on
+   the x-height of the text beside it: half the icon, less half the x-height,
+   below the baseline.
+ 
+   The height is padding rather than a fixed 68px, because a baseline-aligned
+   flex line is placed at the start of the container rather than in the middle
+   of it — a fixed height would hang the whole row from the top. */
 .site-header .shell {
-  height: 68px;
+  min-height: 68px;
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 32px;
+  padding-top: 17px;
+  padding-bottom: 17px;
 }
 
 .wordmark {
@@ -156,9 +177,23 @@ svg {
   letter-spacing: -0.035em;
 }
 
+.site-header .wordmark {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.site-header .wordmark p {
+  display: inline;
+}
+
+.site-header .wordmark svg {
+  vertical-align: -8px;
+  margin-right: 10px;
+}
+
 .site-nav {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 26px;
 }
 
@@ -177,9 +212,13 @@ svg {
 }
 
 .nav-external {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.nav-external svg {
+  vertical-align: -4px;
+  margin-right: 7px;
 }
 
 .site-nav a:not(.btn):hover {
@@ -190,6 +229,21 @@ svg {
   color: var(--graphite);
   font-weight: 600;
   border-bottom-color: var(--graphite);
+}
+
+/* Inline rather than inline-flex, for the baseline the row is aligned on —
+   see `.site-header .shell`. The height comes from the line box plus the
+   button's own borders, so 32 + 1 + 1 is the 34px `.btn-sm` asks for. */
+.site-header .btn {
+  display: inline-block;
+  height: auto;
+  line-height: 32px;
+  white-space: nowrap;
+}
+
+.site-header .btn svg {
+  vertical-align: -4px;
+  margin-right: 8px;
 }
 
 /* ---- Buttons ---- */
@@ -1584,7 +1638,80 @@ pre {
   }
 }
 
+/* A phone. The header is one row and has to stay one row: the wordmark, two
+   links, GitHub and the download button do not fit across 360px at desktop
+   sizes, and what the overflow actually did was push the download button —
+   the one thing in the header anybody presses — off the right-hand edge.
+ 
+   So the row is tightened rather than wrapped. The GitHub link keeps its icon
+   and loses its label, which is clipped rather than removed so it is still the
+   link's accessible name; every other item is stepped down one size. Nothing
+   leaves the header, and the button stays on screen. */
 @media (max-width: 560px) {
+  .shell,
+  .hero,
+  .section,
+  .page,
+  .docs,
+  .footer-top,
+  .footer-base .shell {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .site-header .shell {
+    gap: 14px;
+  }
+
+  .site-nav {
+    gap: 14px;
+  }
+
+  .site-header .wordmark svg {
+    width: 22px;
+    height: 22px;
+    /* Half the icon, less half the x-height, below the baseline — the offset
+       is a function of both sizes, so stepping them down moves it. */
+    vertical-align: -7px;
+    margin-right: 8px;
+  }
+
+  .site-header .wordmark p {
+    font-size: 17px;
+  }
+
+  .site-nav a:not(.btn) {
+    font-size: 13px;
+  }
+
+  .nav-label {
+    /* Clipped, not `display: none`: the icon on its own has no accessible
+       name, and a link that reads as nothing to a screen reader is a worse
+       outcome than a wide header. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .nav-external svg {
+    margin-right: 0;
+  }
+
+  .site-header .btn {
+    padding: 0 12px;
+    font-size: 12px;
+  }
+
+  .site-header .btn svg {
+    width: 14px;
+    height: 14px;
+    vertical-align: -4px;
+    margin-right: 6px;
+  }
+
   /* A change is two lines on a phone rather than three columns: the scope and
      the commit it links to sit on one row, and the sentence gets the width. */
   .change {
@@ -1603,6 +1730,26 @@ pre {
   .change-subject {
     order: 2;
     flex: 1 1 100%;
+  }
+}
+
+/* A small phone — 320px is the narrowest screen anybody still browses on, and
+   at that width the row runs out of room even tightened. Something has to
+   leave, and it is the GitHub link: it is the only item in the header that is
+   also in the footer of every page, and the alternative is the download
+   button going off the edge again. */
+@media (max-width: 400px) {
+  .site-header .nav-external {
+    display: none;
+  }
+
+  .site-header .shell,
+  .site-nav {
+    gap: 10px;
+  }
+
+  .site-header .btn {
+    padding: 0 10px;
   }
 }
 
