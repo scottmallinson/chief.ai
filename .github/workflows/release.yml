@@ -1,12 +1,24 @@
 name: Release
 
 on:
-  # By hand, and only by hand.
+  # Every merge to main, and on demand.
   #
-  # A release is three bundles, two of them macOS at ten times a Linux runner,
-  # so it is the most expensive thing this repository does. Releasing on every
-  # merge spent that on each pull request separately; releasing when asked lets
-  # several merges go out together, and lets a person choose when.
+  # This used to be `workflow_dispatch` alone, to spend fewer billed minutes on
+  # the three bundles a release builds. This repository is public and runs on
+  # GitHub's standard runners, so those minutes are not billed at all — and
+  # what the manual trigger actually cost was that `main` could sit for weeks
+  # holding a fix nobody could download, because releasing was a thing somebody
+  # had to remember rather than something that happened.
+  #
+  # Nothing here releases unconditionally. `scripts/release.mjs` still decides:
+  # a merge carrying only `docs`, `ci`, `chore`, `style`, `test` or `refactor`
+  # commits changes nothing a person can install, so it ends at the `version`
+  # job with `releasing=false` and no bundle is built.
+  #
+  # The release commit is pushed with GITHUB_TOKEN, which by design raises no
+  # workflow runs, so a release cannot trigger the next one.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
@@ -41,7 +53,9 @@ jobs:
       build-app: false
 
   # One Linux job. It decides whether what has landed since the last tag is
-  # worth releasing, and if it is, it is the release: the version is written
+  # worth releasing — most merges do not, which is what keeps a trigger on
+  # every push from meaning a release on every push — and if it is, it is the
+  # release: the version is written
   # into the four files that carry it, the changelog gains an entry, both are
   # committed back to main and tagged, and a draft release is opened for the
   # bundles to attach to.
@@ -60,13 +74,18 @@ jobs:
     steps:
       # Full history and tags: the script releases what has landed since the
       # last `v*` tag, and cannot see that in a shallow clone.
-      # The ref asked for, which is main unless somebody said otherwise. The
-      # push below is `HEAD:main`, so a ref that main has moved past is refused
-      # rather than rewinding anything.
+      #
+      # Whatever main holds when this run starts, not the commit that triggered
+      # it. Two merges close together raise two runs, and the second one waits
+      # on the concurrency group; releasing the triggering commit rather than
+      # the branch would have the first run pushing a commit whose parent main
+      # had already moved past, which is a non-fast-forward and a red release.
+      # Releasing the branch means the first run carries both merges and the
+      # second finds nothing left to release.
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || 'main' }}
 
       # No `pnpm install`: the script has no dependencies, so the runner's own
       # Node runs it and a release does not wait on a package manager.
@@ -92,12 +111,46 @@ jobs:
           # the release commit rather than a follow-up nobody remembers.
           git add package.json CHANGELOG.md src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock website/support.js website/changelog.html
           git commit -m "chore(repo): release $VERSION"
-          git tag "$TAG"
 
           # Pushed with GITHUB_TOKEN, which by design starts no further
           # workflow runs — so this commit does not set CI or this workflow off
           # again, and cannot loop.
-          git push origin HEAD:main
+          #
+          # Something can still land on main while the checks run, and that
+          # would make this a non-fast-forward: a release that is otherwise
+          # finished, failing on the last push. The release commit touches the
+          # version files and the changelog, which nothing but a release
+          # writes, so it is replayed on top of what landed rather than
+          # abandoned. What it replays onto is a merge that was green in its
+          # own right.
+          pushed=false
+
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              pushed=true
+              break
+            fi
+
+            echo "::notice::main moved; replaying the release commit (attempt $attempt)."
+            git fetch origin main
+
+            # A conflict here means something other than a release wrote one of
+            # these files, which is a person's decision rather than a retry.
+            git rebase origin/main || {
+              git rebase --abort || true
+              echo "::error::The release commit does not replay onto main. Release by hand."
+              exit 1
+            }
+          done
+
+          if [ "$pushed" != true ]; then
+            echo "::error::main kept moving. Nothing was released, and nothing was tagged."
+            exit 1
+          fi
+
+          # Tagged after the push, so the tag names the commit that is actually
+          # on main rather than one a rebase has since replaced.
+          git tag "$TAG"
           git push origin "$TAG"
 
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
