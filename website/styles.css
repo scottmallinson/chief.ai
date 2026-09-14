@@ -162,7 +162,13 @@ svg {
   gap: 26px;
 }
 
-.site-nav a {
+/* The download button lives in this nav but is not a nav link. `.site-nav a`
+   is (0,1,1) and `.btn-primary` is (0,1,0), so without the `:not(.btn)` the
+   link rules win on specificity and paint the button `--muted` on graphite —
+   about 2.1:1, under AA — and then `--graphite` on graphite when hovered,
+   which is invisible. Excluding `.btn` is the fix; raising `.btn-primary`'s
+   specificity instead would only move the fight somewhere else. */
+.site-nav a:not(.btn) {
   font-size: 14px;
   color: var(--muted);
   text-decoration: none;
@@ -170,11 +176,17 @@ svg {
   border-bottom: 2px solid transparent;
 }
 
-.site-nav a:hover {
+.nav-external {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.site-nav a:not(.btn):hover {
   color: var(--graphite);
 }
 
-.site-nav a[aria-current='page'] {
+.site-nav a:not(.btn)[aria-current='page'] {
   color: var(--graphite);
   font-weight: 600;
   border-bottom-color: var(--graphite);
