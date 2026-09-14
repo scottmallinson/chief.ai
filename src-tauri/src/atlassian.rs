@@ -207,6 +207,25 @@ pub enum Error {
     /// with `map_err(|_| …)`; none do now.
     #[error("{host} could not be reached: {because}")]
     Unreachable { host: String, because: String },
+    /// The TLS certificate did not verify.
+    ///
+    /// **Split out of [`Error::Unreachable`] because it is the one failure
+    /// this module was actually reported for, and because it is not a network
+    /// problem the user can wait out.** On the machine that reported it,
+    /// corporate DNS resolved `mcp.atlassian.com` to a network that is not
+    /// Atlassian's, and Windows then refused the substituted certificate with
+    /// `CRYPT_E_NO_REVOCATION_CHECK` — while `api.github.com`, which was not
+    /// redirected, answered 200. "Could not be reached" sends somebody to
+    /// check their wifi; naming the certificate sends them to the right place.
+    ///
+    /// Chief does **not** offer a way to skip verification, and must not grow
+    /// one. An intercepted connection to a host holding somebody's Jira is
+    /// exactly the thing certificate verification is for.
+    #[error(
+        "the certificate for {host} could not be verified, so Chief stopped rather than \
+         trusting it. Something on this network may be inspecting HTTPS traffic: {because}"
+    )]
+    Untrusted { host: String, because: String },
     /// The host answered, but not with success. Distinct from
     /// [`Error::Unreachable`] because the network is fine and something is
     /// refusing on purpose — which is a different thing for the user to do
@@ -270,6 +289,34 @@ fn because(error: &reqwest::Error) -> String {
     said.join(": ")
 }
 
+/// Whether a transport failure was the certificate rather than the network.
+///
+/// Matched on the text, because that is all a `reqwest::Error` offers: the
+/// certificate failure is raised inside the TLS stack and arrives as a string
+/// by the time it reaches here. Deliberately a short list of unambiguous
+/// markers rather than anything clever — a false positive would tell somebody
+/// their network is inspecting traffic when their wifi is simply off, which is
+/// worse than the generic message it replaces.
+///
+/// The `revocation` entry is the one that was actually reported:
+/// `CRYPT_E_NO_REVOCATION_CHECK`, from Windows refusing a certificate it could
+/// not check a revocation list for.
+#[must_use]
+fn is_certificate_failure(because: &str) -> bool {
+    const MARKERS: [&str; 6] = [
+        "certificate",
+        "cert_",
+        "crypt_e_no_revocation",
+        "unknownissuer",
+        "certificate verify failed",
+        "invalid peer certificate",
+    ];
+
+    let said = because.to_lowercase();
+
+    MARKERS.iter().any(|marker| said.contains(marker))
+}
+
 impl Error {
     /// A failed request, named and explained.
     ///
@@ -277,8 +324,25 @@ impl Error {
     /// person debugging this is usually looking at it — the same reason
     /// `engine.rs` reads the server's stderr rather than inheriting it.
     fn unreachable(url: &str, error: &reqwest::Error) -> Self {
-        let host = host_of(url);
-        let because = because(error);
+        Self::from_transport(host_of(url), because(error))
+    }
+
+    /// Which failure a transport error was, given what the transport said.
+    ///
+    /// **Split out of [`Error::unreachable`] and pure, because the branch was
+    /// otherwise untestable**: disabling the classification left the whole
+    /// suite green, since one test covered [`is_certificate_failure`] and
+    /// another covered the rendering, and nothing joined them. A
+    /// `reqwest::Error` cannot be constructed by hand, so taking the string
+    /// instead is what makes the wiring provable.
+    fn from_transport(host: String, because: String) -> Self {
+        if is_certificate_failure(&because) {
+            eprintln!(
+                "atlassian: {host} presented a certificate Chief could not verify: {because}"
+            );
+
+            return Self::Untrusted { host, because };
+        }
 
         eprintln!("atlassian: {host} could not be reached: {because}");
 
@@ -1425,6 +1489,10 @@ mod tests {
                 host: "mcp.atlassian.com".to_string(),
                 status: 403,
             },
+            Error::Untrusted {
+                host: "mcp.atlassian.com".to_string(),
+                because: secret.to_string(),
+            },
             Error::Decode,
             Error::Refused(secret.to_string()),
             Error::Rejected,
@@ -1450,6 +1518,7 @@ mod tests {
                     | Error::NotDeterministic(_)
                     | Error::Tool(_)
                     | Error::Unreachable { .. }
+                    | Error::Untrusted { .. }
             );
 
             assert_eq!(
@@ -1482,6 +1551,89 @@ mod tests {
             sent[0].to_lowercase().contains("user-agent: chief-ai/"),
             "every request should name Chief: {}",
             sent[0]
+        );
+    }
+
+    /// **The real strings, including the one that was reported.** Windows
+    /// raised `CRYPT_E_NO_REVOCATION_CHECK` on a certificate substituted by
+    /// something between the machine and Atlassian; rustls and OpenSSL word
+    /// the same class of failure differently, so all three are here.
+    #[test]
+    fn tells_a_certificate_failure_from_a_network_one() {
+        for certificate in [
+            "schannel: next InitializeSecurityContext failed: CRYPT_E_NO_REVOCATION_CHECK \
+             (0x80092012) - The revocation function was unable to check revocation for the \
+             certificate.",
+            "invalid peer certificate: UnknownIssuer",
+            "certificate verify failed: unable to get local issuer certificate",
+            "invalid peer certificate: Expired",
+        ] {
+            assert!(
+                is_certificate_failure(certificate),
+                "should read as a certificate failure: {certificate}"
+            );
+        }
+
+        // A false positive here would tell somebody their network is
+        // inspecting traffic when their wifi is off, which is worse than the
+        // generic message it replaces.
+        for network in [
+            "dns error: failed to lookup address information: Name or service not known",
+            "tcp connect error: Connection refused (os error 111)",
+            "operation timed out",
+            "connection closed before message completed",
+        ] {
+            assert!(
+                !is_certificate_failure(network),
+                "should stay a plain transport failure: {network}"
+            );
+        }
+    }
+
+    /// **The wiring, not the pieces.** `is_certificate_failure` and the
+    /// rendering each had a test; neither noticed when the branch joining them
+    /// was disabled. This drives the function every failed request goes
+    /// through.
+    #[test]
+    fn a_failed_request_is_sorted_into_the_right_failure() {
+        let reported = "schannel: next InitializeSecurityContext failed: \
+                        CRYPT_E_NO_REVOCATION_CHECK (0x80092012) - The revocation function was \
+                        unable to check revocation for the certificate.";
+
+        assert!(
+            matches!(
+                Error::from_transport("mcp.atlassian.com".to_string(), reported.to_string()),
+                Error::Untrusted { .. }
+            ),
+            "the reported failure should read as a certificate, not as the network"
+        );
+
+        assert!(
+            matches!(
+                Error::from_transport(
+                    "mcp.atlassian.com".to_string(),
+                    "tcp connect error: Connection refused (os error 111)".to_string(),
+                ),
+                Error::Unreachable { .. }
+            ),
+            "and a refused connection should stay a plain transport failure"
+        );
+    }
+
+    /// The variant exists to be actionable, so the words are part of it.
+    #[test]
+    fn a_certificate_failure_says_what_to_suspect() {
+        let rendered = Error::Untrusted {
+            host: "mcp.atlassian.com".to_string(),
+            because: "invalid peer certificate: UnknownIssuer".to_string(),
+        }
+        .to_string();
+
+        assert!(rendered.contains("mcp.atlassian.com"), "{rendered}");
+        assert!(rendered.contains("certificate"), "{rendered}");
+        assert!(
+            rendered.contains("inspecting HTTPS traffic"),
+            "the actionable half is the point: {rendered}"
         );
     }
 

@@ -576,6 +576,17 @@ mechanism is undocumented.
   either: a `reqwest::Error` holds a URL and an I/O cause, never headers, and
   `a_failed_request_never_renders_the_token_it_carried` drives a real failing request with a real
   token rather than trusting that.
+- **A certificate failure is its own error, because it is the one that was reported.** On the
+  machine that hit it, corporate DNS resolved `mcp.atlassian.com` to `185.166.141.x` — not
+  Atlassian's `104.192.142.x` — and Windows refused the substituted certificate with
+  `CRYPT_E_NO_REVOCATION_CHECK`, while `api.github.com`, which was not redirected, answered 200.
+  "Could not be reached" sends somebody to check their wifi; `Untrusted` names the certificate and
+  says something on the network may be inspecting HTTPS. **Chief offers no way to skip
+  verification and must not grow one** — an intercepted connection to a host holding somebody's
+  Jira is exactly what verification is for. The classification is matched on the transport's text,
+  since that is all a `reqwest::Error` offers, and it lives in a pure `Error::from_transport` so
+  the branch is provable: the first version had a test for the matcher and a test for the wording
+  and nothing joining them, and disabling the branch entirely left the suite green.
 
 ## Background daemon
 
