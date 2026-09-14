@@ -201,6 +201,70 @@ pub async fn add_linear_key<R: Runtime>(
     Ok(stored)
 }
 
+/// Connect Jira and Confluence with an API token, for the organisations the
+/// MCP path cannot serve.
+///
+/// Rovo is a paid add-on and an administrator can switch it off; when they
+/// have, `start_login` fails in a way no retry fixes. This takes the three
+/// things Atlassian's Basic auth documents — the site, the email the token
+/// belongs to, and the token — and proves all three with one read before
+/// anything is stored, so a mistyped site or a token pasted with a trailing
+/// space fails while the user is looking at the field.
+///
+/// The token is a bearer credential — see `atlassian::rest` — so it is stored
+/// as one and never returned to the frontend.
+#[tauri::command]
+pub async fn add_atlassian_token<R: Runtime>(
+    app: AppHandle<R>,
+    atlassian_rest: State<'_, atlassian::rest::Rest>,
+    site: String,
+    email: String,
+    token: String,
+) -> Result<Account, Error> {
+    let site = atlassian::rest::site(&site)?;
+    let email = email.trim().to_string();
+    let token = token.trim().to_string();
+
+    // One read that both validates the credential and names its owner, the
+    // same shape as `add_linear_key`.
+    let who = atlassian_rest.whoami(&site, &email, &token).await?;
+    let pool = db::pool(&app).await?;
+
+    let stored = integrations::save(
+        &pool,
+        NewAccount {
+            service: ATLASSIAN,
+            // The site, so re-pasting a rotated token updates the row it
+            // already has rather than making a second account — and so a
+            // second Atlassian site is a second account rather than a
+            // replacement.
+            account_key: site.trim_start_matches("https://"),
+            // **Also what is sent.** Basic auth's user half is the email, and
+            // `integration_accounts.identity` is documented as carrying
+            // exactly that for an HTTP Basic provider. It is the user's own
+            // address and is shown back to them.
+            identity: Some(email.as_str()).filter(|it| !it.is_empty()),
+            credential_kind: API_KEY,
+            access_token: &token,
+            refresh_token: None,
+            // An API token has no expiry Chief is told about, and nothing to
+            // renew with — there is no refresh grant for one.
+            expires_at: None,
+            scopes: None,
+            client_id: None,
+            client_secret: None,
+        },
+    )
+    .await?;
+
+    eprintln!(
+        "atlassian: connected {} as {}",
+        stored.account_key, who.display_name
+    );
+
+    Ok(stored)
+}
+
 /// Reject a service that has no OAuth sign-in of its own.
 ///
 /// Separate from [`known`]: the calendar and Linear are known services and are

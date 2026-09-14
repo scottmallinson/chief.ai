@@ -9,6 +9,7 @@ import { Freshness } from '@/components/Freshness';
 import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
 import { ProfileBootstrap } from '@/components/ProfileBootstrap';
 import { CalendarSubscriptions } from '@/components/CalendarSubscriptions';
+import { AtlassianToken } from '@/components/AtlassianToken';
 import { LinearKey } from '@/components/LinearKey';
 import { SignInRegistration } from '@/components/SignInRegistration';
 import { runDoctor, type Report } from '@/lib/doctor';
@@ -167,6 +168,17 @@ interface IntegrationProps {
    * is the omission this prop exists to prevent.
    */
   grants?: ReactNode;
+  /**
+   * A second way to connect, under the sign-in button.
+   *
+   * Only Atlassian has one, and only because its sign-in can be taken away by
+   * somebody who is not the user: the MCP server is part of Rovo, so an
+   * administrator switching that off ends the browser route entirely. Taking
+   * the card's own `reload` means a connection made down there refreshes the
+   * account list up here — `useIntegrations` is per-component state, so a
+   * second copy of the hook would refresh a list nobody is looking at.
+   */
+  fallback?: (onChanged: () => void) => ReactNode;
 }
 
 /**
@@ -184,6 +196,7 @@ function Integration({
   icon,
   registrationHelp,
   grants,
+  fallback,
 }: IntegrationProps) {
   const {
     accountsFor,
@@ -197,6 +210,7 @@ function Integration({
     cancel,
     disconnect,
     rename,
+    reload,
   } = useIntegrations();
 
   const { states } = useSyncState();
@@ -353,6 +367,8 @@ function Integration({
           where={registrationHelp}
         />
       )}
+
+      {fallback?.(reload)}
     </SettingsSection>
   );
 }
@@ -686,7 +702,7 @@ export function SettingsView() {
           <Integration
             service={ATLASSIAN}
             title="Jira"
-            description="Lets Chief read the Jira issues assigned to you and not finished. Sign-in opens your browser and comes back to a port on this machine; the token is stored only here."
+            description="Lets Chief read the Jira issues assigned to you and not finished, and — connected with a token — the Confluence pages you have been writing. Sign-in opens your browser and comes back to a port on this machine; the token is stored only here."
             connectLabel="Connect Atlassian"
             addLabel="Add another Atlassian account"
             icon={<SquareKanban aria-hidden />}
@@ -700,6 +716,7 @@ export function SettingsView() {
                 else's.
               </>
             }
+            fallback={(onChanged) => <AtlassianToken onChanged={onChanged} />}
           />
           <SettingsSection
             title="Local data"

@@ -34,7 +34,7 @@ The current state of every step. **Update this table in the pull request that ch
 | 14    | Proposed Actions, drafted              | Shipped                        | REC-17           | #55       |
 | 15    | The send path                          | **Not started — deliberately** | REC-18           | —         |
 | 16–18 | Integration fan-out                    | Not started                    | —                | —         |
-| 19    | Jira and Confluence                    | **Auth and reads built**       | REC-22           | —         |
+| 19    | Jira and Confluence                    | **Both reads built, two ways** | REC-22           | —         |
 | 20–21 | Integration fan-out                    | Not started                    | —                | —         |
 | 22    | Bootstrapping the corpus               | Shipped                        | REC-16           | #54       |
 | —     | Calendar by .ics subscription          | Shipped                        | REC-39           | #60       |
@@ -57,14 +57,25 @@ The current state of every step. **Update this table in the pull request that ch
 empty corpus is step 14's failure mode, and a draft written against seven empty starter files is
 the generic output that step exists to avoid.
 
-**Step 19 is built but not finishable here.** Everything that can be proved without an Atlassian
-site is: discovery, Dynamic Client Registration, PKCE, renewal, the MCP floor, the deterministic
-allowlist and the read, all against stub servers. What is left needs a paid Atlassian site and a
-browser — the registration endpoint is undocumented, so only a real sign-in can say whether it
-accepts a loopback redirect on an ephemeral port and what it echoes back. That is REC-22's first
-acceptance criterion and it is a person's to run. It was taken out of order for the same reason
-step 22 was: it needs no review from anybody, where steps 16–18 wait on Zoom's and Linear's
-research passes and on Google's verification paperwork.
+**Step 19 is built twice, because the first way in can be taken away — revision 9.** Everything
+that can be proved without an Atlassian site is: discovery, Dynamic Client Registration, PKCE,
+renewal, the MCP floor, the deterministic allowlist and the read, all against stub servers. What
+was left needed a paid Atlassian site and a browser, and the first real attempt did not reach
+Atlassian at all: the network in front of it resolved `mcp.atlassian.com` to an address that is
+not Atlassian's and presented a certificate Windows refused. That is not Chief's to fix and
+Chief must not grow a way around it, so the answer is the other route — **an API token the user
+pastes**, `src-tauri/src/atlassian/rest.rs`, reaching Jira and Confluence's own REST APIs
+directly. It is also the answer for an organisation whose administrator has switched the MCP
+server off, which is the commoner case: it is part of Rovo, a paid add-on.
+
+So **Confluence is read**, which is what took the row from "auth and reads built" to done in
+substance. What remains outstanding is only what it always was: a real sign-in against a live
+site, to say whether the undocumented registration endpoint accepts a loopback redirect on an
+ephemeral port. That is REC-22's first acceptance criterion and a person's to run — and it is no
+longer what stands between this step and a working Jira.
+
+It was taken out of order for the same reason step 22 was: it needs no review from anybody, where
+steps 16–18 wait on Zoom's and Linear's research passes and on Google's verification paperwork.
 
 ### Decisions, as built
 
@@ -712,8 +723,10 @@ including `none`. Three things the spec did not record, found while building:
   `read:page:confluence` and `read:space:confluence` have `write:` counterparts on the same
   resource, so asking for none of them makes read-only a property of the grant. That is D4's
   forfeit, stated precisely: taking `write:jira-work` later is what spends it. **Only the Jira
-  scopes are requested**, because Confluence's read is not built and a consent screen naming
-  access no code path uses is the thing `repo` is criticised for here.
+  scopes are requested**, and that has not changed now Confluence is read: the Confluence read is
+  on the token path, which consents to no scopes at all, so an MCP consent screen naming
+  Confluence would still name access no MCP code path makes — the thing `repo` is criticised for
+  here. The scope and an MCP-side Confluence read land together or not at all.
 - **Registration happens per sign-in, after the loopback port is bound**, so the redirect URI
   registered names a port this process already holds. RFC 8252 §7.3 requires an authorization
   server to accept any port on a loopback redirect, but nothing says an undocumented endpoint
@@ -948,10 +961,12 @@ removes from it.**
 | What                                                           | Note                                                                                                                                                                                                                                                                   | Where       |
 | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
 | **Tokens in the OS keychain**                                  | Stored as plain text, protected by the OS user account                                                                                                                                                                                                                 | —           |
+| **The token path reads one site per account**                  | `add_atlassian_token` stores the site the user typed, so an organisation with two sites is two connections. The MCP path has the opposite problem a row down. Neither is wrong; they are different shapes of the same missing idea, which is a site                    | REC-22      |
+| **A token account is never renewed and never expires**         | An Atlassian API token is revoked at `id.atlassian.com`, so the first Chief hears of it is a 401. `Rejected` says the token was refused, which is right, but nothing marks the account as needing attention the way a failed OAuth renewal could                       | REC-22      |
 | **Atlassian is signed in but never synced**                    | It is read when a brief is assembled, like Linear, so it writes no `work_logs` rows and has no `sync_state`. D9 says a read question is answered from local storage; both trackers are outside that today                                                              | REC-22      |
 | **One Atlassian account row per sign-in, not per site**        | The credential reaches every site it lists and reads all of them, but the row is keyed on the lowest cloud id. Two sign-ins covering overlapping sites would be two rows reading the same issues                                                                       | REC-22      |
 | **The MCP tool names are the spec's, unverified**              | `searchJiraIssuesUsingJql`, `getJiraIssue`, `getConfluencePage`, `getAccessibleAtlassianResources`. A name Atlassian has since changed surfaces as "Atlassian did not recognise that request", not as silence                                                          | REC-22      |
-| **Confluence, the other half of step 19**                      | Its scopes are granular and available and are deliberately not requested yet: a consent screen naming Confluence for a read no code path makes is what Chief criticises `repo` for. The scope and the read land together                                               | REC-22      |
+| **Confluence over MCP**                                        | Read on the token path only. Its MCP scopes are granular and available and are still deliberately not requested: a consent screen naming a read no MCP code path makes is what Chief criticises `repo` for. The scope and an MCP-side read land together               | REC-22      |
 | **Reviewers in `team_structure.md`**                           | GitHub's search response carries none, so it is a call per pull request                                                                                                                                                                                                | REC-16      |
 | **`glib` GHSA-wrw7-89jp-8q8g**                                 | Accepted, not fixed. Linux-only and unreachable from a shipped build                                                                                                                                                                                                   | SECURITY.md |
 | **AC/battery polling cadence**                                 | Needs a battery crate and platform-conditional code. Cadence is a `settings` value meanwhile                                                                                                                                                                           | DLE-2       |

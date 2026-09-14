@@ -75,6 +75,22 @@
 //! request sampling can run its own agentic loop on the user's local model.
 //! [`CAPABILITIES`] is empty, and a test reads what actually went out to prove
 //! it.
+//!
+//! ## Two ways in, and the second is not a lesser one
+//!
+//! This file is the MCP path. [`rest`] is the other: an API token the user
+//! pastes, used as HTTP Basic against their own site. The design spec kept it
+//! deliberately — "the answer for Free-tier sites and for organisations that
+//! disable the MCP server" — and an organisation restricting Rovo is exactly
+//! that case, reported from a real tenant. Neither path is a fallback in the
+//! sense of being worse: the token reaches Confluence, which the MCP path
+//! still does not.
+//!
+//! What they share lives here: [`Error`] and its classification, [`Issue`],
+//! [`Site`], [`describe`], and the read limit. What differs is the whole
+//! transport, which is why they are two files rather than one with branches.
+
+pub mod rest;
 
 use std::time::Duration;
 
@@ -244,6 +260,10 @@ pub enum Error {
     UntrustedIssuer(String),
     #[error("'{0}' is not a tool Chief is allowed to call")]
     NotDeterministic(String),
+    /// The site address the user typed is not one. Carries what they typed,
+    /// which is not a credential — the token is, and it is in a header.
+    #[error("{0}")]
+    Site(String),
     #[error("Atlassian did not recognise that request: {0}")]
     Tool(String),
     #[error(transparent)]
@@ -254,7 +274,7 @@ pub enum Error {
 /// quoting a whole URL — and without ever quoting a query string, which is
 /// where a code or a token would be if one were ever put in one.
 #[must_use]
-fn host_of(url: &str) -> String {
+pub(crate) fn host_of(url: &str) -> String {
     url.split_once("://")
         .map_or(url, |(_, rest)| rest)
         .split('/')
@@ -275,7 +295,7 @@ fn host_of(url: &str) -> String {
 /// an I/O cause, never headers, and the one request that carries a bearer
 /// token puts it in a header. A test asserts the rendering.
 #[must_use]
-fn because(error: &reqwest::Error) -> String {
+pub(crate) fn because(error: &reqwest::Error) -> String {
     let mut said = vec![error.to_string()];
     let mut source = std::error::Error::source(error);
 
@@ -335,7 +355,7 @@ impl Error {
     /// another covered the rendering, and nothing joined them. A
     /// `reqwest::Error` cannot be constructed by hand, so taking the string
     /// instead is what makes the wiring provable.
-    fn from_transport(host: String, because: String) -> Self {
+    pub(crate) fn from_transport(host: String, because: String) -> Self {
         if is_certificate_failure(&because) {
             eprintln!(
                 "atlassian: {host} presented a certificate Chief could not verify: {because}"
@@ -350,7 +370,7 @@ impl Error {
     }
 
     /// A request that was answered, but not with success.
-    fn answered(url: &str, status: reqwest::StatusCode) -> Self {
+    pub(crate) fn answered(url: &str, status: reqwest::StatusCode) -> Self {
         let host = host_of(url);
 
         eprintln!("atlassian: {host} answered {status}");
