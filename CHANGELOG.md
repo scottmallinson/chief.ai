@@ -4,8 +4,6 @@
 
 ### Features
 
-- **ui:** publish the changelog as a page on the site ([e1c4107](https://github.com/scottmallinson/chief.ai/commit/e1c4107e4b9cb7d46cc0521d6dd8720247fb4041))
-- **repo:** add the marketing website ([f6ca6b4](https://github.com/scottmallinson/chief.ai/commit/f6ca6b4c774a682ff3d109d079ef3741ee919fd8))
 - **integrations:** read Jira and Confluence with a pasted API token ([ca3e5c0](https://github.com/scottmallinson/chief.ai/commit/ca3e5c086e9286e6b6bec8f626a2b28885739180))
 - **integrations:** read Jira through Atlassian's MCP server ([6822535](https://github.com/scottmallinson/chief.ai/commit/68225357c7f8689c632b779fb8ae5f62826abd6b))
 - **daemon:** ingest the work the log has to answer questions about ([a0c07ec](https://github.com/scottmallinson/chief.ai/commit/a0c07ec33ab0476f46ed6d39cbe6a3c688d208b2))
@@ -13,8 +11,6 @@
 
 ### Fixes
 
-- **ui:** align the site header on one baseline, and fit it on a phone ([0f35e21](https://github.com/scottmallinson/chief.ai/commit/0f35e21015e9bbc1b982cda51975beaf6cfd59a8))
-- **ui:** restore the source links, and make the header button legible ([c8e782b](https://github.com/scottmallinson/chief.ai/commit/c8e782b6fffb36cbdb37fb92f1dd9bf06d8a5fa0))
 - **deps:** take the patched fast-uri and js-yaml ([a43593b](https://github.com/scottmallinson/chief.ai/commit/a43593b617c9525889480235f1d95fbb54c37381))
 - **integrations:** name a certificate failure rather than blaming the network ([801e40a](https://github.com/scottmallinson/chief.ai/commit/801e40aa10b8dfd96c3aa60dcb38aa05bc59cf59))
 - **integrations:** say why Atlassian could not be reached, and name Chief ([2fd5c33](https://github.com/scottmallinson/chief.ai/commit/2fd5c3363f441be6374027c3828b2a378cb8460d))

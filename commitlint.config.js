@@ -20,6 +20,7 @@ export default {
         'deps', // Dependency bumps
         'ci', // Workflows and automation
         'repo', // Tooling, config, docs, meta
+        'website', // The marketing site — deployed on its own, and never in a release
       ],
     ],
     'scope-empty': [1, 'never'],
