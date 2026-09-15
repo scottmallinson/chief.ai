@@ -146,9 +146,18 @@ svg {
    line up on the bottom edges of the icons instead. The wordmark, the GitHub
    link and the header button are therefore laid out inline rather than as
    flex containers, which gives each of them a real text baseline, and each
-   icon is placed by an explicit `vertical-align` offset that centres it on
-   the x-height of the text beside it: half the icon, less half the x-height,
-   below the baseline.
+   mark is placed by an explicit `vertical-align` offset that stands it on
+   that baseline.
+ 
+   Standing it on the baseline, rather than centring it on the x-height, is
+   what the row is actually aligned on: the logo's `C` and the GitHub mark are
+   letterforms, and a letterform that floats off the line its neighbours sit on
+   reads as a mistake however carefully it was centred. The offset is the gap
+   between the mark's ink and the bottom of its own box — an icon is drawn with
+   padding inside its viewBox, so the box has to hang below the baseline by
+   exactly that much for the ink to land on it. Each one is worked out from its
+   own artwork below, which is why they are three different numbers rather than
+   one shared value.
  
    The height is padding rather than a fixed 68px, because a baseline-aligned
    flex line is placed at the start of the container rather than in the middle
@@ -186,8 +195,15 @@ svg {
   display: inline;
 }
 
+/* The `C` stands on the baseline, where the `C` of "Chief" beside it does.
+   Its arc is a 7-unit circle stroked at 3.2 in a 32-unit viewBox, so the ink
+   reaches 24.6 of 32 and the remaining 7.4 is the tile's own padding: at 26px
+   that is 26 x 7.4 / 32 = 6.01px of box below the line. The two then agree on
+   their cap height as well as their baseline — the arc is 13.98px tall and
+   Instrument Sans at 19px caps at 14px — which is the whole reason the mark
+   reads as a letter rather than as an icon. */
 .site-header .wordmark svg {
-  vertical-align: -8px;
+  vertical-align: -6px;
   margin-right: 10px;
 }
 
@@ -216,8 +232,13 @@ svg {
   white-space: nowrap;
 }
 
+/* The same, for the Octocat: its legs end at 22 of a 24-unit viewBox and the
+   round cap on them takes the ink to 23, so one unit of padding is left under
+   it — 15px x 1 / 24 = 0.625px. It is taller than the 10px cap height of the
+   14px text beside it, as a logo next to a word usually is; what it may not do
+   is dangle below the line the word sits on. */
 .nav-external svg {
-  vertical-align: -4px;
+  vertical-align: -0.625px;
   margin-right: 7px;
 }
 
@@ -1670,9 +1691,10 @@ pre {
   .site-header .wordmark svg {
     width: 22px;
     height: 22px;
-    /* Half the icon, less half the x-height, below the baseline — the offset
-       is a function of both sizes, so stepping them down moves it. */
-    vertical-align: -7px;
+    /* The tile's padding below its ink, at this size: 22 x 7.4 / 32 = 5.09px.
+       The offset is a function of the size, so stepping the mark down moves
+       it. The GitHub mark is not stepped down, so its own offset stands. */
+    vertical-align: -5px;
     margin-right: 8px;
   }
 

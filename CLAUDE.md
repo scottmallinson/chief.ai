@@ -768,8 +768,26 @@ no framework. It shares the app's design system: the tokens in `website/styles.c
   couple of pixels apart. Baseline alignment needs every item to expose a real one, which a flex
   container does not — its baseline is synthesised from its first flex item, and in all three of
   these that item is an icon. So the wordmark, the GitHub link and the header button are laid out
-  inline rather than as flex containers, and each icon is placed by an explicit `vertical-align`
-  offset that centres it on the x-height of the text beside it.
+  inline rather than as flex containers, and each mark is placed by an explicit `vertical-align`
+  offset that stands it on that baseline.
+- **The marks stand on the line, they do not float beside it.** The logo's `C` and the GitHub mark
+  are letterforms, and a letterform that hangs below the line its neighbours sit on reads as a
+  mistake however carefully it was centred. The offset is the padding between the mark's ink and the
+  bottom of its own box, worked out from the artwork: the logo's arc reaches 24.6 of a 32-unit
+  viewBox, so at 26px the box hangs 6px below the line, and the `C` then agrees with the `C` of
+  "Chief" on cap height as well as on baseline. Three different numbers, because three different
+  drawings. `e2e/website.spec.ts` measures the ink rather than the box — `getBoundingClientRect` on
+  an SVG path in Chromium excludes the stroke, and a round cap reaches half a stroke further, so
+  half the stroke is added back from the artwork's own attributes.
+- **Every page carries the same marks.** The changelog page shipped with a filled Octocat while the
+  hand-written pages carried the outline one, which is why no single offset could align it
+  everywhere — a sprite that drifts between a generated page and a written one is a bug the layout
+  test found rather than an option.
+- **The header is one row at every width, down to 320px.** It tightens rather than wraps: below
+  560px the GitHub link keeps its icon and its label is clipped rather than removed, so it is still
+  the link's accessible name; below 400px the link leaves the header altogether, because it is the
+  only item there that is also in every footer and the alternative is the download button going off
+  the edge — which is exactly what was reported.
 - **The changelog is the application's, not the site's.** A site change is scoped `website`, and
   `scripts/release.mjs` drops those commits before it decides anything: they neither move the
   version nor appear in `CHANGELOG.md`. The site has no version and nothing to download — Vercel
