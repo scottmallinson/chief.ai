@@ -768,17 +768,23 @@ no framework. It shares the app's design system: the tokens in `website/styles.c
   couple of pixels apart. Baseline alignment needs every item to expose a real one, which a flex
   container does not — its baseline is synthesised from its first flex item, and in all three of
   these that item is an icon. So the wordmark, the GitHub link and the header button are laid out
-  inline rather than as flex containers, and each mark is placed by an explicit `vertical-align`
-  offset that stands it on that baseline.
-- **The marks stand on the line, they do not float beside it.** The logo's `C` and the GitHub mark
-  are letterforms, and a letterform that hangs below the line its neighbours sit on reads as a
-  mistake however carefully it was centred. The offset is the padding between the mark's ink and the
-  bottom of its own box, worked out from the artwork: the logo's arc reaches 24.6 of a 32-unit
-  viewBox, so at 26px the box hangs 6px below the line, and the `C` then agrees with the `C` of
-  "Chief" on cap height as well as on baseline. Three different numbers, because three different
-  drawings. `e2e/website.spec.ts` measures the ink rather than the box — `getBoundingClientRect` on
-  an SVG path in Chromium excludes the stroke, and a round cap reaches half a stroke further, so
-  half the stroke is added back from the artwork's own attributes.
+  inline rather than as flex containers, and each mark is placed against it by an explicit
+  `vertical-align` offset.
+- **A letter sits on the line; an icon is centred on the cap height.** Two rules, because there are
+  two kinds of mark in that row. The logo is a letter — its `C` is drawn to the cap height of the
+  type beside it (13.98px of arc against a 13.8px cap at 19px), so it sits on the baseline exactly
+  as the `C` of "Chief" does. The Octocat and the download arrow are not letters: both are drawn
+  taller than the cap height of the word they label, so standing one on the baseline throws all of
+  its overshoot upward and it reads as floating above the line. Those two are centred on the cap
+  height, which splits the overshoot evenly above the cap and below the baseline. Not the x-height,
+  which is what the row used to centre on and what sat them visibly low.
+- **Every offset comes out of the artwork, never off a ruler.** An icon is drawn with padding inside
+  its viewBox, so the ink is not the box and only the drawing says where the gap is: the logo's arc
+  reaches 24.6 of a 32-unit viewBox, the Octocat's round caps take it to 23 of 24, the download
+  arrow's tray to 22 of 24. Five numbers, one per mark per size it is drawn at. `e2e/website.spec.ts`
+  measures the ink rather than the box, and reads the viewBox, the stroke width and the cap height
+  out of the page rather than restating them — `getBoundingClientRect` on an SVG path in Chromium
+  excludes the stroke, and a round cap reaches half a stroke further.
 - **Every page carries the same marks.** The changelog page shipped with a filled Octocat while the
   hand-written pages carried the outline one, which is why no single offset could align it
   everywhere — a sprite that drifts between a generated page and a written one is a bug the layout

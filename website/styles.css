@@ -146,18 +146,23 @@ svg {
    line up on the bottom edges of the icons instead. The wordmark, the GitHub
    link and the header button are therefore laid out inline rather than as
    flex containers, which gives each of them a real text baseline, and each
-   mark is placed by an explicit `vertical-align` offset that stands it on
-   that baseline.
+   mark is placed against it by an explicit `vertical-align` offset.
  
-   Standing it on the baseline, rather than centring it on the x-height, is
-   what the row is actually aligned on: the logo's `C` and the GitHub mark are
-   letterforms, and a letterform that floats off the line its neighbours sit on
-   reads as a mistake however carefully it was centred. The offset is the gap
-   between the mark's ink and the bottom of its own box — an icon is drawn with
-   padding inside its viewBox, so the box has to hang below the baseline by
-   exactly that much for the ink to land on it. Each one is worked out from its
-   own artwork below, which is why they are three different numbers rather than
-   one shared value.
+   Two rules, because there are two kinds of mark here. **The logo is a
+   letter**: its `C` is drawn to the cap height of the type beside it, so it
+   sits on the baseline exactly as the `C` of "Chief" does. **An icon is not a
+   letter**: the Octocat and the download arrow are both drawn taller than the
+   cap height of the word they label, so standing one on the baseline throws
+   all of its overshoot upward and it reads as floating above the line. Those
+   two are centred on the cap height instead — the overshoot splits evenly
+   above the cap and below the baseline, which is what "level with the word"
+   actually looks like.
+ 
+   Every offset is worked out from the artwork rather than chosen: an icon is
+   drawn with padding inside its viewBox, so the ink is not the box and only
+   the drawing says where the gap is. That is why these are five different
+   numbers and not one shared value, and it is why `e2e/website.spec.ts`
+   measures the ink rather than trusting any of them.
  
    The height is padding rather than a fixed 68px, because a baseline-aligned
    flex line is placed at the start of the container rather than in the middle
@@ -232,13 +237,14 @@ svg {
   white-space: nowrap;
 }
 
-/* The same, for the Octocat: its legs end at 22 of a 24-unit viewBox and the
-   round cap on them takes the ink to 23, so one unit of padding is left under
-   it — 15px x 1 / 24 = 0.625px. It is taller than the 10px cap height of the
-   14px text beside it, as a logo next to a word usually is; what it may not do
-   is dangle below the line the word sits on. */
+/* Centred on the cap height of "GitHub", per `.site-header .shell`. The
+   Octocat's legs end at 22 of a 24-unit viewBox and the round caps take its
+   ink to 23, so at 15px the ink is 13.75px tall with 0.625px of padding under
+   it. Against a 10.2px cap height that is 3.55px of overshoot, and half of it
+   goes below the line: 10.2 / 2 less 13.75 / 2, less the 0.625 of padding,
+   puts the box 2.4px under the baseline. */
 .nav-external svg {
-  vertical-align: -0.625px;
+  vertical-align: -2.4px;
   margin-right: 7px;
 }
 
@@ -262,8 +268,12 @@ svg {
   white-space: nowrap;
 }
 
+/* And the download arrow, against "Download" at 13px. Its ink runs 2 to 22 of
+   24 — the tray's stroke below, the shaft's cap above — so at 15px it is
+   12.5px tall on 1.25px of padding, and a 9.4px cap height puts the box 2.8px
+   under the baseline. */
 .site-header .btn svg {
-  vertical-align: -4px;
+  vertical-align: -2.8px;
   margin-right: 8px;
 }
 
@@ -1719,6 +1729,9 @@ pre {
   }
 
   .nav-external svg {
+    /* The mark keeps its size here but the text does not, and the offset is a
+       function of the text's cap height: 9.4px at 13px rather than 10.2px. */
+    vertical-align: -2.8px;
     margin-right: 0;
   }
 
@@ -1730,7 +1743,9 @@ pre {
   .site-header .btn svg {
     width: 14px;
     height: 14px;
-    vertical-align: -4px;
+    /* Both step down, so both halves of the sum move: 11.67px of ink on
+       1.17px of padding, against an 8.7px cap height at 12px. */
+    vertical-align: -2.65px;
     margin-right: 6px;
   }
 
