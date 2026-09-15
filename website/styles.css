@@ -146,9 +146,23 @@ svg {
    line up on the bottom edges of the icons instead. The wordmark, the GitHub
    link and the header button are therefore laid out inline rather than as
    flex containers, which gives each of them a real text baseline, and each
-   icon is placed by an explicit `vertical-align` offset that centres it on
-   the x-height of the text beside it: half the icon, less half the x-height,
-   below the baseline.
+   mark is placed against it by an explicit `vertical-align` offset.
+ 
+   Two rules, because there are two kinds of mark here. **The logo is a
+   letter**: its `C` is drawn to the cap height of the type beside it, so it
+   sits on the baseline exactly as the `C` of "Chief" does. **An icon is not a
+   letter**: the Octocat and the download arrow are both drawn taller than the
+   cap height of the word they label, so standing one on the baseline throws
+   all of its overshoot upward and it reads as floating above the line. Those
+   two are centred on the cap height instead — the overshoot splits evenly
+   above the cap and below the baseline, which is what "level with the word"
+   actually looks like.
+ 
+   Every offset is worked out from the artwork rather than chosen: an icon is
+   drawn with padding inside its viewBox, so the ink is not the box and only
+   the drawing says where the gap is. That is why these are five different
+   numbers and not one shared value, and it is why `e2e/website.spec.ts`
+   measures the ink rather than trusting any of them.
  
    The height is padding rather than a fixed 68px, because a baseline-aligned
    flex line is placed at the start of the container rather than in the middle
@@ -186,8 +200,15 @@ svg {
   display: inline;
 }
 
+/* The `C` stands on the baseline, where the `C` of "Chief" beside it does.
+   Its arc is a 7-unit circle stroked at 3.2 in a 32-unit viewBox, so the ink
+   reaches 24.6 of 32 and the remaining 7.4 is the tile's own padding: at 26px
+   that is 26 x 7.4 / 32 = 6.01px of box below the line. The two then agree on
+   their cap height as well as their baseline — the arc is 13.98px tall and
+   Instrument Sans at 19px caps at 14px — which is the whole reason the mark
+   reads as a letter rather than as an icon. */
 .site-header .wordmark svg {
-  vertical-align: -8px;
+  vertical-align: -6px;
   margin-right: 10px;
 }
 
@@ -216,8 +237,14 @@ svg {
   white-space: nowrap;
 }
 
+/* Centred on the cap height of "GitHub", per `.site-header .shell`. The
+   Octocat's legs end at 22 of a 24-unit viewBox and the round caps take its
+   ink to 23, so at 15px the ink is 13.75px tall with 0.625px of padding under
+   it. Against a 10.2px cap height that is 3.55px of overshoot, and half of it
+   goes below the line: 10.2 / 2 less 13.75 / 2, less the 0.625 of padding,
+   puts the box 2.4px under the baseline. */
 .nav-external svg {
-  vertical-align: -4px;
+  vertical-align: -2.4px;
   margin-right: 7px;
 }
 
@@ -241,8 +268,12 @@ svg {
   white-space: nowrap;
 }
 
+/* And the download arrow, against "Download" at 13px. Its ink runs 2 to 22 of
+   24 — the tray's stroke below, the shaft's cap above — so at 15px it is
+   12.5px tall on 1.25px of padding, and a 9.4px cap height puts the box 2.8px
+   under the baseline. */
 .site-header .btn svg {
-  vertical-align: -4px;
+  vertical-align: -2.8px;
   margin-right: 8px;
 }
 
@@ -1670,9 +1701,10 @@ pre {
   .site-header .wordmark svg {
     width: 22px;
     height: 22px;
-    /* Half the icon, less half the x-height, below the baseline — the offset
-       is a function of both sizes, so stepping them down moves it. */
-    vertical-align: -7px;
+    /* The tile's padding below its ink, at this size: 22 x 7.4 / 32 = 5.09px.
+       The offset is a function of the size, so stepping the mark down moves
+       it. The GitHub mark is not stepped down, so its own offset stands. */
+    vertical-align: -5px;
     margin-right: 8px;
   }
 
@@ -1697,6 +1729,9 @@ pre {
   }
 
   .nav-external svg {
+    /* The mark keeps its size here but the text does not, and the offset is a
+       function of the text's cap height: 9.4px at 13px rather than 10.2px. */
+    vertical-align: -2.8px;
     margin-right: 0;
   }
 
@@ -1708,7 +1743,9 @@ pre {
   .site-header .btn svg {
     width: 14px;
     height: 14px;
-    vertical-align: -4px;
+    /* Both step down, so both halves of the sum move: 11.67px of ink on
+       1.17px of padding, against an 8.7px cap height at 12px. */
+    vertical-align: -2.65px;
     margin-right: 6px;
   }
 

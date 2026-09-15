@@ -33,6 +33,35 @@ const BASELINE = '3997c5beb576512ad3fa5d9d9fcfb77db7abd295';
  */
 const RELEASABLE = new Set(['feat', 'fix', 'perf', 'revert']);
 
+/**
+ * Scopes that are not the application.
+ *
+ * The changelog documents what changed for the person who installed Chief, and
+ * the marketing site is not something they installed — it is deployed by Vercel
+ * from `main` the moment a change lands there, on its own, with no version
+ * number and nothing to download. A `feat(website)` in the changelog therefore
+ * describes a change the reader cannot have received, and worse, it releases:
+ * it bumps the minor, writes five files, tags, and builds three bundles that
+ * are byte-identical to the last three.
+ *
+ * So a site commit neither releases nor appears in a release, on exactly the
+ * same footing as a `docs` or a `chore` — the difference is only that this one
+ * is decided by the scope rather than by the type, because a site change is
+ * still a `feat` or a `fix` of the site.
+ *
+ * This is a claim the author makes, not one inferred from the files: a site
+ * change legitimately touches `playwright.config.ts`, `.prettierignore` or a
+ * workflow, so "every path is under `website/`" would have missed three of the
+ * four site commits in 0.5.0 and is not a rule worth having. `website` is on
+ * commitlint's `scope-enum`, so the claim is checked when it is made.
+ */
+const OFF_APP_SCOPES = new Set(['website']);
+
+/** Whether a commit changed the thing a user installs. */
+export function changesTheApp(commit) {
+  return !OFF_APP_SCOPES.has(commit.scope);
+}
+
 /** How each type is titled in the changelog, in the order they appear. */
 const SECTIONS = [
   ['feat', 'Features'],
@@ -207,17 +236,21 @@ function main() {
   const commits = parseCommits(
     git('log', '--format=%H%x00%s%x00%b%x1e', '--no-merges', `${from}..HEAD`),
   );
+  // The site is deployed by Vercel on its own and carries no version, so its
+  // commits are dropped before anything else looks at them: they decide no
+  // bump and they write no changelog line. See `OFF_APP_SCOPES`.
+  const app = commits.filter(changesTheApp);
   const current = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
-  const bump = decideBump(commits, current);
+  const bump = decideBump(app, current);
 
   if (bump === null) {
-    console.log(`Nothing to release: no feat, fix, perf or revert since ${from}.`);
+    console.log(`Nothing to release: no feat, fix, perf or revert to the app since ${from}.`);
     report({ releasing: 'false' });
     return;
   }
 
   const version = bumpVersion(current, bump);
-  const entry = renderEntry(version, commits, {
+  const entry = renderEntry(version, app, {
     date: new Date().toISOString().slice(0, 10),
     repository:
       process.env.GITHUB_SERVER_URL &&
@@ -225,7 +258,9 @@ function main() {
       `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}`,
   });
 
-  console.log(`${current} → ${version} (${bump}, from ${commits.length} commits since ${from})`);
+  console.log(
+    `${current} → ${version} (${bump}, from ${app.length} of ${commits.length} commits since ${from})`,
+  );
   console.log();
   console.log(entry);
 

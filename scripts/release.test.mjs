@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   VERSIONED,
   bumpVersion,
+  changesTheApp,
   decideBump,
   parseCommits,
   renderEntry,
@@ -42,6 +43,53 @@ describe('parseCommits', () => {
       type: null,
       breaking: false,
     });
+  });
+});
+
+describe('changesTheApp', () => {
+  /** What `main` does with the commits before it decides anything. */
+  const app = (raw) => parseCommits(raw).filter(changesTheApp);
+
+  it('drops a site commit, whatever its type', () => {
+    const raw = log(
+      ['feat(website): publish the changelog as a page'],
+      ['fix(website): fit the header on a phone'],
+    );
+
+    expect(app(raw)).toEqual([]);
+  });
+
+  it('keeps every scope that is the app', () => {
+    const raw = log(
+      ['feat(agent): stream answers'],
+      ['fix(ui): keep a row inside its card'],
+      ['fix: something unscoped'],
+    );
+
+    expect(app(raw)).toHaveLength(3);
+  });
+
+  it('leaves a release with nothing to release when only the site changed', () => {
+    const raw = log(['feat(website): add the marketing site'], ['docs(repo): write it down']);
+
+    expect(decideBump(app(raw), '0.5.0')).toBeNull();
+  });
+
+  it('does not let a site feature turn a fix release into a minor one', () => {
+    const raw = log(
+      ['feat(website): add a changelog page'],
+      ['fix(agent): stop the brief echoing dates'],
+    );
+
+    expect(decideBump(app(raw), '0.5.0')).toBe('patch');
+  });
+
+  it('writes no changelog line for a site commit', () => {
+    const raw = log(['feat(website): add a changelog page'], ['feat(agent): read Jira']);
+    const entry = renderEntry('0.6.0', app(raw), { date: '2026-09-15', repository: null });
+
+    expect(entry).toContain('read Jira');
+    expect(entry).not.toContain('changelog page');
   });
 });
 

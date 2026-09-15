@@ -768,13 +768,43 @@ no framework. It shares the app's design system: the tokens in `website/styles.c
   couple of pixels apart. Baseline alignment needs every item to expose a real one, which a flex
   container does not — its baseline is synthesised from its first flex item, and in all three of
   these that item is an icon. So the wordmark, the GitHub link and the header button are laid out
-  inline rather than as flex containers, and each icon is placed by an explicit `vertical-align`
-  offset that centres it on the x-height of the text beside it.
+  inline rather than as flex containers, and each mark is placed against it by an explicit
+  `vertical-align` offset.
+- **A letter sits on the line; an icon is centred on the cap height.** Two rules, because there are
+  two kinds of mark in that row. The logo is a letter — its `C` is drawn to the cap height of the
+  type beside it (13.98px of arc against a 13.8px cap at 19px), so it sits on the baseline exactly
+  as the `C` of "Chief" does. The Octocat and the download arrow are not letters: both are drawn
+  taller than the cap height of the word they label, so standing one on the baseline throws all of
+  its overshoot upward and it reads as floating above the line. Those two are centred on the cap
+  height, which splits the overshoot evenly above the cap and below the baseline. Not the x-height,
+  which is what the row used to centre on and what sat them visibly low.
+- **Every offset comes out of the artwork, never off a ruler.** An icon is drawn with padding inside
+  its viewBox, so the ink is not the box and only the drawing says where the gap is: the logo's arc
+  reaches 24.6 of a 32-unit viewBox, the Octocat's round caps take it to 23 of 24, the download
+  arrow's tray to 22 of 24. Five numbers, one per mark per size it is drawn at. `e2e/website.spec.ts`
+  measures the ink rather than the box, and reads the viewBox, the stroke width and the cap height
+  out of the page rather than restating them — `getBoundingClientRect` on an SVG path in Chromium
+  excludes the stroke, and a round cap reaches half a stroke further.
+- **Every page carries the same marks.** The changelog page shipped with a filled Octocat while the
+  hand-written pages carried the outline one, which is why no single offset could align it
+  everywhere — a sprite that drifts between a generated page and a written one is a bug the layout
+  test found rather than an option.
 - **The header is one row at every width, down to 320px.** It tightens rather than wraps: below
   560px the GitHub link keeps its icon and its label is clipped rather than removed, so it is still
   the link's accessible name; below 400px the link leaves the header altogether, because it is the
   only item there that is also in every footer and the alternative is the download button going off
   the edge — which is exactly what was reported.
+- **The changelog is the application's, not the site's.** A site change is scoped `website`, and
+  `scripts/release.mjs` drops those commits before it decides anything: they neither move the
+  version nor appear in `CHANGELOG.md`. The site has no version and nothing to download — Vercel
+  deploys it from `main` the moment a change lands — so a `feat(website)` line describes something
+  the reader of a release cannot have received, and releasing for one would tag a version and build
+  three bundles identical to the last three. It is a claim the author makes in the scope rather than
+  one inferred from the paths, because a site change legitimately touches `playwright.config.ts` or
+  a workflow; commitlint's `scope-enum` is what checks the claim. **The four site commits already in
+  0.5.0 were written out of that entry by hand**, since they were committed under `ui` and `repo`
+  before the scope existed and their history is published; the version was unaffected, as 0.5.0 had
+  application features of its own.
 - **`website/changelog.html` is generated, not written.** `scripts/changelog-page.mjs` renders it
   from `CHANGELOG.md`, `scripts/release.mjs` runs it as part of writing a release, and
   `pnpm check:changelog` — which `pnpm check` runs — fails if the committed page is not what the
@@ -914,8 +944,10 @@ expensive:
 
 Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
 Scopes: `agent`, `auth`, `corpus`, `db`, `daemon`, `integrations`, `ui`, `tauri`, `deps`, `ci`,
-`repo`. The list is enforced by `commitlint.config.js`; a scope that is not on it fails the
-`commit-msg` hook, so read it there rather than guessing a plausible-sounding one.
+`repo`, `website`. The list is enforced by `commitlint.config.js`; a scope that is not on it fails
+the `commit-msg` hook, so read it there rather than guessing a plausible-sounding one. `website` is
+the one that changes what a commit _does_: it is how a change to the marketing site says it is not a
+change to the application, and the release script reads it — see the website section.
 
 **Write the message to a file and commit with `-F`.** A body of several paragraphs is the norm here
 and it will contain an apostrophe, a quotation mark or a backtick sooner rather than later — `-m`
@@ -966,6 +998,9 @@ that tag.
 `scripts/release.mjs` holds the decision, which is why it is a tested script rather than a heap of
 YAML — nothing between a merge and a published release is checked by hand. `pnpm test` covers it.
 
+- **A `feat`, `fix`, `perf` or `revert` to the application releases. Nothing else does.** A
+  `website` scope is dropped first, whatever its type, on the same footing — see the website
+  section for why.
 - **A `feat`, `fix`, `perf` or `revert` releases. Nothing else does.** A `docs`, `ci`, `chore`,
   `style`, `test` or `refactor` commit changes nothing a person can download, so those commits
   neither cause a release nor appear in one. This is what keeps a trigger on every merge from
