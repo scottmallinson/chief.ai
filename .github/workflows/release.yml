@@ -4,7 +4,7 @@ on:
   # Every merge to main, and on demand.
   #
   # This used to be `workflow_dispatch` alone, to spend fewer billed minutes on
-  # the three bundles a release builds. This repository is public and runs on
+  # the bundles a release builds. This repository is public and runs on
   # GitHub's standard runners, so those minutes are not billed at all — and
   # what the manual trigger actually cost was that `main` could sit for weeks
   # holding a fix nobody could download, because releasing was a thing somebody
@@ -45,7 +45,7 @@ jobs:
   # The same jobs a pull request runs, against the commit this release is about
   # to bundle — which is what makes "a release depends on CI being green" a
   # fact rather than a cross-reference. The app build is left out: the bundle
-  # jobs below compile both platforms anyway, in the profile that ships.
+  # jobs below compile every platform anyway, in the profile that ships.
   checks:
     name: Checks
     uses: ./.github/workflows/checks.yml
@@ -56,7 +56,7 @@ jobs:
   # worth releasing — most merges do not, which is what keeps a trigger on
   # every push from meaning a release on every push — and if it is, it is the
   # release: the version is written
-  # into the four files that carry it, the changelog gains an entry, both are
+  # into the five files that carry it, the changelog gains an entry, both are
   # committed back to main and tagged, and a draft release is opened for the
   # bundles to attach to.
   version:
@@ -210,26 +210,45 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux is not a platform Chief ships for, so it is not built here.
-        #
         # macOS builds both architectures, and both run on the same arm64
         # runner — so each names the engine it needs. `engine-target` is not
         # decoration: the Intel bundle links an Intel `llama-server`, and
         # fetching the runner's own would leave Tauri looking for a sidecar
         # that is not there.
+        #
+        # Linux builds on its own runner and needs no `engine-target`, because
+        # the machine it builds on is the machine it builds for. One x64 build,
+        # packaged three ways by `bundle.targets: all` — .AppImage, .deb and
+        # .rpm — which is one compile rather than three.
         include:
           - platform: macos-latest
             label: macOS Apple silicon
             args: --target aarch64-apple-darwin
             engine: aarch64-apple-darwin
+            assets: Chief_VERSION_aarch64.dmg
           - platform: macos-latest
             label: macOS Intel
             args: --target x86_64-apple-darwin
             engine: x86_64-apple-darwin
+            assets: Chief_VERSION_x64.dmg
           - platform: windows-latest
             label: Windows
             args: ''
             engine: ''
+            assets: Chief_VERSION_x64-setup.exe
+          # 22.04 rather than latest, deliberately: an AppImage and a .deb link
+          # against the glibc and the WebKitGTK of the machine that built them,
+          # so building on the newest runner would quietly refuse to start on
+          # anything older. The oldest runner GitHub still offers is the widest
+          # audience this can reach.
+          - platform: ubuntu-22.04
+            label: Linux
+            args: ''
+            engine: ''
+            assets: |
+              Chief_VERSION_amd64.AppImage
+              Chief_VERSION_amd64.deb
+              Chief-VERSION-1.x86_64.rpm
     steps:
       # The release commit, not whatever main has reached since: another pull
       # request merging mid-release must not change what ships.
@@ -240,7 +259,7 @@ jobs:
       # A missing variable would silently produce a binary whose "Connect
       # GitHub" button never works, and nobody would find out until after they
       # had installed it. Checked before anything is compiled, so the matrix
-      # fails in seconds rather than after four bundles.
+      # fails in seconds rather than after every bundle.
       - name: Check the GitHub client id is configured
         shell: bash
         env:
@@ -269,6 +288,18 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Linux only, and only for the AppImage. linuxdeploy walks every ELF
+          # in the AppDir and refuses to build a bundle whose dependencies it
+          # cannot resolve — and Tauri's Linux layout puts the sidecar in
+          # `usr/bin` while its 38 llama.cpp libraries go to `usr/lib/Chief`,
+          # so `llama-server`'s own `RUNPATH=$ORIGIN` resolves to a directory
+          # none of them are in. Chief sets the loader path itself before it
+          # spawns the server (`engine::library_dirs`), so the installed app is
+          # fine; linuxdeploy cannot know that, and stops with
+          # `Could not find dependency: libllama-server-impl.so` after the
+          # whole crate has been compiled in release. Pointing it at the
+          # fetched libraries lets it resolve them and deploy them itself.
+          LD_LIBRARY_PATH: ${{ matrix.platform == 'ubuntu-22.04' && format('{0}/src-tauri/binaries/lib', github.workspace) || '' }}
           # Baked into the binary so nobody has to configure anything to sign
           # in. A device-flow client id is not a secret, which is why this is a
           # repository variable rather than a secret.
@@ -281,6 +312,44 @@ jobs:
         with:
           releaseId: ${{ needs.version.outputs.id }}
           args: ${{ matrix.args }}
+
+      # The site links to these files by name, built from a version constant in
+      # `website/support.js` — it makes no request to GitHub to find out what a
+      # release actually contains, because that would hand every visitor's IP
+      # address to GitHub on page load. The cost of that is that a bundler
+      # renaming its output turns every download button on the site into a 404,
+      # silently, with nothing on either side to notice.
+      #
+      # So the names are checked here, against the files that were just built,
+      # while the release is still a draft. A mismatch stops `publish` and
+      # leaves the draft sitting there with its assets — which is the failure
+      # this workflow is already shaped around — rather than announcing a
+      # release whose download links do not work.
+      - name: Check the bundles are named what the site links to
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ASSETS: ${{ matrix.assets }}
+        run: |
+          missing=0
+
+          while read -r template; do
+            [ -n "$template" ] || continue
+            expected=${template//VERSION/$VERSION}
+
+            if find src-tauri/target -type f -name "$expected" | grep -q .; then
+              echo "Found $expected"
+            else
+              echo "::error::$expected was not built. website/support.js links to that name, so the download would 404. Check Tauri's bundler naming and update both."
+              missing=1
+            fi
+          done <<< "$ASSETS"
+
+          if [ "$missing" -ne 0 ]; then
+            echo 'What was built:'
+            find src-tauri/target -path '*/bundle/*' -type f | sed 's/^/  /'
+            exit 1
+          fi
 
   # Publishing is what tells people the release exists, so it happens last —
   # once every bundle is attached. If this never runs, the release sits there

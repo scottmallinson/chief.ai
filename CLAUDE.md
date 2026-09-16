@@ -127,22 +127,36 @@ they are going to fail — for the feedback loop rather than for the invoice.
   `main` before it can merge, so the tree a pull request proves green is the tree the merge
   produces; running the same jobs again on the merge commit would pay twice for an answer already
   given. Nothing at all runs on a push to `main`.
-- **Build where nothing else is looking.** The app is built on macOS and Windows, and not on
-  Linux: the Rust job already compiles the whole crate there, but `#[cfg(windows)]` code is
-  compiled on Windows and nowhere else — `engine.rs:493` is where the last two fixes on `main`
-  went. These two jobs are most of how long CI takes, and they buy the only proof that the
-  platform-conditional code compiles at all.
-- **Chief ships macOS Apple silicon, macOS Intel and Windows.** There is no Linux bundle, and no
-  Linux app build: that job was the only thing proving a link nobody installs. Linux is still
-  where every quick job runs — Frontend, Layout, Rust, commitlint — and the `linux-x64` engine is
-  still fetched there, because Tauri's build script wants the sidecar on disk even for
-  `cargo test`.
+- **Build where nothing else is looking.** The app is built on macOS and Windows because
+  `#[cfg(windows)]` code is compiled on Windows and nowhere else — `engine.rs:493` is where the
+  last two fixes on `main` went — and those two jobs are most of how long CI takes. Linux is built
+  for a different reason: the Rust job compiles the whole crate there but never _links_ the
+  binary, so a missing system library or a link error in the shipped profile would otherwise be
+  found by a release, after the version had been committed and tagged. It is the cheapest runner
+  there is, which makes it the wrong one to save.
+- **Chief ships macOS Apple silicon, macOS Intel, Windows x64 and Linux x64.** The Linux bundle is
+  one x64 compile packaged three ways by `bundle.targets: all` — `.AppImage`, `.deb` and `.rpm` —
+  and it builds on `ubuntu-22.04` rather than `latest` on purpose: an AppImage and a `.deb` link
+  against the glibc and the WebKitGTK of the machine that built them, so the newest runner would
+  quietly produce something that refuses to start on anything older. Linux is also still where
+  every quick job runs — Frontend, Layout, Rust, commitlint — and the `linux-x64` engine is
+  fetched there whether or not a bundle is being built, because Tauri's build script wants the
+  sidecar on disk even for `cargo test`.
+- **A bundle whose name the site does not know is a 404 button.** `website/support.js` builds every
+  download link from a version constant and a filename, and makes no request to GitHub to find out
+  what a release actually contains — that would hand every visitor's IP address to GitHub on page
+  load, which is a poor opening for a page whose headline is that nothing about you is sent
+  anywhere. The cost is that a bundler renaming its output breaks every download silently. So each
+  `bundle` matrix entry names the files it is expected to produce, and a step checks them against
+  what was built while the release is still a draft. A mismatch stops `publish` and leaves the
+  draft sitting there with its assets, which is the failure that workflow is already shaped
+  around.
 - **Don't build it at all when the change can't reach it.** The `changes` job spends a Linux
   minute working out whether a pull request touches `src-tauri/`, `scripts/`, the manifests,
   `.github/actions/` or `checks.yml`, and the app build is skipped when it does not. A change
   under `src/` is proved by the Frontend job's `pnpm build`; it cannot break platform-conditional
   Rust. Deliberately not all of `.github/workflows/`: `App build (macos-latest)` is the longest job
-  here, and rebuilding the app on two platforms says nothing about a change to `release.yml`, which
+  here, and rebuilding the app on three runners says nothing about a change to `release.yml`, which
   bundles what is already built, or to `ci.yml`, which only decides who calls `checks.yml`. The
   website is the same case from the other side — a change under `website/` reaches no Rust, and
   `Layout` is what proves it, so it never starts an app build.
@@ -183,7 +197,7 @@ Building the desktop app on Linux needs the WebKitGTK toolchain:
 
 ```bash
 sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
 ```
 
 ## Layout
@@ -238,11 +252,19 @@ the user to install a runtime, which is the whole reason the engine is a module 
 - `Engine::discover` finds that binary next to the app executable (where Tauri puts a sidecar, in
   both a release install and `tauri dev`), then a `llama-server` on `PATH`, then gives up and says
   so through the setup screen.
-- `llama-server` finds its libraries by `$ORIGIN`, which works where the sidecar and the resources
-  land in the same directory — Linux and Windows — but not on macOS, where the bundle splits
-  `Contents/MacOS` from `Contents/Resources`. `library_dirs` therefore sets the platform's loader
-  path explicitly. A debug build also looks in `src-tauri/binaries/lib`, so the source tree works
-  before anything has been bundled.
+- `llama-server` finds its libraries by `$ORIGIN`, which works only where the sidecar and the
+  resources land in the same directory — Windows, and nowhere else. macOS splits `Contents/MacOS`
+  from `Contents/Resources`; a Linux `.deb`, `.rpm` or AppImage puts the sidecar in `usr/bin` and
+  its 38 llama.cpp libraries in `usr/lib/Chief`. `library_dirs` therefore sets the platform's
+  loader path explicitly, and the installed app is correct on all three. **What that does not
+  cover is bundling.** linuxdeploy walks every ELF in the AppDir and refuses to build an AppImage
+  whose dependencies it cannot resolve; it has no way to know Chief sets the loader path at spawn
+  time, so it stops with `Could not find dependency: libllama-server-impl.so` — after the whole
+  crate has been compiled in release. The Linux bundle job therefore exports `LD_LIBRARY_PATH`
+  pointing at the fetched libraries, which is what lets linuxdeploy resolve them and deploy them
+  itself. The `.deb` and the `.rpm` need none of this; the AppImage is the only one that inspects
+  what it is packaging. A debug build also looks in `src-tauri/binaries/lib`, so the source tree
+  works before anything has been bundled.
 - `ensure_running` is idempotent and never starts a second server: a health check comes first, so a
   `tauri dev` reload or a server the user is running themselves is left alone.
   `CHIEF_LLAMA_BASE_URL` points Chief at somebody else's server, and marks it not-ours to start or
@@ -809,7 +831,7 @@ no framework. It shares the app's design system: the tokens in `website/styles.c
   version nor appear in `CHANGELOG.md`. The site has no version and nothing to download — Vercel
   deploys it from `main` the moment a change lands — so a `feat(website)` line describes something
   the reader of a release cannot have received, and releasing for one would tag a version and build
-  three bundles identical to the last three. It is a claim the author makes in the scope rather than
+  a set of bundles identical to the last set. It is a claim the author makes in the scope rather than
   one inferred from the paths, because a site change legitimately touches `playwright.config.ts` or
   a workflow; commitlint's `scope-enum` is what checks the claim. **The four site commits already in
   0.5.0 were written out of that entry by hand**, since they were committed under `ui` and `repo`
@@ -1041,8 +1063,9 @@ from the Actions tab for a specific `ref`. It runs the checks first, and then on
 whether what has landed since the last tag is worth releasing. If it is, that job _is_ the release:
 the new version is written into the five files that carry it, `CHANGELOG.md` gains an entry, the
 website's changelog page is regenerated from it, all of them are committed back to `main` and
-tagged, and the three bundles — two macOS architectures and Windows — build and publish against
-that tag.
+tagged, and the bundles — two macOS architectures, Windows, and Linux packaged as an `.AppImage`,
+a `.deb` and an `.rpm` — build and publish against that tag. Each bundle job checks the filenames
+it produced against the ones `website/support.js` links to before the release leaves draft.
 
 `scripts/release.mjs` holds the decision, which is why it is a tested script rather than a heap of
 YAML — nothing between a merge and a published release is checked by hand. `pnpm test` covers it.

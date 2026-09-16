@@ -10,10 +10,10 @@ on:
     inputs:
       build-app:
         description: >-
-          Build the desktop app on macOS and Windows. True for a pull request,
-          where compiling the platform-conditional code is the question. False
-          for a release, whose bundle jobs compile both platforms anyway, in the
-          profile that ships.
+          Build the desktop app on every platform Chief bundles. True for a
+          pull request, where whether the shipped binary compiles and links is
+          the question. False for a release, whose bundle jobs compile the same
+          platforms anyway, in the profile that ships.
         type: boolean
         required: false
         default: true
@@ -28,8 +28,9 @@ jobs:
   # The app build is most of what CI costs, so it is worth a Linux minute to
   # find out whether this change could possibly affect it. A change to the
   # frontend cannot: `pnpm build` in the Frontend job already proves the bundle
-  # compiles, and nothing under `src/` reaches the platform-conditional Rust
-  # that is the whole reason the app build runs on two paid platforms.
+  # compiles, and nothing under `src/` reaches the platform-conditional Rust or
+  # the platform toolchains that are the whole reason the app build runs on
+  # three runners.
   changes:
     name: What changed
     if: inputs.build-app
@@ -70,11 +71,10 @@ jobs:
           # file the build is defined in.
           #
           # Deliberately not all of `.github/workflows/`. `App build
-          # (macos-latest)` is the largest single line in this repository's
-          # bill, and rebuilding the app on two paid platforms cannot say
-          # anything about a change to `release.yml`, which only bundles what is
-          # already built, or to `ci.yml`, which only decides who calls this
-          # file.
+          # (macos-latest)` is the longest job here, and rebuilding the app on
+          # three runners cannot say anything about a change to `release.yml`,
+          # which only bundles what is already built, or to `ci.yml`, which only
+          # decides who calls this file.
           if echo "$changed" | grep -qE '^(src-tauri/|scripts/|package\.json$|pnpm-lock\.yaml$|\.github/actions/|\.github/workflows/checks\.yml$)'; then
             echo "app=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Building the app: the change reaches it."
@@ -173,25 +173,30 @@ jobs:
     name: App build (${{ matrix.platform }})
     needs: changes
     # Only where it answers something. A pull request builds the app to prove
-    # the platform-conditional code compiles; a release skips it, because the
-    # bundle jobs compile the same two platforms straight afterwards, in the
-    # profile that actually ships.
+    # the platform-conditional code compiles and links; a release skips it,
+    # because the bundle jobs compile the same platforms straight afterwards,
+    # in the profile that actually ships.
     if: inputs.build-app && needs.changes.outputs.app == 'true'
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        # macOS and Windows are the platforms Chief ships for, and the two
-        # nothing else compiles: the Rust job already builds the whole crate on
-        # Linux, but `#[cfg(windows)]` code — `engine.rs:325`, which is where
-        # the last two fixes on main went — is compiled on Windows and nowhere
-        # else.
+        # Every platform Chief ships a bundle for, because the question this
+        # job answers is whether the thing people install compiles and links.
         #
-        # Linux used to be added on main, to link a release profile against
-        # WebKitGTK. It is not built at all now: Chief does not ship a Linux
-        # bundle, so that link was proving something nobody installs.
-        platform: ['macos-latest', 'windows-latest']
+        # macOS and Windows are the two nothing else compiles: the Rust job
+        # already builds the whole crate on Linux, but `#[cfg(windows)]` code —
+        # `engine.rs:325`, which is where the last two fixes on main went — is
+        # compiled on Windows and nowhere else.
+        #
+        # Linux is back because the Linux bundle is. `cargo test` on Linux
+        # compiles the crate but never links the binary against WebKitGTK, so
+        # a missing system library or a link error in the shipped profile would
+        # first be found by the release — after the version had been committed
+        # and tagged. This is the cheapest runner there is; it is the wrong one
+        # to save.
+        platform: ['macos-latest', 'windows-latest', 'ubuntu-22.04']
     steps:
       - uses: actions/checkout@v5
 

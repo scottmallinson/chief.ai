@@ -6,7 +6,7 @@ Chief answers questions about your work — what you shipped, what is waiting on
 like — by reading your tools and reasoning with a local LLM. Everything happens on your machine:
 no cloud backend, no remote model, no proxy server.
 
-> **Status:** working software, released for macOS and Windows, and not finished. The app shell,
+> **Status:** working software, released for macOS, Windows and Linux, and not finished. The app shell,
 > the local database, the bundled LLM engine, the tool-calling agent, the background work-log
 > daemon, the markdown corpus, drafted proposals, and integrations with GitHub, Linear, Jira,
 > Confluence, Outlook and iCalendar subscriptions are all in. The roadmap beyond that is kept
@@ -25,7 +25,7 @@ frontend runs on its own in a browser with no Rust toolchain at all.
 
   ```bash
   sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
   ```
 
 See the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for macOS and Windows.
