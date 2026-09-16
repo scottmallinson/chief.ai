@@ -5,11 +5,29 @@ it was built until the user updates it. That is the lens every advisory here is 
 dependency vulnerability in this repository is a vulnerability in somebody's laptop, not in
 something the maintainer can fix in place overnight.
 
+## Supported versions
+
+**The latest release, and nothing behind it.** There is no server to patch and no long-term
+support branch: a fix is released from `main` and reaches people when they install the new build.
+If you are reporting against an older version, say which — but the fix, if there is one, will land
+on the current one.
+
 ## Reporting
 
 Report a vulnerability privately through GitHub's
 [security advisory form](https://github.com/scottmallinson/chief.ai/security/advisories/new).
-Please do not open a public issue for one.
+Please do not open a public issue for one, and please do not open a pull request that fixes one in
+public before the advisory has been agreed — the diff is the disclosure.
+
+You will get an acknowledgement, an assessment of what it reaches, and credit in the advisory
+unless you would rather not have it. A report that turns out not to be exploitable is still a
+useful report and is worth sending.
+
+**What counts.** Anything that sends a user's data somewhere it should not go, anything that lets
+code the user did not install run on their machine, and anything that exposes a stored credential —
+the integration tokens, the Linear key, the Atlassian token, a calendar subscription address. The
+threat model is one person's laptop, so a finding that requires an attacker who already has that
+user's OS account is interesting but not urgent; say so and it will be read on those terms.
 
 ## Accepted advisories
 

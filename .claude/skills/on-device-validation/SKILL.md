@@ -20,9 +20,20 @@ sooner or later.
 
 Back up before the first launch of a branch that adds migrations:
 
+The app-data directory is the OS's, so the path depends where you are running. The bundle
+identifier is `com.scottmallinson.chief` on all three:
+
+| Platform | Directory                                                    |
+| -------- | ------------------------------------------------------------ |
+| macOS    | `~/Library/Application Support/com.scottmallinson.chief`     |
+| Linux    | `~/.config/com.scottmallinson.chief`                         |
+| Windows  | `%APPDATA%\com.scottmallinson.chief`                         |
+
 ```bash
-D="$HOME/Library/Application Support/com.scottmallinson.chief"
-cp -a "$D"/chief.db* "$HOME/chief-db-backup-$(date +%Y%m%d-%H%M%S)/"
+D="$HOME/Library/Application Support/com.scottmallinson.chief"   # macOS
+# D="$HOME/.config/com.scottmallinson.chief"                     # Linux
+B="$HOME/chief-db-backup-$(date +%Y%m%d-%H%M%S)"                 # read the clock once
+mkdir -p "$B" && cp -a "$D"/chief.db* "$B/"
 ```
 
 **Back up the database, not the app-data directory.** That directory also holds
