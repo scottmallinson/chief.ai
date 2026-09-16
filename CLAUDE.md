@@ -1016,9 +1016,12 @@ mechanically rather than remembered:
 git config chief.commitIdentity 'you@example.com'   # opt-in, per clone
 ```
 
-**Maintainer note.** The release commit is made by the release workflow under the maintainer's
-identity, because a release is the project's own act rather than any contributor's. That is the one
-place an identity is hard-coded, and it is in `.github/workflows/release.yml`.
+**The release commit is the automation's.** `.github/workflows/release.yml` commits as
+`github-actions[bot]`, because nobody wrote it: `scripts/release.mjs` derives every line from
+commits that already carry their own authors, and the push is made with `GITHUB_TOKEN`, which is
+that identity's. So `git log` on `main` says a release came from the automation, which is what
+happened. No identity is hard-coded anywhere in this repository now — a maintainer's own clone
+opts in with `chief.commitIdentity` like anybody else's.
 
 ## Dependency advisories
 

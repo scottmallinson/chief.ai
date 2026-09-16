@@ -93,8 +93,16 @@ jobs:
         id: decide
         run: node scripts/release.mjs --write
 
-      # Everything this repository publishes is the owner's work, whoever or
-      # whatever typed it — a release commit included.
+      # Attributed to the Actions bot rather than to a person, because nobody
+      # wrote this commit: `scripts/release.mjs` derived every line of it from
+      # commits that already carry their own authors. It is also the identity
+      # the token actually belongs to — the push is made with GITHUB_TOKEN —
+      # so `git log` on main now says a release came from the automation, which
+      # is what happened. Repository-meta only: it changes no contributor's
+      # attribution, since a release commit contains nobody's code.
+      #
+      # The address is the fixed one GitHub associates with github-actions[bot];
+      # it is not a mailbox and is not derived from this repository.
       - name: Commit and tag it
         id: commit
         if: steps.decide.outputs.releasing == 'true'
@@ -102,8 +110,8 @@ jobs:
           VERSION: ${{ steps.decide.outputs.version }}
           TAG: ${{ steps.decide.outputs.tag }}
         run: |
-          git config user.name 'Scott Mallinson'
-          git config user.email 'scott@scottmallinson.com'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           # website/support.js carries the version the download links are built
           # from, and website/changelog.html is generated from the changelog
