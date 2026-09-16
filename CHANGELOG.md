@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 (2026-09-16)
+
+### Features
+
+- **ci:** ship a Linux bundle again, and offer it on the site ([db1f34f](https://github.com/scottmallinson/chief.ai/commit/db1f34fed6970fc20ad62e41f865c2c205546acd))
+
 ## 0.5.0 (2026-09-14)
 
 ### Features
