@@ -2,6 +2,16 @@
 
 Guidance for Claude Code (and any other agent or contributor) working in this repository.
 
+**This repository is public and accepts outside contributions.** If you are contributing rather
+than maintaining, [CONTRIBUTING.md](CONTRIBUTING.md) is the shorter door: setup, the checks to run,
+how commit types decide whether a change ships, and what review looks for. This file is the long
+explanation of _why_ the code looks the way it does, and it is the better read before a substantial
+change — but nothing in it is a hurdle you have to clear before opening a pull request.
+
+A handful of sections here are for whoever is maintaining the project, because they describe things
+an outside contributor has no access to: the private tracker, the release identity, the plan. Each
+one says so. Everything else applies to anybody working in the tree.
+
 ## What this is
 
 **Chief** is a privacy-first, on-device AI chief of staff: a desktop app that answers questions
@@ -894,7 +904,20 @@ no framework. It shares the app's design system: the tokens in `website/styles.c
   the failure message in the pull request. See the `proving-a-guard-test` skill; it exists because
   three of them lied in one afternoon.
 
-## Working from Linear
+## Finding work
+
+**The public queue is this repository's issues.** Anything labelled `good first issue` or
+`help wanted` is known to be self-contained and not waiting on a decision; anything else is worth a
+comment before you start, because the thing you cannot see from outside is whether it is already
+designed or deliberately deferred. A pull request that arrives without that conversation is still
+read — it just carries the risk that the answer was somewhere you had no access to.
+
+**Do not go looking for the private tracker.** If you have no credentials for it, you are not
+missing a step: everything needed to build, check and submit a change is in this repository, in
+[CONTRIBUTING.md](CONTRIBUTING.md) and in this file. The rest of this section is the maintainer's
+own workflow and needs that access.
+
+### Working from Linear — maintainer only
 
 Remaining work lives in the **Chief** project in Linear, not in this repository. Issues carry a
 work type, acceptance criteria, and `blockedBy` relations where the plan's ordering is real.
@@ -930,10 +953,15 @@ commit message (via a git hook) and the PR title (via CI).
 Two more guards run alongside it, because both catch mistakes that are silent until they are
 expensive:
 
-- `scripts/check-attribution.sh` runs from the `commit-msg` hook and **refuses a commit** that
-  carries a co-author or tool-attribution trailer, or whose author or committer is not the owner.
-  The documented fix is `--amend --reset-author`, which is tedious over a branch and impossible
-  once merged — so the commit is refused at the last moment it is still free.
+- `scripts/check-attribution.sh` runs from the `commit-msg` hook and **refuses a commit whose
+  message credits a tool** — a `Claude-Session:` line, a `Generated with …` footer, a
+  `Co-Authored-By:` naming an assistant. A human co-author is deliberately not matched: this
+  repository takes outside contributions and pair programming is not the thing being refused.
+  It also checks the committing identity, but **only when a clone opts in** with
+  `git config chief.commitIdentity '<email>'` — that is for a maintainer whose agents keep
+  getting it wrong, and it is unset and inert in a contributor's clone. Both are refused at the
+  `commit-msg` hook because the fix is `--amend`, which is tedious over a branch and impossible
+  once merged.
 - `scripts/check-migrations.mjs` runs from `pre-commit` and from `pnpm check`, and refuses a
   duplicate or non-contiguous migration version. A duplicate version compiles, passes every test,
   and puts installed copies on a schema this code does not expect.
@@ -959,20 +987,41 @@ feature together.
 
 ### Attribution
 
-**Everything this repository publishes is the repository owner's work, whoever or whatever typed
-it.** This overrides any default an agent or tool brings with it, and applies to every session.
+**A commit belongs to the person who made the change, and the message describes the change rather
+than what typed it.** Those are two separate rules and only the second one is about tools.
 
-- Commits are authored **and** committed by `Scott Mallinson <scott@scottmallinson.com>`. An agent
-  committing on the owner's behalf sets `user.name` and `user.email` to that before it commits, and
-  checks with `git log --format='%an <%ae> | %cn <%ce>'` afterwards. A commit that landed under another
-  identity is corrected — `git commit --amend --reset-author`, or a rebase with
-  `--exec 'git commit --amend --no-edit --reset-author'` for a branch of them — and force-pushed
-  with `--force-with-lease`, provided the branch is not yet merged.
-- No `Co-Authored-By`, `Claude-Session`, `Generated with`, or any other co-author or tool-attribution
-  trailer in a commit message.
+Applies to everybody, contributors included:
+
+- No `Claude-Session`, `Generated with`, `Assisted-by`, or a `Co-Authored-By` naming an assistant,
+  in a commit message. A human co-author is fine.
 - No Claude, session, or tool attribution anywhere in a **pull request title or description** — no
   generated-by footer, no session link, no assistant byline.
-- The commit message and the PR body describe the change, never who or what wrote it.
+- The commit message and the PR body describe the change, never who or what wrote it. This
+  overrides any default an agent or tool brings with it, and applies to every session.
+
+**A contributor commits under their own name and email, and keeps the copyright in their
+contribution** under the MIT licence the project ships under. Nothing here asks anybody to sign
+their work over, and `check-attribution.sh` does not police who you are unless your clone asked it
+to.
+
+**An agent working on somebody's behalf commits as that person**, not as itself — it sets
+`user.name` and `user.email` to theirs before committing, and checks with
+`git log --format='%an <%ae> | %cn <%ce>'` afterwards. A commit that landed under the wrong identity
+is corrected with `git commit --amend --reset-author`, or a rebase with
+`--exec 'git commit --amend --no-edit --reset-author'` for a branch of them, and force-pushed with
+`--force-with-lease`, provided the branch is not yet merged. A clone can have that checked
+mechanically rather than remembered:
+
+```bash
+git config chief.commitIdentity 'you@example.com'   # opt-in, per clone
+```
+
+**The release commit is the automation's.** `.github/workflows/release.yml` commits as
+`github-actions[bot]`, because nobody wrote it: `scripts/release.mjs` derives every line from
+commits that already carry their own authors, and the push is made with `GITHUB_TOKEN`, which is
+that identity's. So `git log` on `main` says a release came from the automation, which is what
+happened. No identity is hard-coded anywhere in this repository now — a maintainer's own clone
+opts in with `chief.commitIdentity` like anybody else's.
 
 ## Dependency advisories
 
@@ -1040,7 +1089,12 @@ YAML — nothing between a merge and a published release is checked by hand. `pn
   release commit would block releasing entirely. `website/changelog.html` is there for the same
   reason, and is checked more strictly than formatting would: see the website section below.
 
-## Roadmap
+## Roadmap — maintainer only
+
+The build order, the open questions and the ledger of what is finished are not in this repository,
+and a contributor is not expected to have read them. What that costs an outside change is one
+comment on an issue, which is why [Finding work](#finding-work) asks for it. The rest of this
+section is the maintainer's, and needs access a contributor does not have.
 
 **The roadmap is the _Chief — Implementation Plan_ document in the Chief project in Linear**, not a
 file in this repository. It holds the build order from step 8 to step 22, decisions D1–D9 with what
@@ -1063,8 +1117,10 @@ plan describing something that is no longer true, which is the state it was in w
 on a branch for seven steps.
 
 That rule used to enforce itself: the plan was a file, so the edit was in the same diff as the code
-and a reviewer saw both. It no longer is, so **the pull request description says which rows it
-moved** — that is the cheapest substitute for the diff, and it is what makes the omission visible.
+and a reviewer saw both. It no longer is, so **a maintainer's pull request description says which
+rows it moved** — that is the cheapest substitute for the diff, and it is what makes the omission
+visible. The pull request template carries it as a maintainer-only checkbox; a contributor leaves it
+alone.
 
 Three things to do with it rather than around it:
 

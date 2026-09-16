@@ -1,0 +1,4 @@
+# Every pull request gets a review request from the maintainer. There is one
+# maintainer, so there is one line — this file exists so the request is
+# automatic rather than something a contributor has to ask for.
+*       @scottmallinson
