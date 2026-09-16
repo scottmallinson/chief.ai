@@ -277,3 +277,125 @@ test('the changelog does not scroll sideways on a phone', async ({ page }) => {
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
 });
+
+/* ---- The downloads ---- */
+
+/**
+ * Load the page as a visitor on `platform`.
+ *
+ * `support.js` reads `navigator.userAgentData` first and `navigator.userAgent`
+ * second, and both of those describe the machine these tests run on — so the
+ * Linux case would pass on CI for the wrong reason and fail on a maintainer's
+ * Mac. Stubbing both before the page loads makes the answer the same
+ * everywhere, which is the only way this measures the detection rather than
+ * the host.
+ */
+type Visitor = { userAgent: string; uaPlatform: string };
+
+async function visitAs(page: Page, { userAgent, uaPlatform }: Visitor) {
+  await page.addInitScript(
+    ([ua, plat]) => {
+      Object.defineProperty(Navigator.prototype, 'userAgent', { get: () => ua });
+      Object.defineProperty(Navigator.prototype, 'userAgentData', {
+        get: () => ({ platform: plat }),
+      });
+    },
+    [userAgent, uaPlatform],
+  );
+
+  await page.goto('/index.html');
+}
+
+/* Every tile the page carries has to be a build `support.js` knows how to name,
+   or it keeps the `href="#"` it ships with and the visitor is sent back to the
+   top of the page they are already on. Markup added without its entry in
+   `BUILDS` is exactly that mistake, and it looks completely fine on screen. */
+test('every build tile links to a file the release publishes', async ({ page }) => {
+  await page.goto('/index.html');
+
+  const tiles = page.locator('[data-build]');
+  const count = await tiles.count();
+
+  // A loop over nothing passes without checking anything.
+  expect(count).toBeGreaterThanOrEqual(6);
+
+  const version = await page.locator('[data-version]').first().textContent();
+  expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+
+  for (let i = 0; i < count; i += 1) {
+    const tile = tiles.nth(i);
+    const href = await tile.getAttribute('href');
+
+    expect(href, `${await tile.getAttribute('data-build')} has no download`).toContain(
+      `/releases/download/v${version}/`,
+    );
+
+    // And the meta line says which file, rather than whatever the HTML was
+    // written with before the build table moved on.
+    await expect(tile.locator('[data-build-meta]')).not.toBeEmpty();
+  }
+});
+
+/* The three Linux packagings are all on the page, because nothing in a browser
+   says which package manager the visitor uses. */
+test('Linux is offered as an AppImage, a .deb and an .rpm', async ({ page }) => {
+  await page.goto('/index.html');
+
+  const hrefs = await page
+    .locator('[data-build^="linux"]')
+    .evaluateAll((tiles) => tiles.map((tile) => tile.getAttribute('href') ?? ''));
+
+  expect(hrefs).toHaveLength(3);
+  expect(hrefs.some((href) => href.endsWith('.AppImage'))).toBe(true);
+  expect(hrefs.some((href) => href.endsWith('.deb'))).toBe(true);
+  expect(hrefs.some((href) => href.endsWith('.rpm'))).toBe(true);
+});
+
+/* The CTA is the only download most visitors will see, so it has to lead with
+   their own platform. The AppImage is the Linux lead: it is the one of the
+   three that asks nothing of the machine it lands on. */
+const VISITORS: [string, Visitor, string][] = [
+  ['Linux', { userAgent: 'Mozilla/5.0 (X11; Linux x86_64)', uaPlatform: 'Linux' }, '.AppImage'],
+  [
+    'Windows',
+    { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', uaPlatform: 'Windows' },
+    '.exe',
+  ],
+  [
+    'macOS',
+    { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', uaPlatform: 'macOS' },
+    '.dmg',
+  ],
+];
+
+for (const [label, navigatorStub, extension] of VISITORS) {
+  test(`the hero button leads a ${label} visitor to a ${label} build`, async ({ page }) => {
+    await visitAs(page, navigatorStub);
+
+    const hero = page.locator('.hero-actions .btn-primary');
+    await expect(hero.locator('[data-download-label]')).toHaveText(`Download for ${label}`);
+    expect(await hero.getAttribute('href')).toMatch(
+      new RegExp(`/releases/download/v[\\d.]+/.*\\${extension}$`),
+    );
+
+    // And the tile for that same file is the one lit up in the downloads
+    // section, so the two halves of the page agree.
+    const primary = page.locator('.get-tile.is-primary');
+    await expect(primary).toHaveCount(1);
+    expect(await primary.getAttribute('href')).toBe(await hero.getAttribute('href'));
+  });
+}
+
+/* A phone gets no build at all, and the button says so rather than handing
+   over a desktop installer. */
+test('a phone is told there is nothing to install, not given a file', async ({ page }) => {
+  await visitAs(page, {
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+    uaPlatform: 'iOS',
+  });
+
+  const hero = page.locator('.hero-actions .btn-primary');
+  await expect(hero.locator('[data-download-label]')).toHaveText('See the builds');
+  expect(await hero.getAttribute('href')).toBe('#get');
+  await expect(page.locator('.get-tile.is-primary')).toHaveCount(0);
+});

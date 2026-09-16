@@ -32,6 +32,11 @@ inputs:
 runs:
   using: composite
   steps:
+    # `xdg-utils` is the odd one out in a list that is otherwise toolchain and
+    # -dev packages: the AppImage bundler copies the runner's own
+    # `/usr/bin/xdg-open` into the bundle, and stops with
+    # `xdg-open binary not found` when it is not there — after the whole crate
+    # has been compiled in release, which is the expensive place to find out.
     - name: Install Linux dependencies
       if: runner.os == 'Linux'
       shell: bash
@@ -50,7 +55,8 @@ runs:
           libssl-dev \
           patchelf \
           build-essential \
-          file
+          file \
+          xdg-utils
 
     - uses: ./.github/actions/setup-node
 

@@ -19,8 +19,14 @@ const VERSION = '0.5.0';
 
 const REPO = 'scottmallinson/chief.ai';
 
-/* One entry per build the release workflow actually publishes. There is no
-   Linux bundle: the release matrix is two macOS architectures and Windows. */
+/* One entry per build the release workflow actually publishes: two macOS
+   architectures, Windows, and three Linux packagings of the same x64 build.
+   The keys `detectPlatform` can return are the leads — one per platform — and
+   the rest are alternatives that only ever appear as tiles.
+
+   Every filename here is Tauri's own bundler naming, and the release workflow
+   checks the files it produced against these names before the release is
+   published. A tile that 404s is a worse answer than no tile. */
 const BUILDS = {
   'macos-arm64': {
     label: 'macOS',
@@ -36,6 +42,25 @@ const BUILDS = {
     label: 'Windows',
     meta: 'x64 · .exe',
     asset: (v) => `Chief_${v}_x64-setup.exe`,
+  },
+  /* The lead for Linux is the AppImage, because it is the only one of the
+     three that asks nothing of the machine it lands on. Detection can tell a
+     visitor is on Linux; nothing in a browser tells us which package manager
+     they use, so .deb and .rpm are offered beside it rather than guessed at. */
+  linux: {
+    label: 'Linux',
+    meta: 'x64 · .AppImage',
+    asset: (v) => `Chief_${v}_amd64.AppImage`,
+  },
+  'linux-deb': {
+    label: 'Linux',
+    meta: 'x64 · .deb',
+    asset: (v) => `Chief_${v}_amd64.deb`,
+  },
+  'linux-rpm': {
+    label: 'Linux',
+    meta: 'x64 · .rpm',
+    asset: (v) => `Chief-${v}-1.x86_64.rpm`,
   },
 };
 
@@ -187,8 +212,9 @@ function applyDownloads(platform) {
       const label = hero.querySelector('[data-download-label]');
       if (label) label.textContent = `Download for ${BUILDS[primary].label}`;
     } else {
-      /* Linux and mobile get no build, so the button says what is true rather
-         than handing over a file that will not run. */
+      /* A phone, or a platform nothing here recognises. There is no build to
+         hand over, so the button says what is true rather than offering a file
+         that will not run. */
       hero.href = '#get';
       hero.removeAttribute('data-download-primary');
       const label = hero.querySelector('[data-download-label]');
@@ -201,7 +227,7 @@ function applyDownloads(platform) {
   if (note) {
     note.textContent = supported
       ? `Version ${VERSION} · no account, no telemetry`
-      : `Chief is a macOS and Windows desktop app. Version ${VERSION}.`;
+      : `Chief is a desktop app for macOS, Windows and Linux. Version ${VERSION}.`;
   }
 
   document.querySelectorAll('[data-build]').forEach((tile) => {

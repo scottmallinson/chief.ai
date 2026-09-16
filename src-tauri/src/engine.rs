@@ -379,11 +379,14 @@ fn on_path() -> bool {
 
 /// Where this installation keeps the shared libraries the server loads.
 ///
-/// The bundle puts them in the resource directory, which on Linux and Windows
-/// is the directory the sidecar lands in as well — so on those two the loader
-/// would find them unaided. macOS splits `Contents/MacOS` from
-/// `Contents/Resources`, which is why the path is set explicitly rather than
-/// left to the server's own `$ORIGIN`.
+/// The bundle puts them in the resource directory, and only on Windows is that
+/// the directory the sidecar lands in as well — so Windows is the one platform
+/// where the loader would find them unaided. macOS splits `Contents/MacOS`
+/// from `Contents/Resources`; a Linux `.deb`, `.rpm` or AppImage puts the
+/// sidecar in `usr/bin` and its libraries in `usr/lib/Chief`. On both of
+/// those the server's own `RUNPATH=$ORIGIN` resolves to a directory none of
+/// them are in, which is why the path is set explicitly here rather than left
+/// to it.
 fn library_dirs<R: Runtime>(app: &AppHandle<R>, server: Option<&Path>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 

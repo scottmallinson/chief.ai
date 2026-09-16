@@ -69,7 +69,7 @@ before `verify`, not after.
 Two things `pnpm verify` cannot cover, so do not be surprised by them:
 
 - **It builds for your machine only.** The Rust is portable; the WebKitGTK, WebView2 and WKWebView
-  differences are not. CI builds on macOS and Windows for exactly this reason.
+  differences are not. CI builds on macOS, Windows and Linux for exactly this reason.
 - **The pull request title is linted by CI rather than by your hooks.** `verify:commits` checks the
   commit messages the title is usually taken from, which is close but not the same thing.
 

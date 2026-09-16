@@ -232,11 +232,12 @@
       <div class="note is-attention mt-24">
         <p>
           <strong>Two things to know before a security review.</strong> Builds are not yet
-          code-signed or notarised, so macOS and Windows will warn on first launch. And Chief asks
-          GitHub for the <code>repo</code> scope, which is read and write across public and private
-          repositories — broader than it uses, because GitHub offers OAuth apps no read-only scope
-          for private repositories. Jira is the opposite case: no write scope is requested at all,
-          so read-only there is enforced by Atlassian rather than promised by Chief.
+          code-signed or notarised, so macOS and Windows will warn on first launch, and the Linux
+          bundles are unsigned too. And Chief asks GitHub for the <code>repo</code> scope, which is
+          read and write across public and private repositories — broader than it uses, because
+          GitHub offers OAuth apps no read-only scope for private repositories. Jira is the opposite
+          case: no write scope is requested at all, so read-only there is enforced by Atlassian
+          rather than promised by Chief.
         </p>
       </div>
     </main>

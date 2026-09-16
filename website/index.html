@@ -134,6 +134,18 @@
           <line x1="12" x2="12" y1="17" y2="21" />
         </symbol>
         <symbol
+          id="i-terminal"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="m4 17 6-6-6-6" />
+          <path d="M12 19h8" />
+        </symbol>
+        <symbol
           id="i-github"
           viewBox="0 0 24 24"
           fill="none"
@@ -386,7 +398,7 @@
               <p class="mono">01</p>
               <h3>Install the app</h3>
               <p>
-                Builds for macOS and Windows. The llama.cpp engine is bundled, so there is no
+                Builds for macOS, Windows and Linux. The llama.cpp engine is bundled, so there is no
                 separate runtime to install and no installer account.
               </p>
             </div>
@@ -442,6 +454,27 @@
                 Windows
               </span>
               <span class="get-tile-meta" data-build-meta>x64 · .exe</span>
+            </a>
+            <a class="get-tile" data-build="linux" href="#">
+              <span class="get-tile-name">
+                <svg width="15" height="15" aria-hidden="true"><use href="#i-terminal" /></svg>
+                Linux
+              </span>
+              <span class="get-tile-meta" data-build-meta>x64 · .AppImage</span>
+            </a>
+            <a class="get-tile" data-build="linux-deb" href="#">
+              <span class="get-tile-name">
+                <svg width="15" height="15" aria-hidden="true"><use href="#i-terminal" /></svg>
+                Linux
+              </span>
+              <span class="get-tile-meta" data-build-meta>x64 · .deb</span>
+            </a>
+            <a class="get-tile" data-build="linux-rpm" href="#">
+              <span class="get-tile-name">
+                <svg width="15" height="15" aria-hidden="true"><use href="#i-terminal" /></svg>
+                Linux
+              </span>
+              <span class="get-tile-meta" data-build-meta>x64 · .rpm</span>
             </a>
           </div>
         </div>
