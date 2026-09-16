@@ -167,11 +167,11 @@ they are going to fail — for the feedback loop rather than for the invoice.
   minutes of somebody waiting on a release, which is the whole of the objection.
 - **The app build only runs where it answers something.** On a pull request it builds `--debug`,
   because the question is whether the platform-conditional code compiles and links, and
-  optimisation is not part of that. A release skips it entirely: the bundle jobs compile the same
-  two platforms straight afterwards, in the profile that actually ships.
+  optimisation is not part of that. A release skips it entirely: the bundle jobs compile every
+  platform straight afterwards, in the profile that actually ships.
 - **A release follows a merge, and can also be asked for.** `push` to `main`, plus
   `workflow_dispatch` taking a `ref` that defaults to `main`. It was dispatch-only for a while, to
-  spend fewer minutes on the three bundles — minutes that turn out not to be billed at all, while
+  spend fewer minutes on the bundles — minutes that turn out not to be billed at all, while
   the thing it really cost was `main` sitting on a shipped fix nobody could download because
   releasing was something a person had to remember. `scripts/release.mjs` still decides whether
   there is anything to release, so a merge of `docs` or `chore` commits ends in seconds with
@@ -1052,8 +1052,13 @@ to look again. Read it before investigating an open Dependabot alert — an aler
 no pull request behind it usually means Dependabot has no version to offer, not that anybody has
 ignored it. Add to that list rather than re-deriving the analysis, and only after establishing
 whether the package reaches a shipped artifact: `cargo tree -i <crate> --target <triple>` for the
-three targets Chief bundles is what settles that for a Rust dependency, and it is what proves a
-Linux-only crate is not in any of them.
+four targets Chief bundles — `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` — is what settles that for a Rust
+dependency. **A Linux-only crate is now shipped, and used not to be.** That is the single most
+load-bearing line in this section: the `glib` advisory was accepted on the reasoning that Chief
+had no Linux bundle, so the vulnerable crate reached nothing anybody could install, and adding one
+falsified it. An advisory accepted on where Chief does _not_ ship has to be re-read whenever that
+changes, which is why each one carries its trigger as well as its date.
 
 ## Releases
 
