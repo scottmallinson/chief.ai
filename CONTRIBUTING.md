@@ -142,8 +142,13 @@ A human co-author is fine. The message describes the change, not what typed it.
   and nobody reads a red draft. Run `pnpm verify` locally while the work is in progress, and **mark
   the pull request ready for review to get a full run**. `Checks / Complete` is a required check, so
   it has to report before the change can merge.
-- **The title must be a valid conventional commit.** Pull requests are squash-merged, so the title
-  becomes the commit subject on `main` — and therefore decides the release, per the section above.
+- **The title must be a valid conventional commit**, because CI lints it. It is not what decides the
+  release, though — see below.
+- **Your individual commits are what land on `main`.** A pull request is merged with a merge commit
+  rather than squashed, so every commit on your branch keeps its own subject in the history. That
+  is what `scripts/release.mjs` reads: it collects commits since the last tag with `--no-merges`, so
+  it sees yours and never sees the pull request title. **A `chore` title does not stop a `feat`
+  commit on the branch from releasing.** Get the type right on each commit, not just on the title.
 - **Fill in the template**, including the privacy checklist. It is three boxes and it is the
   cheapest place to catch the one mistake this project cannot accept.
 - **Push again rather than force-pushing over review history** where you reasonably can. It keeps a

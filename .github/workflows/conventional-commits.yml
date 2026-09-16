@@ -30,8 +30,14 @@ jobs:
 
       - uses: ./.github/actions/setup-node
 
-      # The PR title becomes the squash-merge commit subject, so it has to be
-      # a valid conventional commit.
+      # The title is not the release input — `scripts/release.mjs` reads the
+      # branch's own commits with `--no-merges`, and a pull request here lands
+      # as a merge commit rather than a squash, so the title never reaches it.
+      # It is linted because it is what the pull request list, the merge
+      # commit's body and every notification show, and a title that disagrees
+      # with the commits under it is how somebody comes to believe a `chore`
+      # title holds back a `feat` commit. The commits are linted in the next
+      # step, and those are the ones that release.
       - name: Lint PR title
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
