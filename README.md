@@ -13,11 +13,23 @@ no cloud backend, no remote model, no proxy server.
 > privately; the [issues list](https://github.com/scottmallinson/chief.ai/issues) is the public
 > queue, and [CONTRIBUTING.md](CONTRIBUTING.md) says how to pick something up.
 
+## Download
+
+**[chief-ai-five.vercel.app](https://chief-ai-five.vercel.app)** — the site works out which build
+you want and leads with it. Every bundle is also on
+[the latest release](https://github.com/scottmallinson/chief.ai/releases/latest).
+
+That URL is written down because it is not guessable: `vercel.app` subdomains are global across
+every Vercel account, `chief-ai` was already taken by an unrelated project, and Vercel suffixed
+this one. The site is deployed from `main` on every merge, and it is the only address that serves
+Chief.
+
 ## Requirements
 
-Chief ships installers for **macOS (Apple silicon and Intel) and Windows**. There is no Linux
-bundle, but Linux is a perfectly good place to develop on — every quick check runs there, and the
-frontend runs on its own in a browser with no Rust toolchain at all.
+Chief ships installers for **macOS (Apple silicon and Intel), Windows and Linux** — the Linux
+build is one x64 compile packaged as an `.AppImage`, a `.deb` and an `.rpm`. Linux is also where
+every quick check runs, and the frontend runs on its own in a browser with no Rust toolchain at
+all.
 
 - [Node.js](https://nodejs.org) 20.19+ and [pnpm](https://pnpm.io) (`corepack enable`)
 - [Rust](https://rustup.rs) 1.77.2+

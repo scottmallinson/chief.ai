@@ -788,7 +788,11 @@ shell rather than changes to it.
 ## The website
 
 `website/` is the public site — hand-written static HTML deployed by Vercel, with no build step and
-no framework. It shares the app's design system: the tokens in `website/styles.css` mirror
+no framework. **It is served at `chief-ai-five.vercel.app`**, and that is worth knowing rather than
+deriving: `vercel.app` subdomains are global across every Vercel account, `chief-ai` belongs to an
+unrelated project, and Vercel suffixed this one. Guessing the URL lands on somebody else's site,
+which answers 200 and — being a single-page app — serves its own HTML for `/support.js` too, so the
+guess fails in a way that looks like a pass. The README carries it for the same reason. It shares the app's design system: the tokens in `website/styles.css` mirror
 `src/styles/globals.css`, and a colour or a size that changes in one changes in the other.
 
 - **Nothing is fetched from anywhere.** `vercel.json` sets a Content-Security-Policy of
