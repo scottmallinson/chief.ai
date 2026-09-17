@@ -67,11 +67,29 @@ not depend on `gtk` directly — seven crates in Tauri's own stack pin `gtk` 0.1
 where that is read off. So the move is Tauri's to make. Dependabot is still right to raise the
 alert and right not to offer a pull request — there is no version _Chief_ can bump to.
 
-**What a Linux user is carrying.** Unsoundness in two iterator implementations in a crate Chief
-never calls, reached only through the webview's own GTK3 bindings. It is not a remote-code-execution
-primitive and there is no known exploit path through Tauri; it is accepted on those terms rather
-than on the previous "it is not shipped at all", which was the stronger claim and is no longer
-available.
+**What a Linux user is carrying — measured, not assumed.** The unsound code is compiled into the
+Linux binary. Nothing reaches it.
+
+`VariantStrIter` can only be obtained from `Variant::array_iter_str`, which is the single public
+door to it — the constructor is `pub(crate)`. A search across every `.rs` file in Chief's Linux
+dependency tree (391 crates, 12,581 files) finds `array_iter_str` and `VariantStrIter` **only
+inside `glib` itself**. Not in `gtk`, `gdk`, `gio`, `webkit2gtk`, `tao`, `wry`, `muda` or any
+`tauri-*` crate, all of which are present and searched. A control search for `g_variant_get_child`
+over the same files returns `glib` and `glib-sys` and nothing else, which is what makes the first
+result a finding rather than an empty grep:
+
+```bash
+grep -rl --include='*.rs' -E 'array_iter_str|VariantStrIter' ~/.cargo/registry/src/
+```
+
+`array_iter_str` also checks the variant's type before it hands back the iterator, so the
+type-mismatch path is closed; what the advisory is about is the `&'a str` the iterator borrows and
+the unchecked pointer behind it, and neither is reachable without calling it.
+
+So the exposure today is a dead API in a linked crate, not a live path. **The residual risk is
+forward-looking**: this stops being true the moment anything in the tree starts calling
+`array_iter_str`, and nothing warns when that happens. Re-run the search above when Tauri's Linux
+stack moves, rather than trusting this paragraph.
 
 **Revisit when** Tauri's stack moves to `gtk` 0.19 or off GTK3 — either now closes it, and the
 first is newly plausible. Failing that, **2027-02-28**.
