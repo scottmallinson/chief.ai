@@ -1070,7 +1070,7 @@ changes, which is why each one carries its trigger as well as its date.
 `.github/workflows/release.yml` runs on every push to `main`, and can still be started by hand
 from the Actions tab for a specific `ref`. It runs the checks first, and then one Linux job decides
 whether what has landed since the last tag is worth releasing. If it is, that job _is_ the release:
-the new version is written into the five files that carry it, `CHANGELOG.md` gains an entry, the
+the new version is written into every file that carries it, `CHANGELOG.md` gains an entry, the
 website's changelog page is regenerated from it, all of them are committed back to `main` and
 tagged, and the bundles — two macOS architectures, Windows, and Linux packaged as an `.AppImage`,
 a `.deb` and an `.rpm` — build and publish against that tag. Each bundle job checks the filenames
