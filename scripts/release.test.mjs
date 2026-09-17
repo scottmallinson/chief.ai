@@ -212,6 +212,30 @@ describe('the files that carry the version', () => {
 // them. `website/index.html`'s two fallbacks sat at 0.4.0 through two releases
 // precisely because nothing asserted the end of this path, so this drives the
 // real files through `writeVersion` and reads the result back.
+// CLAUDE.md states how many files carry the version, and that number drifted
+// twice while `VERSIONED` grew underneath it — once to four, once to five,
+// while the list said something else. Prose cannot be kept in step by
+// remembering, so it is kept in step by this.
+describe('the documented count', () => {
+  it('matches how many files VERSIONED actually names', () => {
+    const files = new Set(VERSIONED.map(({ file }) => file)).size;
+    const words = ['no', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight'];
+    const claude = fs.readFileSync(path.join(process.cwd(), 'CLAUDE.md'), 'utf8');
+
+    // Distinct files, not entries: `website/index.html` is two patterns in one
+    // file, and the sentence is about files.
+    expect(files).toBeLessThan(words.length);
+    expect(claude).toContain(`**${words[files]} files carry the version**`);
+  });
+
+  it('states that count once, so there is nowhere for it to disagree', () => {
+    const claude = fs.readFileSync(path.join(process.cwd(), 'CLAUDE.md'), 'utf8');
+    const claims = claude.match(/\b(?:one|two|three|four|five|six|seven|eight) files\b/gi) ?? [];
+
+    expect(claims).toHaveLength(1);
+  });
+});
+
 describe('writeVersion', () => {
   /** A throwaway tree holding the real versioned files at their real paths. */
   const stage = () => {
