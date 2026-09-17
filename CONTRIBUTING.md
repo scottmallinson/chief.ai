@@ -191,6 +191,13 @@ The practical consequence for you is that **the issues list is the public queue,
 way to find out whether something is already planned.** Ask. The answer is cheap to give and it is
 not a brush-off.
 
+**You will see bare codes like `REC-41`, `DLE-2` or `D9` in older commit messages.** Those are
+references into that private tracker — a decision, a defect report, or a plan section — and there
+is no public page they resolve to. They are shorthand for whoever was working from the tracker at
+the time, not a citation you need to chase: everything a commit message needs you to act on is in
+its own prose. You do not need to reproduce that shorthand in your own commits, and a plain sentence
+explaining the same reasoning is preferred over inventing a code that only means something to you.
+
 ## Releases
 
 You do not cut one, and you do not need to ask for one. Merging a `feat`, `fix`, `perf` or `revert`
