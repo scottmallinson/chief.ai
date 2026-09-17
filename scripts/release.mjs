@@ -187,6 +187,21 @@ export const VERSIONED = [
   // IP address to GitHub on page load. Stamping it here costs the site no
   // request at all.
   { file: 'website/support.js', pattern: /^const VERSION = '[^']+';$/m },
+  // The site's two static fallbacks. `support.js` overwrites both on load, so
+  // nobody with JavaScript ever reads them — which is exactly why they rotted
+  // to 0.4.0 while three releases went out. They are what a visitor sees
+  // before the script runs, or if it never does, and a number two versions old
+  // is worse than the markup carrying no claim at all. Two entries rather than
+  // one because `replaceOnce` insists on a single match per pattern, and that
+  // insistence is the thing that catches a file changing shape.
+  {
+    file: 'website/index.html',
+    pattern: /^\s*<p class="hero-note" data-download-note>Version [^<]+<\/p>$/m,
+  },
+  {
+    file: 'website/index.html',
+    pattern: /^\s*Version <span data-version>[^<]+<\/span>\./m,
+  },
 ];
 
 export function writeVersion(version, root = ROOT) {

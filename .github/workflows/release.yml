@@ -117,7 +117,7 @@ jobs:
           # from, and website/changelog.html is generated from the changelog
           # this run just wrote. Both ship with the site, so both are part of
           # the release commit rather than a follow-up nobody remembers.
-          git add package.json CHANGELOG.md src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock website/support.js website/changelog.html
+          git add package.json CHANGELOG.md src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock website/support.js website/index.html website/changelog.html
           git commit -m "chore(repo): release $VERSION"
 
           # Pushed with GITHUB_TOKEN, which by design starts no further

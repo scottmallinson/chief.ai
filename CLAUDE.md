@@ -1087,13 +1087,22 @@ YAML — nothing between a merge and a published release is checked by hand. `pn
   patch. A breaking change — `feat!:` or a `BREAKING CHANGE:` footer — is a major, except before
   1.0.0, where it is a minor: a project that is not finished should not be forced to call itself
   1.0 by its first breaking change.
-- **Five files carry the version** — `package.json`, `src-tauri/tauri.conf.json`,
-  `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `website/support.js`, which builds the site's
-  download links from it — and the script rewrites exactly one version string in each, failing if
-  it finds none or several. A test asserts each pattern still matches its real file, so
-  reformatting one of them breaks a test rather than a release. Every one of them is named in the
-  workflow's `git add`: a file the script rewrites and the commit leaves behind is a change thrown
-  away, which is what happened to `website/support.js` until it was noticed.
+- **Six files carry the version** — `package.json`, `src-tauri/tauri.conf.json`,
+  `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `website/support.js`, which builds the site's
+  download links from it, and `website/index.html`, which carries two static fallbacks — and the
+  script rewrites exactly one version string per _pattern_, failing if it finds none or several.
+  That is why `index.html` is two entries in `VERSIONED` rather than one: the single-match rule is
+  what catches a file changing shape, so it is worth keeping rather than relaxing into a global
+  replace. A test asserts each pattern still matches its real file, so reformatting one of them
+  breaks a test rather than a release. Every one of them is named in the workflow's `git add`: a
+  file the script rewrites and the commit leaves behind is a change thrown away, which is what
+  happened to `website/support.js` until it was noticed.
+- **The site's static version is a fallback, and it rotted because nobody reads it.**
+  `support.js` overwrites the hero note and the Get-Chief heading on load, so with JavaScript they
+  are always right — and they sat at 0.4.0 through two releases while nothing looked wrong. What
+  a visitor sees before the script runs, or if it never does, is still a claim the page is making,
+  so the release stamps it like any other. The lesson generalises: a value a script always
+  overwrites is a value no test and no reader will ever check.
 - **The release commit starts nothing.** It is pushed with `GITHUB_TOKEN`, and GitHub deliberately
   raises no workflow runs for those. That is now load-bearing rather than incidental: releasing on
   a push to `main` and pushing to `main` from the release would otherwise be a loop.
