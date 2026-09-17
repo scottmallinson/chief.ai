@@ -13,6 +13,7 @@ import {
   renderEntry,
   replaceOnce,
   writeChangelog,
+  writeVersion,
 } from './release.mjs';
 
 /** Build the `git log` output shape this parses, so tests read like commits. */
@@ -194,7 +195,10 @@ describe('replaceOnce', () => {
 // test that fails when one of them is reformatted or renamed.
 describe('the files that carry the version', () => {
   it.each(VERSIONED.map(({ file, pattern }) => [file, pattern]))(
-    'has exactly one version in %s',
+    // The pattern is in the title because `website/index.html` carries two of
+    // them, and two tests called the same thing tell you nothing about which
+    // one broke.
+    'has exactly one version in %s matching %s',
     (file, pattern) => {
       const contents = fs.readFileSync(path.join(process.cwd(), file), 'utf8');
       const found = contents.match(new RegExp(pattern.source, `${pattern.flags}g`)) ?? [];
@@ -202,6 +206,58 @@ describe('the files that carry the version', () => {
       expect(found).toHaveLength(1);
     },
   );
+});
+
+// The patterns matching is not the same claim as the release actually writing
+// them. `website/index.html`'s two fallbacks sat at 0.4.0 through two releases
+// precisely because nothing asserted the end of this path, so this drives the
+// real files through `writeVersion` and reads the result back.
+describe('writeVersion', () => {
+  /** A throwaway tree holding the real versioned files at their real paths. */
+  const stage = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chief-version-'));
+
+    for (const { file } of VERSIONED) {
+      const target = path.join(dir, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(path.join(process.cwd(), file), target);
+    }
+
+    return dir;
+  };
+
+  it('writes the new version into every file that carries one', () => {
+    const dir = stage();
+    writeVersion('9.9.9', dir);
+
+    for (const { file, pattern } of new Map(VERSIONED.map((v) => [v.file, v])).values()) {
+      const contents = fs.readFileSync(path.join(dir, file), 'utf8');
+      expect(contents, `${file} was not stamped`).toContain('9.9.9');
+      expect(pattern.test(contents), `${file} no longer matches its own pattern`).toBe(true);
+    }
+  });
+
+  it('leaves no stale version behind in the site the visitor reads', () => {
+    const dir = stage();
+    const before = fs.readFileSync(path.join(dir, 'website/index.html'), 'utf8');
+
+    // The fixture has to actually carry a version, or this passes by vacuum.
+    expect(before).toMatch(/Version \d+\.\d+\.\d+/);
+
+    writeVersion('9.9.9', dir);
+    const after = fs.readFileSync(path.join(dir, 'website/index.html'), 'utf8');
+
+    // Both fallbacks, named separately: one of them being right is how this
+    // was wrong before.
+    expect(after).toContain('data-download-note>Version 9.9.9');
+    expect(after).toContain('<span data-version>9.9.9</span>');
+
+    // And nothing anywhere in the page still claims an older one.
+    expect(after.match(/Version \d+\.\d+\.\d+|<span data-version>\d+\.\d+\.\d+/g)).toEqual([
+      'Version 9.9.9',
+      '<span data-version>9.9.9',
+    ]);
+  });
 });
 
 describe('writeChangelog', () => {

@@ -167,11 +167,11 @@ they are going to fail — for the feedback loop rather than for the invoice.
   minutes of somebody waiting on a release, which is the whole of the objection.
 - **The app build only runs where it answers something.** On a pull request it builds `--debug`,
   because the question is whether the platform-conditional code compiles and links, and
-  optimisation is not part of that. A release skips it entirely: the bundle jobs compile the same
-  two platforms straight afterwards, in the profile that actually ships.
+  optimisation is not part of that. A release skips it entirely: the bundle jobs compile every
+  platform straight afterwards, in the profile that actually ships.
 - **A release follows a merge, and can also be asked for.** `push` to `main`, plus
   `workflow_dispatch` taking a `ref` that defaults to `main`. It was dispatch-only for a while, to
-  spend fewer minutes on the three bundles — minutes that turn out not to be billed at all, while
+  spend fewer minutes on the bundles — minutes that turn out not to be billed at all, while
   the thing it really cost was `main` sitting on a shipped fix nobody could download because
   releasing was something a person had to remember. `scripts/release.mjs` still decides whether
   there is anything to release, so a merge of `docs` or `chore` commits ends in seconds with
@@ -788,7 +788,11 @@ shell rather than changes to it.
 ## The website
 
 `website/` is the public site — hand-written static HTML deployed by Vercel, with no build step and
-no framework. It shares the app's design system: the tokens in `website/styles.css` mirror
+no framework. **It is served at `chief-ai-five.vercel.app`**, and that is worth knowing rather than
+deriving: `vercel.app` subdomains are global across every Vercel account, `chief-ai` belongs to an
+unrelated project, and Vercel suffixed this one. Guessing the URL lands on somebody else's site,
+which answers 200 and — being a single-page app — serves its own HTML for `/support.js` too, so the
+guess fails in a way that looks like a pass. The README carries it for the same reason. It shares the app's design system: the tokens in `website/styles.css` mirror
 `src/styles/globals.css`, and a colour or a size that changes in one changes in the other.
 
 - **Nothing is fetched from anywhere.** `vercel.json` sets a Content-Security-Policy of
@@ -1052,8 +1056,13 @@ to look again. Read it before investigating an open Dependabot alert — an aler
 no pull request behind it usually means Dependabot has no version to offer, not that anybody has
 ignored it. Add to that list rather than re-deriving the analysis, and only after establishing
 whether the package reaches a shipped artifact: `cargo tree -i <crate> --target <triple>` for the
-three targets Chief bundles is what settles that for a Rust dependency, and it is what proves a
-Linux-only crate is not in any of them.
+four targets Chief bundles — `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` — is what settles that for a Rust
+dependency. **A Linux-only crate is now shipped, and used not to be.** That is the single most
+load-bearing line in this section: the `glib` advisory was accepted on the reasoning that Chief
+had no Linux bundle, so the vulnerable crate reached nothing anybody could install, and adding one
+falsified it. An advisory accepted on where Chief does _not_ ship has to be re-read whenever that
+changes, which is why each one carries its trigger as well as its date.
 
 ## Releases
 
@@ -1082,13 +1091,22 @@ YAML — nothing between a merge and a published release is checked by hand. `pn
   patch. A breaking change — `feat!:` or a `BREAKING CHANGE:` footer — is a major, except before
   1.0.0, where it is a minor: a project that is not finished should not be forced to call itself
   1.0 by its first breaking change.
-- **Five files carry the version** — `package.json`, `src-tauri/tauri.conf.json`,
-  `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `website/support.js`, which builds the site's
-  download links from it — and the script rewrites exactly one version string in each, failing if
-  it finds none or several. A test asserts each pattern still matches its real file, so
-  reformatting one of them breaks a test rather than a release. Every one of them is named in the
-  workflow's `git add`: a file the script rewrites and the commit leaves behind is a change thrown
-  away, which is what happened to `website/support.js` until it was noticed.
+- **Six files carry the version** — `package.json`, `src-tauri/tauri.conf.json`,
+  `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `website/support.js`, which builds the site's
+  download links from it, and `website/index.html`, which carries two static fallbacks — and the
+  script rewrites exactly one version string per _pattern_, failing if it finds none or several.
+  That is why `index.html` is two entries in `VERSIONED` rather than one: the single-match rule is
+  what catches a file changing shape, so it is worth keeping rather than relaxing into a global
+  replace. A test asserts each pattern still matches its real file, so reformatting one of them
+  breaks a test rather than a release. Every one of them is named in the workflow's `git add`: a
+  file the script rewrites and the commit leaves behind is a change thrown away, which is what
+  happened to `website/support.js` until it was noticed.
+- **The site's static version is a fallback, and it rotted because nobody reads it.**
+  `support.js` overwrites the hero note and the Get-Chief heading on load, so with JavaScript they
+  are always right — and they sat at 0.4.0 through two releases while nothing looked wrong. What
+  a visitor sees before the script runs, or if it never does, is still a claim the page is making,
+  so the release stamps it like any other. The lesson generalises: a value a script always
+  overwrites is a value no test and no reader will ever check.
 - **The release commit starts nothing.** It is pushed with `GITHUB_TOKEN`, and GitHub deliberately
   raises no workflow runs for those. That is now load-bearing rather than incidental: releasing on
   a push to `main` and pushing to `main` from the release would otherwise be a loop.
