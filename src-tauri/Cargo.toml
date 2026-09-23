@@ -49,7 +49,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 # A crate rather than three hand-written platform calls because the Windows one
 # would compile on Windows and nowhere else, which CLAUDE.md records as where
 # the last two bugs on `main` came from.
-sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 # PKCE: SHA-256 for the code challenge, base64url for both halves, and the
 # operating system's CSPRNG for the verifier and the state nonce.
 sha2 = "0.11"
