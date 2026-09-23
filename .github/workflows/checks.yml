@@ -204,8 +204,12 @@ jobs:
           # anything but the bundler, so without this the first build of either
           # would be a release's — after the version had been committed and
           # tagged. A debug bundle is enough to prove they compile and link.
+          #
+          # Space-separated, not `nsis,msi`: the step runs in PowerShell,
+          # which reads an unquoted comma as an array and hands the CLI one
+          # argument, `nsis msi`, that it refuses.
           - platform: windows-latest
-            bundle: --bundles nsis,msi
+            bundle: --bundles nsis msi
     steps:
       - uses: actions/checkout@v5
 
