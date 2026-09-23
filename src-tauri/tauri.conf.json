@@ -42,6 +42,15 @@
     "externalBin": ["binaries/llama-server"],
     "resources": {
       "binaries/lib/*": "./"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["windows/login-entry.wxs"],
+        "componentGroupRefs": ["ChiefLoginEntry"]
+      }
     }
   },
   "plugins": {

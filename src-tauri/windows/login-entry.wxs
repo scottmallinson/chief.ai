@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Removes the login entry when the MSI is uninstalled. See `src/login.rs`.
+
+  Unlike Tauri's NSIS uninstaller, the MSI deletes neither the `Run` value that
+  opens Chief at login nor the Task Manager `StartupApproved` value beside it,
+  so an uninstalled Chief would be started at every login and fail. Both are
+  per-user, so this runs immediately (as the user uninstalling, which is whose
+  `HKCU` the entry is in) rather than deferred as the system. It is skipped
+  during an upgrade — an upgrade must not turn the setting off — and it never
+  fails the uninstall: a value that is not there is the usual case.
+
+  Pulled into the build by the empty component group, which `tauri.conf.json`
+  references; a fragment nothing references is dropped by the linker.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <ComponentGroup Id="ChiefLoginEntry" />
+
+    <CustomAction
+      Id="ChiefRemoveLoginEntry"
+      Directory="INSTALLDIR"
+      Execute="immediate"
+      Return="ignore"
+      ExeCommand="powershell.exe -NoProfile -NonInteractive -WindowStyle hidden -Command &quot;Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Chief' -ErrorAction SilentlyContinue; Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run' -Name 'Chief' -ErrorAction SilentlyContinue&quot;" />
+
+    <InstallExecuteSequence>
+      <Custom Action="ChiefRemoveLoginEntry" Before="InstallFinalize">
+        (REMOVE = "ALL") AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

@@ -19,8 +19,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `tray-icon` so closing the window can leave Chief running; see `background.rs`.
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
+# A second launch shows the window of the Chief already running, rather than
+# starting a second daemon and a second engine beside it.
+tauri-plugin-single-instance = "2"
+# Launch at login, off until the user turns it on in Settings. Desktop only,
+# which is every platform Chief ships.
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-sql = { version = "2.4.0", features = ["sqlite"] }

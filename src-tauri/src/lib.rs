@@ -8,6 +8,7 @@
 mod adapter;
 mod agent;
 mod atlassian;
+mod background;
 mod calendar;
 mod clock;
 mod connect;
@@ -23,6 +24,7 @@ mod integrations;
 mod intent;
 mod journal;
 mod linear;
+mod login;
 mod microsoft;
 // OAuth machinery shared by every provider. Part of the crate's library API,
 // the same as `llama` below.
@@ -48,11 +50,19 @@ mod work_log;
 // orchestrator depends on.
 pub mod llama;
 
-use tauri::{Manager, RunEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // First, so a second launch hands over before it starts anything of
+        // its own. With the window hidden in the tray, launching Chief again
+        // is the obvious way to get it back, and a second process would be a
+        // second daemon and a second engine.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            background::show(app);
+        }))
+        .plugin(login::plugin())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_sql::Builder::new()
@@ -101,10 +111,27 @@ pub fn run() {
             daemon::spawn(&app.handle().clone());
             watcher::spawn(&app.handle().clone());
 
+            // And keeps running after the window closes, so the above has a
+            // process to run in.
+            background::install(&app.handle().clone());
+            // An AppImage that was updated leaves the login entry naming the
+            // old file; point it at this one.
+            login::refresh(&app.handle().clone());
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                background::close_requested(window, api);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             agent::ask_agent,
+            background::close_window,
+            background::set_keep_running,
+            background::window_behaviour,
+            login::launch_at_login,
+            login::set_launch_at_login,
             connect::add_calendar,
             connect::add_linear_key,
             connect::add_atlassian_token,
@@ -141,12 +168,14 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
+        .run(|app, event| match event {
             // The engine is our child process. Nothing else will stop it, and a
             // model left resident would hold a couple of gigabytes after the
             // window has gone.
-            if let RunEvent::Exit = event {
-                app.state::<engine::Engine>().stop();
-            }
+            RunEvent::Exit => app.state::<engine::Engine>().stop(),
+            // Clicking the Dock icon of an app whose window is hidden.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => background::show(app),
+            _ => {}
         });
 }

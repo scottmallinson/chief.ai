@@ -197,6 +197,19 @@ jobs:
         # and tagged. This is the cheapest runner there is; it is the wrong one
         # to save.
         platform: ['macos-latest', 'windows-latest', 'ubuntu-22.04']
+        include:
+          # Windows builds its installers as well as the app, because Chief
+          # hooks into both: `windows/hooks.nsh` and `windows/login-entry.wxs`
+          # remove the login entry on uninstall. Neither is compiled by
+          # anything but the bundler, so without this the first build of either
+          # would be a release's — after the version had been committed and
+          # tagged. A debug bundle is enough to prove they compile and link.
+          #
+          # Space-separated, not `nsis,msi`: the step runs in PowerShell,
+          # which reads an unquoted comma as an array and hands the CLI one
+          # argument, `nsis msi`, that it refuses.
+          - platform: windows-latest
+            bundle: --bundles nsis msi
     steps:
       - uses: actions/checkout@v5
 
@@ -213,7 +226,7 @@ jobs:
       # answers it without paying for optimisation on a runner that bills at
       # ten times Linux. The release profile is proved when a release is cut.
       - name: Build the desktop app
-        run: pnpm tauri build --no-bundle --debug
+        run: pnpm tauri build --debug ${{ matrix.bundle || '--no-bundle' }}
 
   # One context for a branch protection rule to require.
   #
