@@ -359,6 +359,10 @@ function installBackend(setup: Setup) {
             },
           ]);
 
+        // An object, never a list: the Settings card reads `tray` off it.
+        case 'window_behaviour':
+          return Promise.resolve({ tray: true, keepRunning: true, trayName: 'system tray' });
+
         case 'generate_brief':
           return Promise.resolve(setup.brief);
 

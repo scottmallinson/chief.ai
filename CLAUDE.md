@@ -703,6 +703,30 @@ model to turn each merge into a one-sentence achievement, and write it to `work_
 - `run_once` takes a `Context` rather than an `AppHandle`, so a whole pass runs in tests against an
   in-memory database and stub GitHub and engine servers.
 
+## Staying open when the window closes
+
+`src-tauri/src/background.rs` keeps the process alive after the window closes, which is what the
+daemon, the watcher and the brief were written for: a brief is meant to be waiting when the user
+opens Chief, not started by opening it.
+
+- **Closing hides; Quit is in the tray menu.** The menu is Open, Sync now and Quit. Quit goes
+  through `app.exit`, so `RunEvent::Exit` still stops the engine. The engine's idle timeout
+  already gives the model's memory back, so what stays resident is a small process and a hidden
+  webview.
+- **The first close asks.** The choice lives in `settings` under `window.keep_running` and is
+  absent until the user has made one. That absence is what makes the first close a question
+  rather than a default. The renderer shows the question (`CloseQuestion`) and Settings can change
+  the answer. A second close in the same process takes the default without asking, so a renderer
+  that cannot show the question costs one click and never the ability to close the window.
+- **No tray, no hiding.** On Linux the tray library is loaded at run time and the crate _panics_
+  when there is none, so the build is wrapped in `catch_unwind` and a machine without one quits
+  on close exactly as before. `decide` is pure, and
+  `a_machine_with_no_tray_quits_whatever_was_chosen` guards it.
+- **Launching Chief again shows the one already running.** `tauri-plugin-single-instance` does this
+  on Windows and Linux, and `RunEvent::Reopen` does it on macOS. It is also the only way back on a
+  Linux desktop whose tray exists but is not shown (GNOME without an extension), because nothing
+  can tell from inside the app that the icon is invisible.
+
 ## First-run setup
 
 `src-tauri/src/setup.rs` answers one question for the frontend: can this machine answer anything

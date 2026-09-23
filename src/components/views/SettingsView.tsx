@@ -13,6 +13,7 @@ import { AtlassianToken } from '@/components/AtlassianToken';
 import { LinearKey } from '@/components/LinearKey';
 import { SignInRegistration } from '@/components/SignInRegistration';
 import { runDoctor, type Report } from '@/lib/doctor';
+import { setKeepRunning, windowBehaviour, type WindowBehaviour } from '@/lib/background';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
 import { useIntegrations, type UseIntegrations } from '@/hooks/use-integrations';
@@ -468,6 +469,99 @@ function Corpus() {
 }
 
 /**
+ * Whether closing the window leaves Chief running in the tray.
+ *
+ * The first close asks; this is where the answer can be changed afterwards. A
+ * machine with no tray is told so rather than offered a switch that does
+ * nothing: hiding a window with no icon to bring it back would leave a process
+ * nobody can reach.
+ */
+function WhenClosed() {
+  const [behaviour, setBehaviour] = useState<WindowBehaviour | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    windowBehaviour()
+      .then((current) => {
+        if (!cancelled) setBehaviour(current);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setProblem(error instanceof Error ? error.message : String(error));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const choose = async (keepRunning: boolean) => {
+    if (behaviour === null) return;
+
+    try {
+      await setKeepRunning(keepRunning);
+      setBehaviour({ ...behaviour, keepRunning });
+      setProblem(null);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  return (
+    <SettingsSection
+      title="When the window closes"
+      description="Chief can keep running in the background so the work log, today's brief and drafts are ready when you open it. It reads the same accounts either way, and the model gives its memory back when it is not being used."
+      state={
+        behaviour === null ? (
+          <Chip tone="quiet">Checking</Chip>
+        ) : !behaviour.tray ? (
+          <Chip tone="quiet">Quits</Chip>
+        ) : behaviour.keepRunning === true ? (
+          <Chip tone="verified" dot>
+            Keeps running
+          </Chip>
+        ) : behaviour.keepRunning === false ? (
+          <Chip tone="quiet">Quits</Chip>
+        ) : (
+          <Chip tone="quiet">Not chosen</Chip>
+        )
+      }
+    >
+      {behaviour !== null && !behaviour.tray && (
+        <p className="mt-3 text-sm text-muted-foreground">
+          This desktop has no {behaviour.trayName} Chief could put an icon in, so closing the window
+          quits Chief.
+        </p>
+      )}
+
+      {behaviour?.tray && (
+        <>
+          <label className="mt-3 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={behaviour.keepRunning === true}
+              onChange={(event) => void choose(event.target.checked)}
+              className="size-4 accent-primary"
+            />
+            Keep running in the {behaviour.trayName} when the window is closed
+          </label>
+          <p className="mt-2 text-[13px] leading-snug text-muted-foreground">
+            {behaviour.keepRunning === null
+              ? 'Chief will ask the first time you close the window. '
+              : ''}
+            Quit Chief from its icon in the {behaviour.trayName}. Opening Chief again brings the
+            window back.
+          </p>
+        </>
+      )}
+
+      {problem && <p className="mt-3 text-sm text-attention-text">{problem}</p>}
+    </SettingsSection>
+  );
+}
+
+/**
  * The engine, and the model it is actually serving.
  *
  * The name was written into this file, which made it wrong the moment there
@@ -688,6 +782,7 @@ export function SettingsView() {
             <ProfileBootstrap />
           </SettingsSection>
           <ThisMachine />
+          <WhenClosed />
           <Calendars integrations={integrations} />
           <Linear integrations={integrations} />
           <Integration

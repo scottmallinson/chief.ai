@@ -95,12 +95,16 @@ function connected(accounts: unknown[], reconnected = false) {
   return { accounts, account: accounts.at(-1), reconnected };
 }
 
+/** What `window_behaviour` answers on a machine with a tray and a choice made. */
+const KEEPS_RUNNING = { tray: true, keepRunning: true, trayName: 'system tray' };
+
 function answering(value: unknown, syncStates: unknown[] = [], registrations = BUILT_IN) {
   invoke.mockImplementation((command: string) => {
     if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
     if (command === 'sync_status') return Promise.resolve(syncStates);
     if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
     if (command === 'sign_in_registrations') return Promise.resolve(registrations);
+    if (command === 'window_behaviour') return Promise.resolve(KEEPS_RUNNING);
     if (command === 'finish_login') {
       return Promise.resolve(connected(Array.isArray(value) ? value : []));
     }
@@ -986,6 +990,59 @@ describe('SettingsView', () => {
       const scope = await screen.findByText('repo');
 
       expect(scope.parentElement?.textContent).toMatch(/read .*and write/);
+    });
+  });
+  describe('when the window closes', () => {
+    function behaving(behaviour: unknown) {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'sync_status') return Promise.resolve([]);
+        if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
+        if (command === 'window_behaviour') return Promise.resolve(behaviour);
+        return Promise.resolve([]);
+      });
+    }
+
+    it('stores the choice when the box is unticked', async () => {
+      behaving(KEEPS_RUNNING);
+
+      render(<SettingsView />);
+
+      const box = await screen.findByRole('checkbox', {
+        name: 'Keep running in the system tray when the window is closed',
+      });
+      expect(box).toBeChecked();
+
+      await userEvent.click(box);
+
+      expect(invoke).toHaveBeenCalledWith('set_keep_running', { keepRunning: false });
+      await waitFor(() => expect(box).not.toBeChecked());
+    });
+
+    it('says it will ask when nothing has been chosen', async () => {
+      behaving({ ...KEEPS_RUNNING, keepRunning: null });
+
+      render(<SettingsView />);
+
+      expect(
+        await screen.findByText(/will ask the first time you close the window/),
+      ).toBeInTheDocument();
+    });
+
+    /**
+     * A switch that did nothing would be worse than none: hiding the window
+     * with no icon to bring it back leaves a process nobody can reach, which
+     * is why the backend quits on such a machine whatever was chosen.
+     */
+    it('offers no switch on a desktop with no tray', async () => {
+      behaving({ tray: false, keepRunning: true, trayName: 'system tray' });
+
+      render(<SettingsView />);
+
+      expect(await screen.findByText(/closing the window\s+quits Chief/)).toBeInTheDocument();
+      expect(
+        screen.queryByRole('checkbox', { name: /Keep running in the/ }),
+      ).not.toBeInTheDocument();
     });
   });
 });
