@@ -16,3 +16,7 @@ CHANGELOG.md
 # compares it against what that script writes, which is a stricter check than
 # formatting it would be.
 website/changelog.html
+
+# WiX source for the MSI installer. Prettier has no parser for it and mistakes
+# the extension for one it does.
+src-tauri/windows/*.wxs

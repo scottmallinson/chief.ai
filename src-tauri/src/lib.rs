@@ -24,6 +24,7 @@ mod integrations;
 mod intent;
 mod journal;
 mod linear;
+mod login;
 mod microsoft;
 // OAuth machinery shared by every provider. Part of the crate's library API,
 // the same as `llama` below.
@@ -61,7 +62,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             background::show(app);
         }))
-        .plugin(background::autostart())
+        .plugin(login::plugin())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_sql::Builder::new()
@@ -113,6 +114,9 @@ pub fn run() {
             // And keeps running after the window closes, so the above has a
             // process to run in.
             background::install(&app.handle().clone());
+            // An AppImage that was updated leaves the login entry naming the
+            // old file; point it at this one.
+            login::refresh(&app.handle().clone());
 
             Ok(())
         })
@@ -124,10 +128,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent::ask_agent,
             background::close_window,
-            background::launch_at_login,
             background::set_keep_running,
-            background::set_launch_at_login,
             background::window_behaviour,
+            login::launch_at_login,
+            login::set_launch_at_login,
             connect::add_calendar,
             connect::add_linear_key,
             connect::add_atlassian_token,

@@ -28,15 +28,10 @@
 //!   GNOME without an extension — where nothing here can tell the icon is
 //!   invisible.
 //!
-//! **Launching at login is opt-in, and off until the user turns it on.** An
-//! app that adds itself to somebody's login is doing something to their
-//! machine rather than inside itself. So nothing enables it except the Settings
-//! switch, and the operating system's own entry — a Run key on Windows, a
-//! Launch Agent on macOS, an autostart `.desktop` file on Linux — is the only
-//! record, so the switch cannot disagree with what will actually happen. A
-//! launch at login passes [`LAUNCHED_AT_LOGIN`] and starts in the tray rather
-//! than opening a window, unless there is no tray, in which case the window is
-//! the only way to reach Chief and it opens as usual.
+//! A launch at login — see [`crate::login`] — passes [`LAUNCHED_AT_LOGIN`]
+//! and starts in the tray rather than opening a window, unless there is no
+//! tray, in which case the window is the only way to reach Chief and it opens
+//! as usual.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,10 +41,9 @@ use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, CloseRequestApi, Emitter, Manager, Runtime, Window};
 
-use tauri_plugin_autostart::ManagerExt;
-
 use crate::daemon;
 use crate::db;
+use crate::login::LAUNCHED_AT_LOGIN;
 use crate::settings;
 
 /// Where the choice is stored: `true` to keep running, `false` to quit.
@@ -63,10 +57,6 @@ const MAIN: &str = "main";
 
 /// Emitted to the window the first time it is closed with no choice stored.
 const ASK_EVENT: &str = "close-to-tray-question";
-
-/// The argument the login entry launches Chief with, so a launch at login can
-/// be told apart from somebody opening it.
-const LAUNCHED_AT_LOGIN: &str = "--launched-at-login";
 
 /// The tray menu's items, by id.
 const OPEN: &str = "open";
@@ -354,37 +344,6 @@ pub async fn set_keep_running<R: Runtime>(
     Ok(())
 }
 
-/// The plugin that writes and removes the login entry.
-///
-/// Registered in `lib.rs` but never granted to the renderer: the switch goes
-/// through [`set_launch_at_login`], like every other setting.
-pub fn autostart<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
-    tauri_plugin_autostart::Builder::new()
-        .arg(LAUNCHED_AT_LOGIN)
-        .build()
-}
-
-/// Whether Chief is set to launch at login, as the operating system has it.
-#[tauri::command]
-pub fn launch_at_login<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
-    app.autolaunch()
-        .is_enabled()
-        .map_err(|error| error.to_string())
-}
-
-/// Turn launching at login on or off.
-#[tauri::command]
-pub fn set_launch_at_login<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Result<(), String> {
-    let login = app.autolaunch();
-    let changed = if enabled {
-        login.enable()
-    } else {
-        login.disable()
-    };
-
-    changed.map_err(|error| error.to_string())
-}
-
 /// Finish the close the question interrupted, now that there is an answer.
 #[tauri::command]
 pub fn close_window<R: Runtime>(app: AppHandle<R>) {
@@ -406,10 +365,9 @@ pub fn close_window<R: Runtime>(app: AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        decide, parse, remember, starts_hidden, stored, Background, OnClose, LAUNCHED_AT_LOGIN,
-    };
+    use super::{decide, parse, remember, starts_hidden, stored, Background, OnClose};
     use crate::db::test_support::migrated_pool;
+    use crate::login::LAUNCHED_AT_LOGIN;
     use std::sync::atomic::Ordering;
 
     #[test]

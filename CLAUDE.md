@@ -167,7 +167,8 @@ they are going to fail — for the feedback loop rather than for the invoice.
   minutes of somebody waiting on a release, which is the whole of the objection.
 - **The app build only runs where it answers something.** On a pull request it builds `--debug`,
   because the question is whether the platform-conditional code compiles and links, and
-  optimisation is not part of that. A release skips it entirely: the bundle jobs compile every
+  optimisation is not part of that. On Windows it also bundles the NSIS and MSI installers,
+  because Chief hooks into both and nothing else compiles those hooks before a release does. A release skips it entirely: the bundle jobs compile every
   platform straight afterwards, in the profile that actually ships.
 - **A release follows a merge, and can also be asked for.** `push` to `main`, plus
   `workflow_dispatch` taking a `ref` that defaults to `main`. It was dispatch-only for a while, to
@@ -726,15 +727,26 @@ opens Chief, not started by opening it.
   on Windows and Linux, and `RunEvent::Reopen` does it on macOS. It is also the only way back on a
   Linux desktop whose tray exists but is not shown (GNOME without an extension), because nothing
   can tell from inside the app that the icon is invisible.
-- **Launching at login is opt-in, and off until the user turns it on** in Settings.
-  `tauri-plugin-autostart` writes the operating system's own entry (a Run key on Windows, a Launch
-  Agent on macOS, an autostart `.desktop` file on Linux), and that entry is the only record, so
-  the switch reads it back rather than trusting a stored copy. The renderer is not granted the
+- **Launching at login is opt-in, and off until the user turns it on** in Settings. It lives in
+  `src-tauri/src/login.rs`. The operating system's own entry is the only record of it, so the
+  switch reads it back rather than trusting a stored copy. The renderer is not granted the
   plugin's permissions; the switch goes through `set_launch_at_login` like any other setting. A
   login launch passes `--launched-at-login` and hides the window it opened with, unless there is
   no tray, in which case the window stays open (`starts_hidden`). The window from
   `tauri.conf.json` is shown by default and hidden on that condition, rather than the other way
   round, so a mistake here opens a window at login rather than leaving a Chief nobody can find.
+- **An entry left behind by an uninstall does nothing.** Chief's code is gone by then, so each
+  platform covers it where it can. On **Windows** the installers do it: Tauri's NSIS uninstaller
+  deletes the `Run` value, `windows/hooks.nsh` deletes the Task Manager `StartupApproved` value
+  beside it, and `windows/login-entry.wxs` deletes both for the MSI, which deletes neither. None
+  of them do it on an update, or every upgrade would turn the setting off. **Linux** and
+  **macOS** have nothing that runs at uninstall for a file in somebody's home, so Chief writes
+  those entries itself rather than through the plugin: the Linux `.desktop` file carries
+  `TryExec`, which makes the desktop ignore it once the program is gone, and the macOS Launch
+  Agent opens Chief with `open -b <bundle id>` rather than by path, so a deleted app is not found
+  and a moved one still is. `login::refresh` points an existing Linux entry at the running copy
+  on every launch, because an AppImage carries its version in its file name. The CI app build
+  bundles the Windows installers, not just the app, because nothing else compiles those two hooks.
 
 ## First-run setup
 
