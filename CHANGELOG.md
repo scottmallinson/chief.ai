@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 (2026-09-23)
+
+### Features
+
+- **ui:** draw scrollbars in the Instrument style ([8336d06](https://github.com/scottmallinson/chief.ai/commit/8336d063fc91d08e47e742dbfcb89f6e0dc6f7a2))
+
 ## 0.7.0 (2026-09-23)
 
 ### Features
