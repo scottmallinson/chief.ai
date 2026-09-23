@@ -52,13 +52,11 @@ export default defineConfig<ShellOptions>({
       use: { ...devices['Desktop Chrome'], viewport: { width: 720, height: 480 } },
     },
     {
-      // Windows draws scrollbars that take space out of the layout rather than
-      // floating over it, which is where the original break was reported.
-      // Playwright hides scrollbars in headless Chromium by default, which no
-      // real user ever sees, so this project puts them back. That is enough on
-      // Linux, where CI runs; on macOS Chromium follows the OS and overlays them
-      // whatever the flags say, so `classicScrollbars` also has the fixture
-      // style the scrollbar, which forces a non-overlay one on any host.
+      // Chief draws its own 10px scrollbar, which takes space out of the layout
+      // on every platform. Playwright hides scrollbars in headless Chromium by
+      // default, which no real user ever sees, so this project puts them back
+      // and measures the one that ships. Chromium is the engine of WebView2, so
+      // this is the Windows build's scrollbar.
       name: 'classic scrollbars',
       testIgnore: SITE_TESTS,
       use: {
@@ -66,6 +64,19 @@ export default defineConfig<ShellOptions>({
         viewport: { width: 1085, height: 660 },
         classicScrollbars: true,
         launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] },
+      },
+    },
+    {
+      // WebKit is the engine of both other webviews Chief ships in — WKWebView
+      // on macOS and WebKitGTK on Linux — and it styles scrollbars through the
+      // same pseudo-elements by a separate implementation. Every app test runs
+      // here too, so a rule one engine honours and the other ignores fails.
+      name: 'webkit',
+      testIgnore: SITE_TESTS,
+      use: {
+        ...devices['Desktop Safari'],
+        viewport: { width: 1085, height: 660 },
+        classicScrollbars: true,
       },
     },
     {

@@ -59,9 +59,12 @@ That takes a while the first time. While you are working, run the job that cover
 | ---------------------- | --------------------------------------------- | -------------------------- |
 | `pnpm verify:commits`  | Your commit messages                          | instant                    |
 | `pnpm verify:frontend` | Format, lint, typecheck, unit tests, bundle   | ~1 min                     |
-| `pnpm verify:layout`   | Playwright layout tests, in a real browser    | ~35 s                      |
+| `pnpm verify:layout`   | Playwright layout tests, in real browsers     | ~1.5 min                   |
 | `pnpm verify:rust`     | `rustfmt`, clippy with warnings denied, tests | ~4 min                     |
 | `pnpm verify:app`      | The desktop app compiles and links            | ~7 min cold, far less warm |
+
+The layout tests run in Chromium and in WebKit — between them the engines of every webview Chief
+ships in — so install both once with `pnpm exec playwright install chromium webkit`.
 
 `pnpm fix` formats and auto-fixes most of what `verify:frontend` would complain about. Run it
 before `verify`, not after.

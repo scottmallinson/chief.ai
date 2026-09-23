@@ -116,24 +116,25 @@ jobs:
 
       - uses: ./.github/actions/setup-node
 
-      # Chromium is ~150 MB and the pinned version only changes when the
-      # Playwright dependency does, so the lockfile is the cache key.
-      - name: Restore the browser
+      # The browsers are a few hundred MB and the pinned versions only change
+      # when the Playwright dependency does, so the lockfile is the cache key.
+      - name: Restore the browsers
         uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          key: playwright-chromium-webkit-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
       # The system libraries are apt packages rather than part of the cache,
       # so they are installed either way.
-      - name: Install Chromium's system libraries
-        run: pnpm exec playwright install-deps chromium
+      - name: Install the browsers' system libraries
+        run: pnpm exec playwright install-deps chromium webkit
 
-      # Only Chromium: these tests measure Chief's own layout, not how it
-      # renders across engines, and the shipped webviews are not available
-      # here. A restored cache makes this a no-op rather than a download.
-      - name: Install Chromium
-        run: pnpm exec playwright install chromium
+      # Chromium is WebView2's engine and WebKit is WKWebView's and
+      # WebKitGTK's, so between them they cover the engines of all three
+      # platforms Chief ships on — not the webviews themselves, which are not
+      # available here. A restored cache makes this a no-op, not a download.
+      - name: Install the browsers
+        run: pnpm exec playwright install chromium webkit
 
       - name: Test
         run: pnpm test:e2e

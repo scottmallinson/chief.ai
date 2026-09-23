@@ -147,16 +147,15 @@ export interface Position {
 export interface ShellOptions {
   /**
    * Whether this project renders scrollbars that take space out of the layout,
-   * the way Windows does, rather than ones that take none, the way macOS does.
+   * rather than ones that take none.
    *
-   * Turning it on takes two things, and this flag drives both. The project's
-   * `launchOptions` pass `ignoreDefaultArgs: ['--hide-scrollbars']`, because
-   * Playwright hides scrollbars in headless Chromium by default, which no real
-   * user ever sees. That alone is enough on Linux, where CI runs — but not on
-   * macOS, where Chromium takes its scrollbar style from the OS and draws
-   * overlay scrollbars whatever the flags say. So {@link CLASSIC_SCROLLBARS} is
-   * installed on top: a styled scrollbar is a custom one, and a custom one is
-   * never an overlay on any host. One test checks the pair agree, so this
+   * Chief draws its own scrollbar, and a styled scrollbar is never an overlay,
+   * so the real product takes 10px out of the layout on every platform. What
+   * hides that here is Playwright: headless Chromium runs with
+   * `--hide-scrollbars` by default, which no real user ever sees. A project
+   * that sets this flag passes `ignoreDefaultArgs: ['--hide-scrollbars']` and
+   * then measures the scrollbar Chief actually ships. WebKit has no such flag
+   * and always draws it. One test checks the flag and the browser agree, so a
    * project cannot quietly become a second copy of the default one.
    */
   classicScrollbars: boolean;
@@ -456,20 +455,7 @@ function settle(page: Page): Promise<void> {
   return page.evaluate(() => (window as unknown as { __chief: Bridge }).__chief.settle());
 }
 
-/**
- * A scrollbar that takes space out of the layout, on any host.
- *
- * 15px is what Chromium gives a Windows scrollbar at 100% scaling, which is the
- * layout this stands in for. It is applied to the test page rather than shipped:
- * Chief's own CSS leaves scrollbars to the platform, and the point here is to
- * measure the app under a platform that draws them wide.
- */
-const CLASSIC_SCROLLBARS = `
-  ::-webkit-scrollbar { width: 15px; height: 15px; }
-  ::-webkit-scrollbar-thumb { background: #8883; }
-`;
-
-function handleFor(page: Page, classicScrollbars: boolean): Chief {
+function handleFor(page: Page): Chief {
   const composer = page.getByRole('textbox', { name: 'Message your chief of staff' });
 
   return {
@@ -489,7 +475,6 @@ function handleFor(page: Page, classicScrollbars: boolean): Chief {
       });
 
       await page.goto('/');
-      if (classicScrollbars) await page.addStyleTag({ content: CLASSIC_SCROLLBARS });
       // The shell, not the composer: chat is a drawer now and is not on screen
       // until somebody opens it.
       await page.getByRole('navigation', { name: 'Main' }).waitFor();
@@ -591,8 +576,8 @@ function handleFor(page: Page, classicScrollbars: boolean): Chief {
 export const test = base.extend<ShellOptions & { chief: Chief }>({
   classicScrollbars: [false, { option: true }],
 
-  chief: async ({ page, classicScrollbars }, use) => {
-    await use(handleFor(page, classicScrollbars));
+  chief: async ({ page }, use) => {
+    await use(handleFor(page));
   },
 });
 
