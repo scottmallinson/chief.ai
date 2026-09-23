@@ -460,9 +460,9 @@ function settle(page: Page): Promise<void> {
  * A scrollbar that takes space out of the layout, on any host.
  *
  * 15px is what Chromium gives a Windows scrollbar at 100% scaling, which is the
- * layout this stands in for. It is applied to the test page rather than shipped:
- * Chief's own CSS leaves scrollbars to the platform, and the point here is to
- * measure the app under a platform that draws them wide.
+ * layout this stands in for — wider than the 10px Chief ships, and injected
+ * after it so it wins, because the point here is to measure the app under the
+ * widest gutter a platform could take out of it.
  */
 const CLASSIC_SCROLLBARS = `
   ::-webkit-scrollbar { width: 15px; height: 15px; }

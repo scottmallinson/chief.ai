@@ -813,6 +813,12 @@ to the system rather than to one screen.
   which is a CSS transition delay rather than the platform's own `title` timing. The header says
   where the data is on every screen. `e2e/shell.spec.ts` measures all of this in a real browser,
   because jsdom reports every height as zero.
+- **Scrollbars are drawn by the system, not the platform.** A 10px gutter, a transparent track
+  and a 6px grey thumb (`--scrollbar-thumb`) that darkens under the pointer, via the
+  `::-webkit-scrollbar` pseudo-elements that WKWebView, WebView2 and WebKitGTK all honour. Never
+  set `scrollbar-width` or `scrollbar-color` alongside them: in Chromium, and so WebView2, either
+  one silently switches the pseudo-elements off. A styled scrollbar is never an overlay, so on
+  macOS it takes its 10px out of the layout the way a Windows one always did.
 - **Four things may move, and only while work is in flight** (`src/components/ui/activity.tsx`).
   The mark turns half a revolution over 2.4s once a question is dispatched; a 3px slate hairline
   sweeps every 1.4s while a tool runs, captioned with the step actually running; a 1px caret sits at

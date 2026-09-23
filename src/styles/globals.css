@@ -48,6 +48,8 @@
   --sidebar-accent: #e0e3de;
   --sidebar-accent-foreground: #14171a;
   --sidebar-border: #d6d9d4;
+  --scrollbar-thumb: #c9ccc7;
+  --scrollbar-thumb-hover: #a4a9a3;
 
   /*
    * Signal colours. Each has a fill, a tint to sit small text on, and the text
@@ -92,6 +94,8 @@
   --sidebar-accent: #282e33;
   --sidebar-accent-foreground: #edefec;
   --sidebar-border: rgb(237 239 236 / 10%);
+  --scrollbar-thumb: rgb(237 239 236 / 14%);
+  --scrollbar-thumb-hover: rgb(237 239 236 / 26%);
 
   /* Amber is the one colour that changes role between themes: on paper it
      fills and #8A5510 carries the text; on graphite #D9903A does both. */
@@ -266,6 +270,46 @@
   [contenteditable='true'],
   [data-selectable] {
     user-select: text;
+  }
+
+  /*
+   * Scrollbars are the system's, not the platform's: a 10px gutter with a
+   * transparent track and a 6px grey thumb inset by a transparent border, so
+   * a scrolling region reads as a hairline instrument rather than a grey slab
+   * of OS chrome. Grey, because a scrollbar is neither a signal nor a control
+   * that needs the eye — it darkens under the pointer and while dragged.
+   *
+   * These are the `::-webkit-scrollbar` pseudo-elements because every webview
+   * Chief ships in — WKWebView, WebView2, WebKitGTK — honours them.
+   * `scrollbar-width` and `scrollbar-color` are deliberately not set: in
+   * Chromium, and so WebView2, either one switches these rules off.
+   */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    min-height: 32px;
+    border: 2px solid transparent;
+    border-radius: calc(var(--radius) - 4px);
+    background-clip: padding-box;
+    background-color: var(--scrollbar-thumb);
+  }
+
+  ::-webkit-scrollbar-thumb:hover,
+  ::-webkit-scrollbar-thumb:active {
+    background-color: var(--scrollbar-thumb-hover);
+  }
+
+  ::-webkit-scrollbar-button {
+    display: none;
   }
 
   /* Focus is always a 3px slate ring, on every platform. */
