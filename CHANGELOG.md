@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 (2026-09-23)
+
+### Features
+
+- **tauri:** leave no working login entry behind when Chief is removed ([71cec72](https://github.com/scottmallinson/chief.ai/commit/71cec72476c8a72e451ec70b1b999018f7f5c9b5))
+- **tauri:** open Chief at login, when the user asks for it ([bc47acd](https://github.com/scottmallinson/chief.ai/commit/bc47acd6c027f14af03d0b01625d9e63c91670ba))
+- **tauri:** keep running in the tray when the window closes ([dfe5ffa](https://github.com/scottmallinson/chief.ai/commit/dfe5ffa0837b0aeeb06e106f254bf302bccad502))
+
 ## 0.6.0 (2026-09-16)
 
 ### Features
