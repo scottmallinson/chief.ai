@@ -76,7 +76,7 @@ that part:
 | ---------------------- | -------------------- | -------------------------- |
 | `pnpm verify:commits`  | Conventional Commits | instant                    |
 | `pnpm verify:frontend` | Frontend             | ~1 min                     |
-| `pnpm verify:layout`   | Layout               | ~35 s                      |
+| `pnpm verify:layout`   | Layout               | ~1.5 min                   |
 | `pnpm verify:rust`     | Rust                 | ~4 min                     |
 | `pnpm verify:app`      | App build            | ~7 min cold, far less warm |
 
@@ -122,7 +122,7 @@ they are going to fail — for the feedback loop rather than for the invoice.
   object, `null == false` is false, and gating on the flag alone would disable the manual trigger.
 - **Cancel superseded runs.** Pushing again to a pull request cancels the run it replaced.
 - **Cache anything downloaded twice** — the pnpm store, the cargo registry and target directory,
-  and Chromium for the layout tests.
+  and Chromium and WebKit for the layout tests.
 - **`main` is not built.** CI runs on pull requests only. A branch has to be up to date with
   `main` before it can merge, so the tree a pull request proves green is the tree the merge
   produces; running the same jobs again on the merge commit would pay twice for an answer already
@@ -818,7 +818,9 @@ to the system rather than to one screen.
   `::-webkit-scrollbar` pseudo-elements that WKWebView, WebView2 and WebKitGTK all honour. Never
   set `scrollbar-width` or `scrollbar-color` alongside them: in Chromium, and so WebView2, either
   one silently switches the pseudo-elements off. A styled scrollbar is never an overlay, so on
-  macOS it takes its 10px out of the layout the way a Windows one always did.
+  macOS it takes its 10px out of the layout the way a Windows one always did. The `classic
+scrollbars` (Chromium) and `webkit` layout projects both assert the gutter is exactly 10px — the
+  engines' own are 15px or an overlay — so a rule one engine drops fails in CI.
 - **Four things may move, and only while work is in flight** (`src/components/ui/activity.tsx`).
   The mark turns half a revolution over 2.4s once a question is dispatched; a 3px slate hairline
   sweeps every 1.4s while a tool runs, captioned with the step actually running; a 1px caret sits at
@@ -935,19 +937,21 @@ guess fails in a way that looks like a pass. The README carries it for the same 
 - Test behaviour through the accessible surface (roles, labels), not implementation details.
 - jsdom has no layout engine: it reports every height as zero, so it cannot see a scrollbar, a
   clipped composer or a window that scrolls when it should not. Anything that depends on layout
-  belongs in `e2e/`, which runs the built app in Chromium under Playwright and measures the result.
+  belongs in `e2e/`, which runs the built app in Chromium and WebKit under Playwright and measures the result.
   The same directory holds `website.spec.ts`, which runs under its own project against the static
   site rather than the app — `testIgnore`/`testMatch` keep the two apart, and Playwright starts a
   server for each.
 - `e2e/fixtures.ts` replaces `window.__TAURI_INTERNALS__` rather than the components, so the real
   views, the real CSS and the real event plumbing run against answers a test chooses. It can hold a
   question open and push `agent-stream` updates, which is how the streaming states are measured.
-- Projects cover a comfortable window, a small one, and one with scrollbars that take space out of
-  the layout the way Windows does — Playwright hides scrollbars in headless Chromium by default,
-  which no user ever sees, so that project turns them back on. A test asserts the two agree, so the
-  project cannot quietly become a duplicate of the default one.
-- What this cannot cover is the webview Chief ships in. Chromium is close to WebView2 and WKWebView
-  but is neither, so a rendering difference peculiar to one of those still gets through; catching
+- Projects cover a comfortable window, a small one, one with scrollbars shown, and the whole app
+  suite again in WebKit. Playwright hides scrollbars in headless Chromium by default, which no user
+  ever sees, so the scrollbar project turns them back on; WebKit always draws them. A test asserts
+  each project's scrollbar is what it claims, so none can quietly become a duplicate of another.
+  Chromium is WebView2's engine and WebKit is WKWebView's and WebKitGTK's, so the pair covers the
+  engine of every platform Chief ships on.
+- What this cannot cover is the webview Chief ships in. Playwright's Chromium and WebKit are close
+  to WebView2, WKWebView and WebKitGTK but are none of them, so a rendering difference peculiar to one of those still gets through; catching
   those means driving the packaged binary with `tauri-driver`.
 - **It is not only rendering.** On 2026-08-29 a regex lookbehind — `(?<!…)` — reached `main` past
   162 jsdom tests, 93 Chromium layout tests and a green CI, and opened as a white screen with
