@@ -1,0 +1,59 @@
+name: Dogfooding feedback
+description: Something Chief got wrong, or notably right, while being used for real day-to-day work.
+labels: [dogfooding]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        For friction or surprises found while actually relying on Chief to do something — not a
+        general bug report or feature idea. Filing here rather than just fixing it keeps a record
+        that others can pick up.
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - brief-quality
+        - tool-routing
+        - integration-gap
+        - hallucination
+        - latency
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Blocks relying on Chief for this
+        - Annoying but workable
+        - Minor / cosmetic
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: What were you asking Chief to help with?
+      description: The actual question, command, or task — quote it if you can.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened?
+    validations:
+      required: true
+  - type: input
+    id: engine
+    attributes:
+      label: Model and engine
+      description: >-
+        What Settings shows under "Local model", if relevant. If you pointed Chief at your own
+        llama-server with CHIEF_LLAMA_BASE_URL, say so and give its build.
