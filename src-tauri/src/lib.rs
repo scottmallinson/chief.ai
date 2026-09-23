@@ -61,6 +61,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             background::show(app);
         }))
+        .plugin(background::autostart())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_sql::Builder::new()
@@ -123,7 +124,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent::ask_agent,
             background::close_window,
+            background::launch_at_login,
             background::set_keep_running,
+            background::set_launch_at_login,
             background::window_behaviour,
             connect::add_calendar,
             connect::add_linear_key,

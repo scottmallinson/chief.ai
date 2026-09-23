@@ -363,6 +363,9 @@ function installBackend(setup: Setup) {
         case 'window_behaviour':
           return Promise.resolve({ tray: true, keepRunning: true, trayName: 'system tray' });
 
+        case 'launch_at_login':
+          return Promise.resolve(false);
+
         case 'generate_brief':
           return Promise.resolve(setup.brief);
 

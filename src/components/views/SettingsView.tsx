@@ -13,7 +13,13 @@ import { AtlassianToken } from '@/components/AtlassianToken';
 import { LinearKey } from '@/components/LinearKey';
 import { SignInRegistration } from '@/components/SignInRegistration';
 import { runDoctor, type Report } from '@/lib/doctor';
-import { setKeepRunning, windowBehaviour, type WindowBehaviour } from '@/lib/background';
+import {
+  launchAtLogin,
+  setKeepRunning,
+  setLaunchAtLogin,
+  windowBehaviour,
+  type WindowBehaviour,
+} from '@/lib/background';
 import { Dots } from '@/components/ui/activity';
 import { useElapsed } from '@/hooks/use-elapsed';
 import { useIntegrations, type UseIntegrations } from '@/hooks/use-integrations';
@@ -510,7 +516,7 @@ function WhenClosed() {
 
   return (
     <SettingsSection
-      title="When the window closes"
+      title="In the background"
       description="Chief can keep running in the background so the work log, today's brief and drafts are ready when you open it. It reads the same accounts either way, and the model gives its memory back when it is not being used."
       state={
         behaviour === null ? (
@@ -557,7 +563,68 @@ function WhenClosed() {
       )}
 
       {problem && <p className="mt-3 text-sm text-attention-text">{problem}</p>}
+
+      {behaviour !== null && <LaunchAtLogin behaviour={behaviour} />}
     </SettingsSection>
+  );
+}
+
+/**
+ * Opening Chief at login. Off until the user turns it on.
+ *
+ * Read from the operating system's own login entry rather than from a stored
+ * setting, so the box cannot say one thing while the machine does another.
+ */
+function LaunchAtLogin({ behaviour }: { behaviour: WindowBehaviour }) {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    launchAtLogin()
+      .then((current) => {
+        if (!cancelled) setEnabled(current);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setProblem(error instanceof Error ? error.message : String(error));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const choose = async (next: boolean) => {
+    try {
+      await setLaunchAtLogin(next);
+      setEnabled(next);
+      setProblem(null);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  return (
+    <div className="mt-4 border-t border-border pt-3">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled === true}
+          disabled={enabled === null}
+          onChange={(event) => void choose(event.target.checked)}
+          className="size-4 accent-primary"
+        />
+        Open Chief when you log in
+      </label>
+      <p className="mt-2 text-[13px] leading-snug text-muted-foreground">
+        {behaviour.tray
+          ? `It starts in the ${behaviour.trayName} without opening a window, so today's brief is written before you look for it. `
+          : ''}
+        This adds Chief to this computer&apos;s login items; turning it off takes it out again.
+      </p>
+      {problem && <p className="mt-2 text-sm text-attention-text">{problem}</p>}
+    </div>
   );
 }
 

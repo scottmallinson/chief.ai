@@ -31,3 +31,13 @@ export function closeWindow(): Promise<void> {
 export function onCloseQuestion(handler: () => void) {
   return listen<null>('close-to-tray-question', () => handler());
 }
+
+/** Whether Chief is set to open at login, as the operating system has it. */
+export function launchAtLogin(): Promise<boolean> {
+  return invoke<boolean>('launch_at_login');
+}
+
+/** Add Chief to the login items, or take it out. */
+export function setLaunchAtLogin(enabled: boolean): Promise<void> {
+  return invoke<void>('set_launch_at_login', { enabled });
+}

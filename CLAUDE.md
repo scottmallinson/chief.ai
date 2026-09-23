@@ -726,6 +726,15 @@ opens Chief, not started by opening it.
   on Windows and Linux, and `RunEvent::Reopen` does it on macOS. It is also the only way back on a
   Linux desktop whose tray exists but is not shown (GNOME without an extension), because nothing
   can tell from inside the app that the icon is invisible.
+- **Launching at login is opt-in, and off until the user turns it on** in Settings.
+  `tauri-plugin-autostart` writes the operating system's own entry (a Run key on Windows, a Launch
+  Agent on macOS, an autostart `.desktop` file on Linux), and that entry is the only record, so
+  the switch reads it back rather than trusting a stored copy. The renderer is not granted the
+  plugin's permissions; the switch goes through `set_launch_at_login` like any other setting. A
+  login launch passes `--launched-at-login` and hides the window it opened with, unless there is
+  no tray, in which case the window stays open (`starts_hidden`). The window from
+  `tauri.conf.json` is shown by default and hidden on that condition, rather than the other way
+  round, so a mistake here opens a window at login rather than leaving a Chief nobody can find.
 
 ## First-run setup
 

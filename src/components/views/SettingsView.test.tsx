@@ -105,6 +105,7 @@ function answering(value: unknown, syncStates: unknown[] = [], registrations = B
     if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
     if (command === 'sign_in_registrations') return Promise.resolve(registrations);
     if (command === 'window_behaviour') return Promise.resolve(KEEPS_RUNNING);
+    if (command === 'launch_at_login') return Promise.resolve(false);
     if (command === 'finish_login') {
       return Promise.resolve(connected(Array.isArray(value) ? value : []));
     }
@@ -992,9 +993,13 @@ describe('SettingsView', () => {
       expect(scope.parentElement?.textContent).toMatch(/read .*and write/);
     });
   });
-  describe('when the window closes', () => {
-    function behaving(behaviour: unknown) {
+  describe('in the background', () => {
+    function behaving(behaviour: unknown, atLogin: unknown = false) {
       invoke.mockImplementation((command: string) => {
+        if (command === 'launch_at_login') {
+          return atLogin instanceof Error ? Promise.reject(atLogin) : Promise.resolve(atLogin);
+        }
+        if (command === 'set_launch_at_login') return Promise.resolve(null);
         if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
         if (command === 'sync_status') return Promise.resolve([]);
         if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
@@ -1043,6 +1048,43 @@ describe('SettingsView', () => {
       expect(
         screen.queryByRole('checkbox', { name: /Keep running in the/ }),
       ).not.toBeInTheDocument();
+    });
+    it('leaves launching at login off until it is turned on', async () => {
+      behaving(KEEPS_RUNNING);
+
+      render(<SettingsView />);
+
+      const box = await screen.findByRole('checkbox', { name: 'Open Chief when you log in' });
+      await waitFor(() => expect(box).toBeEnabled());
+      expect(box).not.toBeChecked();
+      expect(invoke).not.toHaveBeenCalledWith('set_launch_at_login', expect.anything());
+
+      await userEvent.click(box);
+
+      expect(invoke).toHaveBeenCalledWith('set_launch_at_login', { enabled: true });
+      await waitFor(() => expect(box).toBeChecked());
+    });
+
+    it('says a launch at login starts in the tray', async () => {
+      behaving(KEEPS_RUNNING, true);
+
+      render(<SettingsView />);
+
+      expect(
+        await screen.findByRole('checkbox', { name: 'Open Chief when you log in' }),
+      ).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByRole('checkbox', { name: 'Open Chief when you log in' })).toBeChecked(),
+      );
+      expect(screen.getByText(/starts in the system tray without opening a window/)).toBeVisible();
+    });
+
+    it('shows why the login entry could not be read', async () => {
+      behaving(KEEPS_RUNNING, new Error('no autostart directory'));
+
+      render(<SettingsView />);
+
+      expect(await screen.findByText('no autostart directory')).toBeInTheDocument();
     });
   });
 });
