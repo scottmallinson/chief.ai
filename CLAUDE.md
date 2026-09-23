@@ -932,6 +932,18 @@ guess fails in a way that looks like a pass. The README carries it for the same 
 
 ## Finding work
 
+**Dogfooding feedback is also a queue, and it is open to everybody.** Real usage — Chief pointed at
+somebody's own projects, coordinating their own repositories and issues — surfaces friction a test
+suite does not: a brief that missed the point, a tool called on the wrong thing, an integration gap.
+That has to be filed where it can be acted on, which is this repository's issues rather than
+anybody's private notes: **the "Dogfooding feedback" issue template**, carrying the `dogfooding`
+label. Each report is one concrete episode — the prompt or task, what was expected, what actually
+happened — tagged with a `category` (`brief-quality`, `tool-routing`, `integration-gap`,
+`hallucination`, `latency`, `other`) and a `severity`, so the `dogfooding` label can be filtered and
+triaged like any other queue rather than read as a pile of anecdotes. A recurring category is a
+signal to open a real issue against the root cause, with the `dogfooding` reports it came from
+linked as evidence.
+
 **The public queue is this repository's issues.** Anything labelled `good first issue` or
 `help wanted` is known to be self-contained and not waiting on a decision; anything else is worth a
 comment before you start, because the thing you cannot see from outside is whether it is already
