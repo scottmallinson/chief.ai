@@ -879,6 +879,15 @@ guess fails in a way that looks like a pass. The README carries it for the same 
   `default-src 'none'` with `script-src`, `style-src` and `font-src` at `'self'`, which is why the
   fonts are in `website/fonts/` and why no page carries an inline `style` attribute. A site whose
   headline is that nothing about you is sent anywhere must not open with a request to a font CDN.
+- **Page views are counted by Vercel Web Analytics, and by nothing else.** Every page loads
+  `/_vercel/insights/script.js`, which Vercel serves from the site's own origin and whose beacon
+  goes back to that origin — so the CSP gains `connect-src 'self'` and nothing wider. It sets no
+  cookie and keeps no identifier past a day, and Vercel already sees every request to a site it
+  hosts, so it learns nothing it did not have. `Referrer-Policy: no-referrer` stays, which costs
+  the counts their referrers on purpose. This is the _site_ counting visits; the app still collects
+  nothing, and the "Usage analytics — none collected" row on the home page is about the app. The
+  counts are read back by data.scottmallinson.com, which shows them beside its own. Under
+  `vite preview` the script 404s, which is harmless and is why no test depends on it.
 - **The header is aligned on the baseline, not on the centre of each box.** Its three text runs are
   19px, 14px and 13px, and centring boxes of three different heights leaves their baselines a
   couple of pixels apart. Baseline alignment needs every item to expose a real one, which a flex
