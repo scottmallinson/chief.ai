@@ -67,6 +67,12 @@ const BASE_URL_VAR: &str = "CHIEF_LLAMA_BASE_URL";
 /// working on the engine itself without rebuilding the bundle.
 const SERVER_VAR: &str = "CHIEF_LLAMA_SERVER";
 
+/// Keep the model off the GPU. `off` (or `0`, `false`, `no`, `cpu`) runs the
+/// engine as the CPU-only build did, for a machine whose GPU driver answers
+/// wrongly rather than failing outright — the one case the fallback in
+/// [`Engine::start_and_wait`] cannot see.
+const GPU_VAR: &str = "CHIEF_ENGINE_GPU";
+
 /// How long to wait for a freshly spawned server to start answering before
 /// giving up on it. Reading a couple of gigabytes off a cold disk is slow, and
 /// the alternative to waiting is telling the user it failed when it did not.
@@ -345,6 +351,42 @@ fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> {
     ]
 }
 
+/// Whether the engine may put the model on a GPU, from [`GPU_VAR`].
+///
+/// Anything but an explicit no leaves it on: the bundled build decides for
+/// itself whether there is a GPU worth using, and a typo should not quietly
+/// cost somebody their graphics card.
+fn gpu_allowed(setting: Option<&OsString>) -> bool {
+    let Some(setting) = setting.and_then(|value| value.to_str()) else {
+        return true;
+    };
+
+    !matches!(
+        setting.trim().to_ascii_lowercase().as_str(),
+        "off" | "0" | "false" | "no" | "cpu"
+    )
+}
+
+/// The flags that decide where the model runs.
+///
+/// Offloading asks for nothing, deliberately. The engine already puts every
+/// layer on the GPU when there is one, and trims that to what fits in the
+/// memory the device has free — `-ngl auto` and `--fit on` are its defaults. A
+/// number here would override the fitting, and the right number depends on a
+/// card this code has never seen. On a machine with no GPU the bundled build
+/// has no device to offload to and runs on the CPU as the CPU build did; naming
+/// a layer count there only earns a warning in the log.
+///
+/// Not offloading is `--device none`, which keeps every tensor on the CPU even
+/// where a GPU backend loaded.
+fn device_arguments(offload: bool) -> Vec<OsString> {
+    if offload {
+        Vec::new()
+    } else {
+        vec![OsString::from("--device"), OsString::from("none")]
+    }
+}
+
 /// Which directory the server has to be started in to find its backends.
 ///
 /// llama.cpp's Windows and Linux builds load each backend — the CPU one for
@@ -467,6 +509,9 @@ pub struct Engine {
     /// Where the server is started from, so it finds the backends it loads at
     /// run time. See [`backend_dir`].
     backend_dir: Option<PathBuf>,
+    /// Whether the model may go on a GPU. Starts as the user's setting, and a
+    /// GPU start that failed turns it off for the rest of this run.
+    offload: AtomicBool,
     weights: PathBuf,
     /// The model this tier runs, so the setup screen can name it and the
     /// download can fetch it without working the tier out a second time.
@@ -528,6 +573,7 @@ impl Engine {
             base_url,
             backend_dir: backend_dir(&library_dirs),
             library_dirs,
+            offload: AtomicBool::new(gpu_allowed(std::env::var_os(GPU_VAR).as_ref())),
             server,
             weights: model.path(&data_dir),
             tier,
@@ -624,6 +670,7 @@ impl Engine {
         let mut command = Command::new(server);
         command
             .args(arguments(&self.weights, port, self.tier))
+            .args(device_arguments(self.offload.load(Ordering::SeqCst)))
             .stdin(Stdio::null())
             // Read rather than inherited. A server that dies on the way up says
             // why on this stream, and inherited it goes to whatever terminal
@@ -675,7 +722,7 @@ impl Engine {
     pub async fn start_and_wait(&self, client: &llama::Client) -> Result<(), Error> {
         self.ensure_running(client).await?;
 
-        let deadline = std::time::Instant::now() + START_TIMEOUT;
+        let mut deadline = std::time::Instant::now() + START_TIMEOUT;
 
         loop {
             if client.health().await == Health::Ready {
@@ -686,7 +733,28 @@ impl Engine {
             // answer, and whatever killed it did so in seconds. Waiting out the
             // timeout would only delay saying so — and it did say why.
             if self.child_state() == ChildState::Exited {
-                return Err(Error::stopped(self.output.last_words().await));
+                let last_words = self.output.last_words().await;
+
+                // Unless it was the GPU that killed it. A driver that crashes
+                // on the way up, or a card too small for even the fitted share
+                // of the model, would otherwise leave a machine that ran Chief
+                // on its CPU yesterday unable to run it at all. So once, and for
+                // the rest of this run, the engine is started again with the
+                // GPU left out; if that dies too, it is that death which is
+                // reported, since it has nothing to do with the GPU.
+                if self.offload.swap(false, Ordering::SeqCst) {
+                    eprintln!(
+                        "the inference engine stopped on the way up; starting it again \
+                         on the CPU alone. It said:\n{}",
+                        last_words.as_deref().unwrap_or("nothing")
+                    );
+
+                    self.ensure_running(client).await?;
+                    deadline = std::time::Instant::now() + START_TIMEOUT;
+                    continue;
+                }
+
+                return Err(Error::stopped(last_words));
             }
 
             if std::time::Instant::now() >= deadline {
@@ -1082,6 +1150,56 @@ mod tests {
     }
 
     #[test]
+    fn leaves_the_gpu_on_unless_told_plainly_to_stop() {
+        assert!(gpu_allowed(None), "no setting is not a refusal");
+
+        for yes in ["on", "1", "true", "gpu", "", "of"] {
+            assert!(
+                gpu_allowed(Some(&OsString::from(yes))),
+                "{yes:?} is not a no"
+            );
+        }
+
+        for no in ["off", "OFF", " 0 ", "false", "no", "cpu"] {
+            assert!(!gpu_allowed(Some(&OsString::from(no))), "{no:?} is a no");
+        }
+    }
+
+    #[test]
+    fn leaves_the_layer_count_to_the_engine_when_the_gpu_is_allowed() {
+        // `-ngl auto` with `--fit on` is the engine's default and the only
+        // setting that is right for a card nobody here has seen. Any flag at
+        // all would be a number chosen without it.
+        assert!(device_arguments(true).is_empty());
+
+        let everything = [
+            arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard),
+            device_arguments(true),
+        ]
+        .concat();
+        for flag in [
+            "-ngl",
+            "--gpu-layers",
+            "--n-gpu-layers",
+            "--fit",
+            "--device",
+        ] {
+            assert!(
+                !everything.iter().any(|argument| argument == flag),
+                "{flag} would override the engine's own fitting: {everything:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_every_tensor_on_the_cpu_when_the_gpu_is_not() {
+        assert_eq!(
+            device_arguments(false),
+            [OsString::from("--device"), OsString::from("none")]
+        );
+    }
+
+    #[test]
     fn starts_the_server_where_its_backends_are() {
         let root = scratch("backend-dir");
         let empty = root.join("resources");
@@ -1115,6 +1233,7 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             backend_dir: None,
+            offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
             model: weights::STANDARD,
@@ -1239,6 +1358,7 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             backend_dir: None,
+            offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
             model: weights::STANDARD,
@@ -1260,6 +1380,7 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             backend_dir: None,
+            offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
             model: weights::STANDARD,
@@ -1281,6 +1402,7 @@ mod tests {
             server: None,
             library_dirs: Vec::new(),
             backend_dir: None,
+            offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
             model: weights::STANDARD,
@@ -1447,6 +1569,7 @@ mod tests {
             server: Some(stand_in_server(dir, complaint)),
             library_dirs: Vec::new(),
             backend_dir: None,
+            offload: AtomicBool::new(true),
             weights,
             tier: Tier::Standard,
             model: weights::STANDARD,
@@ -1457,6 +1580,129 @@ mod tests {
             warned_about_stray: AtomicBool::new(false),
             output: Output::default(),
         }
+    }
+
+    /// A stand-in that writes down where it was started and with what, then
+    /// dies the way a server whose GPU driver fell over does.
+    #[cfg(unix)]
+    fn recording_server(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let calls = dir.join("calls");
+        let script = format!(
+            "#!/bin/sh\necho \"$(pwd) $*\" >> '{}'\necho 'ggml_vulkan: device lost' >&2\nexit 1\n",
+            calls.display()
+        );
+
+        let path = dir.join("llama-server");
+        std::fs::write(&path, script).expect("should write the stand-in");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("should make the stand-in executable");
+        path
+    }
+
+    /// What the recording stand-in was asked to do, one line per start.
+    #[cfg(unix)]
+    fn calls(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn recording_engine(dir: &Path, offload: bool, backend_dir: Option<PathBuf>) -> Engine {
+        let mut engine = engine_that_dies_at_once(dir, None);
+        engine.server = Some(recording_server(dir));
+        engine.offload = AtomicBool::new(offload);
+        engine.backend_dir = backend_dir;
+        engine
+    }
+
+    /// A GPU that kills the engine on the way up costs one restart, not the
+    /// engine: the machine ran Chief on its CPU before there was a GPU build,
+    /// and it has to go on doing so.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn starts_again_on_the_cpu_when_a_gpu_start_dies() {
+        let dir = scratch("gpu-fallback");
+        let engine = recording_engine(&dir, true, None);
+        let client = llama::Client::with_base_url(engine.base_url()).expect("loopback is allowed");
+
+        let error = engine
+            .start_and_wait(&client)
+            .await
+            .expect_err("the stand-in dies on the CPU as well");
+
+        let calls = calls(&dir);
+        assert_eq!(calls.len(), 2, "one GPU start, one CPU start: {calls:?}");
+        assert!(
+            !calls[0].contains("--device none"),
+            "the first start should be allowed the GPU: {calls:?}"
+        );
+        assert!(
+            calls[1].ends_with("--device none"),
+            "the second start should keep off it: {calls:?}"
+        );
+        assert!(
+            error.to_string().contains("device lost"),
+            "the last start's own words are still the report: {error}"
+        );
+
+        // And it stays off: the GPU is not given another go on the next start.
+        assert!(!engine.offload.load(Ordering::SeqCst));
+
+        std::fs::remove_dir_all(&dir).expect("should clean up");
+    }
+
+    /// The retry exists for the GPU. An engine already on the CPU that dies is
+    /// reported at once rather than started a second time the same way.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn does_not_retry_an_engine_that_was_on_the_cpu_already() {
+        let dir = scratch("no-second-cpu-start");
+        let engine = recording_engine(&dir, false, None);
+        let client = llama::Client::with_base_url(engine.base_url()).expect("loopback is allowed");
+
+        engine
+            .start_and_wait(&client)
+            .await
+            .expect_err("the stand-in always dies");
+
+        let calls = calls(&dir);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].ends_with("--device none"), "{calls:?}");
+
+        std::fs::remove_dir_all(&dir).expect("should clean up");
+    }
+
+    /// The Linux bug this guards: installed, the server is in `usr/bin` and
+    /// its backends in `usr/lib/Chief`, and started anywhere else it finds
+    /// none and stops with `no backends are loaded`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runs_the_server_in_the_directory_that_holds_its_backends() {
+        let dir = scratch("runs-in-backend-dir");
+        let backends = dir.join("lib");
+        std::fs::create_dir_all(&backends).expect("should create the directory");
+        let engine = recording_engine(&dir, false, Some(backends.clone()));
+        let client = llama::Client::with_base_url(engine.base_url()).expect("loopback is allowed");
+
+        engine
+            .start_and_wait(&client)
+            .await
+            .expect_err("the stand-in always dies");
+
+        let calls = calls(&dir);
+        let started_in = calls[0].split(' ').next().map(PathBuf::from);
+        assert_eq!(
+            started_in.map(|path| path.canonicalize().expect("should resolve")),
+            Some(backends.canonicalize().expect("should resolve")),
+            "{calls:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).expect("should clean up");
     }
 
     /// The report this test exists for: on macOS 12 the bundled build is dead
