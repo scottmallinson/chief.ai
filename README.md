@@ -46,9 +46,15 @@ Chief runs [llama.cpp](https://github.com/ggml-org/llama.cpp) itself. `llama-ser
 the installer and started as a child process on a loopback port, so there is no separate runtime to
 install and nothing left running once you close the app.
 
-The binary is not in this repository — it is tens of megabytes of prebuilt CPU build, pinned to one
+The binary is not in this repository — it is tens of megabytes of prebuilt build, pinned to one
 llama.cpp release. `pnpm engine:fetch` downloads the right one for your machine into
 `src-tauri/binaries/`, and `pnpm tauri:dev` and `pnpm tauri:build` run it for you.
+
+It uses the GPU where there is one: Metal on Apple silicon, Vulkan on Windows and Linux. Without
+one, the same build runs on the CPU. `CHIEF_ENGINE_BACKEND=cpu pnpm engine:fetch` fetches the
+CPU-only build instead, `CHIEF_ENGINE_BACKEND=cuda` a CUDA build on Windows x64, and
+`CHIEF_ENGINE_GPU=off` keeps a running Chief off the GPU. `pnpm engine:bench` measures the
+difference on your machine.
 
 To work against a `llama-server` you are running yourself, set `CHIEF_LLAMA_BASE_URL` to its address
 (loopback only) and Chief will use that instead of starting one.

@@ -291,11 +291,12 @@ jobs:
           # Linux only, and only for the AppImage. linuxdeploy walks every ELF
           # in the AppDir and refuses to build a bundle whose dependencies it
           # cannot resolve — and Tauri's Linux layout puts the sidecar in
-          # `usr/bin` while its 38 llama.cpp libraries go to `usr/lib/Chief`,
+          # `usr/bin` while its 39 llama.cpp libraries go to `usr/lib/Chief`,
           # so `llama-server`'s own `RUNPATH=$ORIGIN` resolves to a directory
-          # none of them are in. Chief sets the loader path itself before it
-          # spawns the server (`engine::library_dirs`), so the installed app is
-          # fine; linuxdeploy cannot know that, and stops with
+          # none of them are in. Chief sets the loader path and the working
+          # directory itself before it spawns the server (`engine::library_dirs`
+          # and `engine::backend_dir`), so the installed app is fine;
+          # linuxdeploy cannot know that, and stops with
           # `Could not find dependency: libllama-server-impl.so` after the
           # whole crate has been compiled in release. Pointing it at the
           # fetched libraries lets it resolve them and deploy them itself.
