@@ -345,6 +345,38 @@ fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> {
     ]
 }
 
+/// Which directory the server has to be started in to find its backends.
+///
+/// llama.cpp's Windows and Linux builds load each backend — the CPU one for
+/// this processor's instruction set, and Vulkan or CUDA beside it — at run time
+/// rather than linking them, and look for them in exactly two places: the
+/// directory the server is in, and the current directory. Not the loader path.
+/// Windows puts the libraries beside the sidecar, so it finds them; a Linux
+/// `.deb`, `.rpm` or AppImage puts the server in `usr/bin` and the libraries in
+/// `usr/lib/Chief`, and a server started from anywhere else finds no backend at
+/// all. Nothing falls back: it stops with `no backends are loaded` before it has
+/// read a byte of the model.
+///
+/// So the first library directory that holds the CPU backend is where the
+/// server runs. Nothing else it does depends on the working directory — the
+/// model is passed by absolute path. macOS links its backends in, so there this
+/// finds a directory and changes nothing.
+fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
+    library_dirs
+        .iter()
+        .find(|dir| {
+            std::fs::read_dir(dir).is_ok_and(|entries| {
+                entries.filter_map(Result::ok).any(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.contains("ggml-cpu"))
+                })
+            })
+        })
+        .cloned()
+}
+
 /// The `llama-server` this installation should run, if there is one.
 ///
 /// Tauri copies a bundled sidecar next to the app binary, which covers both a
@@ -432,6 +464,9 @@ pub struct Engine {
     base_url: String,
     server: Option<PathBuf>,
     library_dirs: Vec<PathBuf>,
+    /// Where the server is started from, so it finds the backends it loads at
+    /// run time. See [`backend_dir`].
+    backend_dir: Option<PathBuf>,
     weights: PathBuf,
     /// The model this tier runs, so the setup screen can name it and the
     /// download can fetch it without working the tier out a second time.
@@ -487,9 +522,12 @@ impl Engine {
         let tier = Tier::for_machine(Machine::detect());
         let model = weights::for_tier(tier);
 
+        let library_dirs = library_dirs(app, server.as_deref());
+
         Ok(Self {
             base_url,
-            library_dirs: library_dirs(app, server.as_deref()),
+            backend_dir: backend_dir(&library_dirs),
+            library_dirs,
             server,
             weights: model.path(&data_dir),
             tier,
@@ -595,6 +633,10 @@ impl Engine {
             // Outlives a panic in this process only for as long as it takes the
             // runtime to reap it; the app also stops it explicitly on exit.
             .kill_on_drop(true);
+
+        if let Some(dir) = &self.backend_dir {
+            command.current_dir(dir);
+        }
 
         if !self.library_dirs.is_empty() {
             let variable = library_path_variable();
@@ -1039,6 +1081,32 @@ mod tests {
         assert_eq!(searched, [PathBuf::from("/opt/chief/lib")]);
     }
 
+    #[test]
+    fn starts_the_server_where_its_backends_are() {
+        let root = scratch("backend-dir");
+        let empty = root.join("resources");
+        let with_backends = root.join("lib");
+        let also = root.join("later");
+        for dir in [&empty, &with_backends, &also] {
+            std::fs::create_dir_all(dir).expect("should create the directory");
+        }
+        std::fs::write(empty.join("libllama.so"), b"").expect("should write");
+        std::fs::write(with_backends.join("libggml-cpu-haswell.so"), b"").expect("should write");
+        std::fs::write(also.join("ggml-cpu-x64.dll"), b"").expect("should write");
+
+        // The first directory holding a backend, in the order the loader path
+        // searches them — not merely the first directory.
+        assert_eq!(
+            backend_dir(&[empty.clone(), with_backends.clone(), also.clone()]),
+            Some(with_backends.clone())
+        );
+        assert_eq!(backend_dir(std::slice::from_ref(&also)), Some(also));
+        assert_eq!(backend_dir(std::slice::from_ref(&empty)), None);
+        assert_eq!(backend_dir(&[root.join("missing")]), None);
+
+        std::fs::remove_dir_all(&root).expect("should clean up");
+    }
+
     /// An engine with no child process, for the idle rules — which decide
     /// whether to stop something, and can be asked that without one running.
     fn stopped_engine() -> Engine {
@@ -1046,6 +1114,7 @@ mod tests {
             base_url: "http://127.0.0.1:11435".to_string(),
             server: None,
             library_dirs: Vec::new(),
+            backend_dir: None,
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
             model: weights::STANDARD,
@@ -1169,6 +1238,7 @@ mod tests {
             base_url: "http://127.0.0.1:11435".to_string(),
             server: None,
             library_dirs: Vec::new(),
+            backend_dir: None,
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
             model: weights::STANDARD,
@@ -1189,6 +1259,7 @@ mod tests {
             base_url: "http://127.0.0.1:8080".to_string(),
             server: None,
             library_dirs: Vec::new(),
+            backend_dir: None,
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
             model: weights::STANDARD,
@@ -1209,6 +1280,7 @@ mod tests {
             base_url: "http://localhost".to_string(),
             server: None,
             library_dirs: Vec::new(),
+            backend_dir: None,
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
             model: weights::STANDARD,
@@ -1374,6 +1446,7 @@ mod tests {
             base_url: address_nothing_is_serving(),
             server: Some(stand_in_server(dir, complaint)),
             library_dirs: Vec::new(),
+            backend_dir: None,
             weights,
             tier: Tier::Standard,
             model: weights::STANDARD,
