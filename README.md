@@ -15,13 +15,11 @@ no cloud backend, no remote model, no proxy server.
 
 ## Download
 
-**[chief-ai-five.vercel.app](https://chief-ai-five.vercel.app)** — the site works out which build
+**[chief.scottmallinson.com](https://chief.scottmallinson.com)** — the site works out which build
 you want and leads with it. Every bundle is also on
 [the latest release](https://github.com/scottmallinson/chief.ai/releases/latest).
 
-That URL is written down because it is not guessable: `vercel.app` subdomains are global across
-every Vercel account, `chief-ai` was already taken by an unrelated project, and Vercel suffixed
-this one. The site is deployed from `main` on every merge, and it is the only address that serves
+The site is deployed from `main` on every merge, and it is the only address that serves
 Chief.
 
 ## Requirements
