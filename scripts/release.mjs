@@ -196,7 +196,7 @@ export const VERSIONED = [
   // insistence is the thing that catches a file changing shape.
   {
     file: 'website/index.html',
-    pattern: /^\s*<p class="hero-note" data-download-note>Version [^<]+<\/p>$/m,
+    pattern: /^\s*Version \d+\.\d+\.\d+ · no account · no telemetry from the app$/m,
   },
   {
     file: 'website/index.html',

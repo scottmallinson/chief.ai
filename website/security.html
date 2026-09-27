@@ -14,6 +14,7 @@
     <script src="support.js" defer></script>
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to content</a>
     <svg class="sprite" aria-hidden="true">
       <defs>
         <symbol
@@ -90,7 +91,7 @@
       </div>
     </header>
 
-    <main class="shell page">
+    <main class="shell page" id="main">
       <p class="micro">security</p>
       <h1>What leaves the machine, and when.</h1>
       <p class="page-sub">
@@ -106,10 +107,10 @@
             <p>Chief (Tauri app)</p>
             <p class="mono">your desktop session</p>
           </div>
-          <p class="arch-arrow">HTTP →<br />loopback</p>
+          <p class="arch-arrow">HTTP → <br />loopback</p>
           <div class="arch-node is-engine">
             <p>llama-server</p>
-            <p class="mono">127.0.0.1:11435 · Llama 3.2 3B</p>
+            <p class="mono">127.0.0.1:11435 · Llama 3.2 3B/1B</p>
           </div>
           <p class="arch-arrow">reads →</p>
           <div class="arch-node">
@@ -129,7 +130,7 @@
 
       <div class="cards-2">
         <div class="card-lg" id="collect">
-          <p>Data at rest</p>
+          <h2>Data at rest</h2>
           <div class="prose-list">
             <p>
               <strong>Work log —</strong> one SQLite file in the app data directory, set to mode
@@ -158,7 +159,7 @@
         </div>
 
         <div class="card-lg">
-          <p>Network, in full</p>
+          <h2>Network, in full</h2>
           <div class="table">
             <div class="table-row">
               <span class="mono">127.0.0.1:11435</span>
@@ -193,7 +194,8 @@
             That is the whole list, and every row after the first two is a service you connected
             yourself. There is no update check and no crash reporter. The inference client refuses
             any address that is not loopback — a test asserts it rejects a public host — so a
-            misconfigured base URL fails closed rather than sending your log elsewhere.
+            misconfigured base URL fails closed rather than sending your log elsewhere. That list is
+            the app. This website is a separate thing, and it is accounted for below.
           </p>
         </div>
       </div>
@@ -227,6 +229,21 @@
             the point of shipping local.
           </p>
         </div>
+      </div>
+
+      <div class="note mt-24" id="site">
+        <p>
+          <strong>This website is not the app.</strong> The page you are reading counts its own page
+          views, using Vercel Web Analytics on this domain: one
+          <code>/_vercel/insights/script.js</code> on load, and one
+          <code>POST /_vercel/insights/view</code> carrying the page address, a timestamp, the
+          analytics SDK version, and the address you arrived from if that was another site. It sets
+          no cookie and stores nothing in your browser. It is served from this domain rather than a
+          third-party one, so an extension that blocks trackers by hostname will not catch it —
+          blocking <code>/_vercel/insights/</code> will, and every page here works without it. None
+          of this is Chief: the app has no analytics, no update check and no crash reporter, and the
+          two never meet.
+        </p>
       </div>
 
       <div class="note is-attention mt-24">
@@ -273,6 +290,7 @@
             <p class="micro">trust</p>
             <a href="security.html">Security</a>
             <a href="security.html#collect">What it doesn’t collect</a>
+            <a href="security.html#site">What this website counts</a>
           </div>
           <div class="footer-col">
             <p class="micro">source</p>
@@ -283,7 +301,7 @@
       </div>
       <div class="footer-base">
         <div class="shell">
-          <p class="mono">© 2026 Chief · no accounts, no telemetry</p>
+          <p class="mono">© 2026 Chief · no accounts · no telemetry from the app</p>
           <p class="footer-badge">
             <svg width="14" height="14" aria-hidden="true"><use href="#i-shield-check" /></svg>
             on-device only

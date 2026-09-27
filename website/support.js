@@ -1,9 +1,11 @@
 /*
  * Chief website — visitor-dependent bits.
  *
- * Three jobs, all of them done in the visitor's browser with no request to
- * anybody: work out which build to offer, work out which currency to print a
- * zero in, and fill in the download links.
+ * Five jobs, all of them done in the visitor's browser with no request to
+ * anybody: work out which build to offer and how sure it is of that, work out
+ * which currency to print a zero in, fill in the download links, hand a phone
+ * a way to get this page onto a desktop, and keep the docs sidebar pointing at
+ * the section being read.
  *
  * Nothing here calls a network. The GitHub release API would resolve the
  * current version for us, but it would also hand every visitor's IP address to
@@ -94,19 +96,23 @@ function detectPlatform() {
 }
 
 async function refinePlatform(platform) {
-  if (!platform.startsWith('macos')) return platform;
-  if (!navigator.userAgentData?.getHighEntropyValues) return platform;
+  /* Everywhere but macOS the user agent settles it, so the answer is certain.
+     On a Mac it is certain only when the browser will name the architecture,
+     and the page says so when it will not — a default presented with the
+     confidence of a detection is the thing to avoid here. */
+  if (!platform.startsWith('macos')) return { platform, certain: true };
+  if (!navigator.userAgentData?.getHighEntropyValues) return { platform, certain: false };
 
   try {
     const { architecture } = await navigator.userAgentData.getHighEntropyValues(['architecture']);
-    if (architecture === 'x86') return 'macos-x64';
-    if (architecture === 'arm') return 'macos-arm64';
+    if (architecture === 'x86') return { platform: 'macos-x64', certain: true };
+    if (architecture === 'arm') return { platform: 'macos-arm64', certain: true };
   } catch {
     /* The browser declined. The Apple silicon default stands, and the Intel
        link is on the page either way. */
   }
 
-  return platform;
+  return { platform, certain: false };
 }
 
 /*
@@ -200,7 +206,7 @@ function formatZero() {
 
 /* ---- Applying it to the page ---- */
 
-function applyDownloads(platform) {
+function applyDownloads(platform, certain = true) {
   const primary = BUILDS[platform] ? platform : 'macos-arm64';
   const supported = Boolean(BUILDS[platform]);
 
@@ -219,27 +225,168 @@ function applyDownloads(platform) {
       hero.removeAttribute('data-download-primary');
       const label = hero.querySelector('[data-download-label]');
       if (label) label.textContent = 'See the builds';
+
+      /* And the mark changes with it. A download arrow over a button that
+         scrolls the page is the affordance disagreeing with the action. */
+      const mark = hero.querySelector('use');
+      if (mark) mark.setAttribute('href', '#i-arrow-down');
     }
   }
 
-  /* The note under it, and the platform tiles. */
+  /* The note under it. "no telemetry" on its own was a claim about the whole
+     product made on a page that counts its own views, so it says which half
+     it is about. security.html#site is where the other half is accounted for. */
   const note = document.querySelector('[data-download-note]');
   if (note) {
     note.textContent = supported
-      ? `Version ${VERSION} · no account, no telemetry`
+      ? `Version ${VERSION} · no account · no telemetry from the app`
       : `Chief is a desktop app for macOS, Windows and Linux. Version ${VERSION}.`;
   }
 
+  /* The lead in the download section. Its markup names the releases page, so a
+     visitor with no JavaScript reaches every build in one extra click; here it
+     becomes the one file this machine can actually run. */
+  const lead = document.querySelector('[data-lead]');
+  const leadName = document.querySelector('[data-lead-name]');
+  const leadMeta = document.querySelector('[data-lead-meta]');
+  if (lead && supported) {
+    lead.href = downloadUrl(primary);
+    if (leadName) leadName.textContent = `Download for ${BUILDS[primary].label}`;
+    if (leadMeta) leadMeta.textContent = BUILDS[primary].meta;
+  } else if (leadMeta) {
+    /* A phone, or a platform nothing here recognises. There is no file to
+       lead with, so the list is opened rather than a wrong build promoted. */
+    leadMeta.textContent = 'a desktop app — macOS, Windows or Linux';
+    const more = document.querySelector('[data-more]');
+    if (more) more.open = true;
+  }
+
+  /* Said out loud when the lead is a default rather than a detection. */
+  const guess = document.querySelector('[data-lead-guess]');
+  if (guess) guess.hidden = certain || !supported;
+
+  /* A phone has no build to be given, so it gets the one thing it can use: the
+     address of this page, to open on the machine that can run Chief. */
+  const copy = document.querySelector('[data-copy]');
+  if (copy) copy.hidden = supported || !navigator.clipboard?.writeText;
+
+  /* Every other build. Only the href changes: what distinguishes these from
+     each other is written in the markup, because the reader needs to be able
+     to tell them apart whether or not this file ran. */
   document.querySelectorAll('[data-build]').forEach((tile) => {
     const build = tile.getAttribute('data-build');
-    if (!BUILDS[build]) return;
-
-    tile.href = downloadUrl(build);
-    tile.classList.toggle('is-primary', build === primary && supported);
-
-    const meta = tile.querySelector('[data-build-meta]');
-    if (meta) meta.textContent = BUILDS[build].meta;
+    if (BUILDS[build]) tile.href = downloadUrl(build);
   });
+}
+
+/*
+ * Getting this page onto a desktop.
+ *
+ * A QR code would be the wrong way round — the reader is already holding the
+ * phone. What they need is the address somewhere they can paste it, so the
+ * button is a clipboard write and nothing else. It is hidden unless there is
+ * no build for this machine and the browser actually has the API, so it never
+ * appears as a control that does nothing.
+ */
+function startCopyLink() {
+  const button = document.querySelector('[data-copy]');
+  const label = button?.querySelector('[data-copy-label]');
+  if (!button || !label) return;
+
+  const fallback = document.querySelector('[data-copy-fallback]');
+  const idle = label.textContent;
+  let revert;
+
+  function flash(message) {
+    label.textContent = message;
+    clearTimeout(revert);
+    revert = setTimeout(() => {
+      label.textContent = idle;
+    }, 2400);
+  }
+
+  button.addEventListener('click', async () => {
+    const address = `${location.origin}${location.pathname}`;
+
+    try {
+      await navigator.clipboard.writeText(address);
+      flash('Link copied');
+    } catch {
+      /* Permission refused, or a browser that has the API and will not use it.
+         Saying only "couldn't copy" leaves the reader where they started, so
+         the address is put on the page as selectable text and left there —
+         it is the thing they came for, and a two-second toast would take it
+         away again. */
+      flash('Could not copy');
+      if (fallback) {
+        fallback.textContent = location.host;
+        fallback.hidden = false;
+      }
+    }
+  });
+}
+
+/*
+ * The docs sidebar, and the breadcrumb above the article.
+ *
+ * Both shipped hard-coded to "Install" and stayed there through seven
+ * sections, so the navigation was wrong from the first scroll. Install is the
+ * right answer at the top of the page, which is where a visitor arrives and
+ * where a browser that never runs this leaves it — so this only ever refines
+ * what the markup already says.
+ *
+ * The groups and the link text are the single source of truth for both the
+ * highlight and the crumb; nothing here restates them.
+ */
+function startDocsNav() {
+  const nav = document.querySelector('.docs-nav');
+  if (!nav) return;
+
+  const crumb = document.querySelector('[data-crumb]');
+  const sections = [...nav.querySelectorAll('.docs-nav-links a[href^="#"]')]
+    .map((link) => {
+      const heading = document.getElementById(link.hash.slice(1));
+      if (!heading) return null;
+      const group = link.closest('.docs-nav-group')?.querySelector('.micro');
+      return {
+        link,
+        heading,
+        group: group ? group.textContent.trim() : 'docs',
+        name: link.textContent.trim().toLowerCase(),
+      };
+    })
+    .filter(Boolean);
+
+  if (sections.length === 0) return;
+
+  let current = null;
+
+  function update() {
+    /* The section being read is the last one whose heading has gone past the
+       sticky header. Above the first heading that is the first section, which
+       is what the markup says already. */
+    const line = 120;
+    let found = sections[0];
+    for (const section of sections) {
+      if (section.heading.getBoundingClientRect().top <= line) found = section;
+    }
+
+    if (found === current) return;
+    current = found;
+
+    for (const section of sections) {
+      const isCurrent = section === found;
+      section.link.classList.toggle('is-current', isCurrent);
+      if (isCurrent) section.link.setAttribute('aria-current', 'location');
+      else section.link.removeAttribute('aria-current');
+    }
+
+    if (crumb) crumb.textContent = `docs / ${found.group} / ${found.name}`;
+  }
+
+  update();
+  addEventListener('scroll', update, { passive: true });
+  addEventListener('resize', update, { passive: true });
 }
 
 function applyCurrency() {
@@ -258,12 +405,17 @@ function applyVersion() {
 async function start() {
   applyCurrency();
   applyVersion();
+  startDocsNav();
+  startCopyLink();
 
+  /* Applied twice on a Mac: once from the user agent, then again once the
+     architecture is known or known to be unavailable. The first call says
+     nothing about certainty, so the caveat never flashes either way. */
   const initial = detectPlatform();
   applyDownloads(initial);
 
-  const refined = await refinePlatform(initial);
-  if (refined !== initial) applyDownloads(refined);
+  const { platform, certain } = await refinePlatform(initial);
+  applyDownloads(platform, certain);
 }
 
 if (document.readyState === 'loading') {

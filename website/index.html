@@ -14,6 +14,7 @@
     <script src="support.js" defer></script>
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to content</a>
     <svg class="sprite" aria-hidden="true">
       <defs>
         <symbol
@@ -159,6 +160,43 @@
           />
           <path d="M9 18c-4.51 2-5-2-7-2" />
         </symbol>
+        <symbol
+          id="i-chevron-down"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="m6 9 6 6 6-6" />
+        </symbol>
+        <symbol
+          id="i-arrow-down"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M12 5v14M5 12l7 7 7-7" />
+        </symbol>
+        <symbol
+          id="i-alert-triangle"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+          />
+          <path d="M12 9v4" />
+          <path d="M12 17h.01" />
+        </symbol>
       </defs>
     </svg>
 
@@ -192,7 +230,7 @@
       </div>
     </header>
 
-    <main>
+    <main id="main">
       <section class="shell hero">
         <div class="hero-grid">
           <div>
@@ -216,11 +254,13 @@
                 <svg width="14" height="14" aria-hidden="true"><use href="#i-arrow-right" /></svg>
               </a>
             </div>
-            <p class="hero-note" data-download-note>Version 0.8.0 · no account, no telemetry</p>
+            <p class="hero-note" data-download-note>
+              Version 0.8.0 · no account · no telemetry from the app
+            </p>
             <div class="hero-stats">
               <div>
                 <strong>0 bytes</strong>
-                <span>to a server of ours</span>
+                <span>of your work, to us</span>
               </div>
               <div>
                 <strong>1 port</strong>
@@ -378,12 +418,16 @@
                 <span class="mono">markdown you own</span>
               </div>
               <div class="ledger-row">
-                <span>Usage analytics</span>
+                <span>Usage analytics in the app</span>
                 <span class="mono is-quiet">none collected</span>
               </div>
               <div class="ledger-row">
                 <span>Requests to your tools</span>
                 <span class="mono is-quiet">outbound, your token</span>
+              </div>
+              <div class="ledger-row">
+                <span>Page views on this website</span>
+                <span class="mono is-quiet">counted, cookieless</span>
               </div>
             </div>
           </div>
@@ -406,8 +450,9 @@
               <p class="mono">02</p>
               <h3>Download a model, once</h3>
               <p>
-                First run fetches Llama 3.2 3B — about 2 GB, with a progress bar and a resumable
-                download. After that it is yours offline.
+                First run fetches Llama 3.2 — the 3B on a capable machine, the 1B otherwise, so 2 GB
+                or 0.8 GB, with a progress bar and a resumable download. After that it is yours
+                offline.
               </p>
               <div class="meter"><span class="is-62"></span></div>
               <p class="mono mt-8">1245 of 2019 MB</p>
@@ -427,55 +472,132 @@
 
       <section class="shell section" id="get">
         <div class="get">
-          <div>
+          <div class="get-intro">
             <h2>Get Chief</h2>
             <p class="get-sub">
-              Version <span data-version>0.8.0</span>. No account, no telemetry, no card.
+              Version <span data-version>0.8.0</span>. No account, no card, and no telemetry from
+              the app.
             </p>
           </div>
-          <div class="get-grid">
-            <a class="get-tile" data-build="macos-arm64" href="#">
-              <span class="get-tile-name">
-                <svg width="15" height="15" aria-hidden="true"><use href="#i-apple" /></svg>
-                macOS
-              </span>
-              <span class="get-tile-meta" data-build-meta>Apple silicon · .dmg</span>
-            </a>
-            <a class="get-tile" data-build="macos-x64" href="#">
-              <span class="get-tile-name">
-                <svg width="15" height="15" aria-hidden="true"><use href="#i-apple" /></svg>
-                macOS
-              </span>
-              <span class="get-tile-meta" data-build-meta>Intel · .dmg</span>
-            </a>
-            <a class="get-tile" data-build="windows" href="#">
-              <span class="get-tile-name">
-                <svg width="15" height="15" aria-hidden="true"><use href="#i-monitor" /></svg>
-                Windows
-              </span>
-              <span class="get-tile-meta" data-build-meta>x64 · .exe</span>
-            </a>
-            <a class="get-tile" data-build="linux" href="#">
-              <span class="get-tile-name">
-                <svg width="15" height="15" aria-hidden="true"><use href="#i-terminal" /></svg>
-                Linux
-              </span>
-              <span class="get-tile-meta" data-build-meta>x64 · .AppImage</span>
-            </a>
-            <a class="get-tile" data-build="linux-deb" href="#">
-              <span class="get-tile-name">
-                <svg width="15" height="15" aria-hidden="true"><use href="#i-terminal" /></svg>
-                Linux
-              </span>
-              <span class="get-tile-meta" data-build-meta>x64 · .deb</span>
-            </a>
-            <a class="get-tile" data-build="linux-rpm" href="#">
-              <span class="get-tile-name">
-                <svg width="15" height="15" aria-hidden="true"><use href="#i-terminal" /></svg>
-                Linux
-              </span>
-              <span class="get-tile-meta" data-build-meta>x64 · .rpm</span>
-            </a>
+
+          <div class="get-actions">
+            <div class="get-primary">
+              <a
+                class="get-lead"
+                href="https://github.com/scottmallinson/chief.ai/releases/latest"
+                data-lead
+              >
+                <svg width="18" height="18" aria-hidden="true"><use href="#i-download" /></svg>
+                <span class="get-lead-text">
+                  <span class="get-lead-name" data-lead-name>Download Chief</span>
+                  <span class="get-lead-meta mono" data-lead-meta>
+                    every build, on the releases page
+                  </span>
+                </span>
+              </a>
+
+              <p class="get-guess" data-lead-guess hidden>
+                Apple silicon assumed — Safari does not report which chip this Mac has. If it is an
+                Intel Mac, that build is in the list below.
+              </p>
+
+              <div class="get-warn">
+                <svg width="15" height="15" aria-hidden="true">
+                  <use href="#i-alert-triangle" />
+                </svg>
+                <p>
+                  <strong>Not signed yet.</strong> macOS will say the app cannot be verified and
+                  Windows SmartScreen will warn once, on first launch only.
+                  <a href="docs.html#install">What to do</a>
+                </p>
+              </div>
+
+              <button class="btn btn-ghost get-copy" type="button" data-copy hidden>
+                <span data-copy-label aria-live="polite">Copy link to this page</span>
+              </button>
+              <p class="get-copy-fallback mono" data-copy-fallback hidden></p>
+            </div>
+
+            <details class="get-more" data-more>
+              <summary>
+                <svg class="get-chev" width="14" height="14" aria-hidden="true">
+                  <use href="#i-chevron-down" />
+                </svg>
+                Every build
+              </summary>
+              <div class="get-groups">
+                <div class="get-group">
+                  <p class="micro">macos</p>
+                  <a
+                    class="get-alt"
+                    data-build="macos-arm64"
+                    href="https://github.com/scottmallinson/chief.ai/releases/latest"
+                    aria-label="Download Chief for macOS, Apple silicon, .dmg"
+                  >
+                    <span>Apple silicon</span>
+                    <span class="mono">.dmg</span>
+                  </a>
+                  <a
+                    class="get-alt"
+                    data-build="macos-x64"
+                    href="https://github.com/scottmallinson/chief.ai/releases/latest"
+                    aria-label="Download Chief for macOS, Intel, .dmg"
+                  >
+                    <span>Intel</span>
+                    <span class="mono">.dmg</span>
+                  </a>
+                </div>
+                <div class="get-group">
+                  <p class="micro">windows</p>
+                  <a
+                    class="get-alt"
+                    data-build="windows"
+                    href="https://github.com/scottmallinson/chief.ai/releases/latest"
+                    aria-label="Download Chief for Windows, x64 installer"
+                  >
+                    <span>x64</span>
+                    <span class="mono">.exe</span>
+                  </a>
+                </div>
+                <div class="get-group">
+                  <p class="micro">linux</p>
+                  <p class="get-group-note">One x64 build, packaged three ways.</p>
+                  <a
+                    class="get-alt"
+                    data-build="linux"
+                    href="https://github.com/scottmallinson/chief.ai/releases/latest"
+                    aria-label="Download Chief for Linux, x64 AppImage"
+                  >
+                    <span>Runs anywhere</span>
+                    <span class="mono">.AppImage</span>
+                  </a>
+                  <a
+                    class="get-alt"
+                    data-build="linux-deb"
+                    href="https://github.com/scottmallinson/chief.ai/releases/latest"
+                    aria-label="Download Chief for Linux, x64 Debian package"
+                  >
+                    <span>Debian, Ubuntu</span>
+                    <span class="mono">.deb</span>
+                  </a>
+                  <a
+                    class="get-alt"
+                    data-build="linux-rpm"
+                    href="https://github.com/scottmallinson/chief.ai/releases/latest"
+                    aria-label="Download Chief for Linux, x64 RPM package"
+                  >
+                    <span>Fedora, RHEL, SUSE</span>
+                    <span class="mono">.rpm</span>
+                  </a>
+                </div>
+              </div>
+            </details>
+
+            <p class="get-foot">
+              Every file, with its size, is on the
+              <a href="https://github.com/scottmallinson/chief.ai/releases/latest">release page</a>,
+              alongside the source it was built from.
+            </p>
           </div>
         </div>
       </section>
@@ -512,6 +634,7 @@
             <p class="micro">trust</p>
             <a href="security.html">Security</a>
             <a href="security.html#collect">What it doesn’t collect</a>
+            <a href="security.html#site">What this website counts</a>
           </div>
           <div class="footer-col">
             <p class="micro">source</p>
@@ -522,7 +645,7 @@
       </div>
       <div class="footer-base">
         <div class="shell">
-          <p class="mono">© 2026 Chief · no accounts, no telemetry</p>
+          <p class="mono">© 2026 Chief · no accounts · no telemetry from the app</p>
           <p class="footer-badge">
             <svg width="14" height="14" aria-hidden="true"><use href="#i-shield-check" /></svg>
             on-device only

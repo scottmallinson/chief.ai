@@ -39,6 +39,7 @@
   --graphite: #14171a;
   --paper: #f4f5f3;
   --slate: #2c5c7a;
+  --slate-hover: #1e4359;
   --verified: #3f6b4f;
   --attention: #b8761f;
 
@@ -57,7 +58,7 @@
   --panel-raised: #1b1f23;
   --panel-tile: #282e33;
   --panel-text: #edefec;
-  --panel-muted: #8b9299;
+  --panel-muted: #9aa1a8;
   --panel-verified: #7fa98a;
   --panel-slate: #8fb7ce;
   --panel-attention: #d9903a;
@@ -72,6 +73,14 @@
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+/* `[hidden]` is a UA rule at element specificity, so any class that sets a
+   display beats it — `.btn` is `display: inline-flex`, which is how a button
+   marked hidden went on rendering. Everything on this site that appears
+   conditionally does so through the attribute, so the attribute has to win. */
+[hidden] {
+  display: none !important;
 }
 
 body {
@@ -90,7 +99,16 @@ a {
 }
 
 a:hover {
-  color: #1e4359;
+  color: var(--slate-hover);
+}
+
+/* A link on a dark surface cannot hover toward the darker slate — that is
+   1.7:1 against graphite, which is a link that disappears when you point at
+   it. The header already fought this once for the download button; scoping it
+   here closes the whole class rather than the one element that has it today. */
+.panel a:not(.btn):hover,
+.arch a:not(.btn):hover {
+  color: var(--panel-slate);
 }
 
 h1,
@@ -289,6 +307,7 @@ svg {
   text-decoration: none;
   cursor: pointer;
   border: 1px solid transparent;
+  font-family: var(--sans);
 }
 
 .btn-primary {
@@ -724,6 +743,43 @@ svg {
   animation-delay: 0.3s;
 }
 
+:where(a, button, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--slate);
+  outline-offset: 2px;
+}
+
+.panel :where(a, button):focus-visible,
+.get-lead:focus-visible {
+  outline-color: var(--panel-slate);
+}
+
+.skip-link {
+  position: fixed;
+  top: 12px;
+  left: 16px;
+  z-index: 20;
+  border-radius: 6px;
+  background: var(--graphite);
+  padding: 10px 16px;
+  color: var(--paper);
+  font-size: 13px;
+  text-decoration: none;
+  transform: translateY(-200%);
+  transition: transform 140ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* `a:hover` is (0,1,1) and `.skip-link` is (0,1,0), so pointing at this link
+   painted it slate on graphite — 1.7:1, which is the link vanishing under the
+   cursor. The same fight the download button in the header already had. */
+.skip-link:hover,
+.skip-link:focus-visible {
+  color: var(--paper);
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+
 /* prefers-reduced-motion swaps every loop for a static state, in CSS so that
    no component has to know about it. */
 @media (prefers-reduced-motion: reduce) {
@@ -735,6 +791,11 @@ svg {
 
   .motion-loop .sweep span {
     width: 100%;
+  }
+
+  .get-chev,
+  .skip-link {
+    transition: none;
   }
 }
 
@@ -803,6 +864,10 @@ svg {
 
 .panel .micro {
   color: var(--panel-verified);
+}
+
+.arch .micro {
+  color: var(--panel-muted);
 }
 
 .panel h2 {
@@ -922,10 +987,14 @@ svg {
   background: var(--surface);
   padding: 48px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 48px;
   flex-wrap: wrap;
+}
+
+.get-intro {
+  flex: 1 1 320px;
 }
 
 .get h2 {
@@ -942,55 +1011,211 @@ svg {
   color: var(--muted);
 }
 
-.get-grid {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
+/* One decision, then a list.
+ *
+ * This used to be six tiles of equal weight in one flat row, two of them
+ * labelled "macOS" and three of them "Linux", with the only distinguishing
+ * text at 11px and the tile border — the only thing making a tile look like a
+ * tile — measuring 1.72:1 against its own fill. Six is more options than
+ * anybody holds at once, and the question it asked ("which CPU is in your
+ * Mac?") is one most visitors cannot answer.
+ *
+ * So the detected build is a filled control the size of the decision it
+ * carries, and everything else is one disclosure away, grouped by platform.
+ * Inside it the builds are links in a list rather than boxes: named on the
+ * left in the site's own link colour, the file on the right in mono, the way
+ * every other name-and-machine-fact pair on this site is set. A link is
+ * identified by being a link, so nothing here depends on a hairline being
+ * visible.
+ */
 
-.get-tile {
-  display: inline-flex;
+.get-actions {
+  flex: 1 1 400px;
+  min-width: 0;
+  display: flex;
   flex-direction: column;
-  gap: 4px;
-  border-radius: 8px;
-  border: 1px solid var(--rule-strong);
-  padding: 16px 22px;
-  text-decoration: none;
-  color: var(--graphite);
+  gap: 22px;
 }
 
-.get-tile:hover {
-  color: var(--graphite);
-  border-color: var(--graphite);
-}
-
-.get-tile.is-primary {
-  background: var(--graphite);
-  border-color: var(--graphite);
-  color: var(--paper);
-}
-
-.get-tile.is-primary:hover {
-  color: var(--paper);
-}
-
-.get-tile-name {
+.get-primary {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 500;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.get-tile-meta {
-  font-family: var(--mono);
-  font-size: 11px;
+/* What the operating system is about to say, beside the button that causes it.
+   This was on /security and in /docs and nowhere near the download, so every
+   visitor who took the shortest path met a Gatekeeper dialog with no warning
+   from the site. Amber, because amber on this system means you are needed. */
+.get-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-radius: 6px;
+  background: var(--attention-surface);
+  padding: 11px 13px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.get-warn svg {
+  margin-top: 3px;
+  color: var(--attention-text);
+}
+
+.get-warn strong,
+.get-warn a {
+  color: var(--attention-text);
+}
+
+/* Safari does not report the architecture, and Safari is most of the Mac
+   traffic a page like this gets. The lead is a default in that case, not a
+   detection, and saying so costs one line. */
+.get-guess {
+  font-size: 12px;
+  line-height: 1.55;
   color: var(--muted);
 }
 
-.get-tile.is-primary .get-tile-meta {
-  color: inherit;
-  opacity: 0.7;
+.get-copy {
+  align-self: flex-start;
+}
+
+.get-copy-fallback {
+  margin-top: -2px;
+  font-size: 12px;
+  color: var(--graphite);
+  user-select: all;
+}
+
+.get-foot {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.get-lead {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--graphite);
+  border-radius: 8px;
+  background: var(--graphite);
+  padding: 16px 22px;
+  color: var(--paper);
+  text-decoration: none;
+}
+
+.get-lead:hover {
+  background: #000;
+  color: var(--paper);
+}
+
+.get-lead-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.get-lead-name {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+}
+
+.get-lead-meta {
+  font-size: 12px;
+  color: var(--panel-muted);
+}
+
+.get-more > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  list-style: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.get-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.get-more > summary:hover {
+  color: var(--graphite);
+}
+
+.get-chev {
+  transition: transform 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.get-more[open] > summary .get-chev {
+  transform: rotate(180deg);
+}
+
+.get-groups {
+  margin-top: 14px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--surface-sunk);
+  overflow: hidden;
+}
+
+.get-group {
+  padding: 14px 18px 8px;
+}
+
+.get-group + .get-group {
+  border-top: 1px solid var(--rule);
+}
+
+/* The rows bleed to the panel edge so a hover fills the whole width of the
+   target, which is what makes a row of text read as one thing to press. The
+   inset that keeps the labels off the border therefore lives on the group. */
+
+.get-group-note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.get-group > .micro + .get-alt,
+.get-group-note + .get-alt {
+  margin-top: 6px;
+}
+
+.get-alt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 -18px;
+  padding: 12px 18px;
+  font-size: 14px;
+  color: var(--slate);
+  text-decoration: none;
+}
+
+.get-alt + .get-alt {
+  border-top: 1px solid var(--rule);
+}
+
+.get-alt:hover {
+  background: var(--surface);
+  color: var(--slate-hover);
+}
+
+.get-alt .mono {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.get-alt:hover .mono {
+  color: var(--graphite);
 }
 
 /* ---- Long-form pages ---- */
@@ -1083,8 +1308,8 @@ svg {
   font-size: 14px;
   line-height: 1.6;
   color: var(--panel-muted);
-  flex: 1;
-  min-width: 280px;
+  flex: 1 1 280px;
+  min-width: 0;
 }
 
 .cards-2 {
@@ -1095,6 +1320,19 @@ svg {
   align-items: start;
 }
 
+/* Grid and flex children refuse to shrink below their content by default, and
+   `login.microsoftonline.com` is one unbreakable word. The note under the
+   architecture diagram was the same shape, with an explicit `min-width` of
+   its own. */
+.cards-2 > *,
+.table-row > * {
+  min-width: 0;
+}
+
+.table-row .mono {
+  overflow-wrap: anywhere;
+}
+
 .card-lg {
   border: 1px solid var(--rule);
   background: var(--surface);
@@ -1102,7 +1340,7 @@ svg {
   padding: 32px;
 }
 
-.card-lg > p:first-child {
+.card-lg > h2 {
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -1327,12 +1565,12 @@ pre {
   padding: 18px 20px;
 }
 
-.faq-item p:first-child {
+.faq-item h3 {
   font-size: 15px;
   font-weight: 600;
 }
 
-.faq-item p + p {
+.faq-item h3 + p {
   margin-top: 8px;
   font-size: 14px;
   line-height: 1.65;
@@ -1568,6 +1806,9 @@ pre {
     text-align: center;
   }
 
+  /* Collapsed to one line here. The markup carries a space before the break —
+     invisible at the end of a line, and what keeps "HTTP →" off "loopback"
+     once the break itself is gone. */
   .arch-arrow br {
     display: none;
   }
@@ -1665,7 +1906,7 @@ pre {
   }
 
   .frame-body {
-    height: 380px;
+    height: auto;
   }
 }
 
@@ -1836,9 +2077,21 @@ pre {
   font-weight: 600;
 }
 
+.docs-crumb-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
 .docs-crumb {
   font-size: 12px;
   color: var(--muted);
+}
+
+.docs-updated {
+  font-size: 12px;
 }
 
 .meter span.is-62 {

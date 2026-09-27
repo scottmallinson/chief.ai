@@ -273,7 +273,7 @@ describe('writeVersion', () => {
 
     // Both fallbacks, named separately: one of them being right is how this
     // was wrong before.
-    expect(after).toContain('data-download-note>Version 9.9.9');
+    expect(after).toContain('Version 9.9.9 · no account · no telemetry from the app');
     expect(after).toContain('<span data-version>9.9.9</span>');
 
     // And nothing anywhere in the page still claims an older one.

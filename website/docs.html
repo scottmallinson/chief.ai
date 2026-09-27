@@ -14,6 +14,7 @@
     <script src="support.js" defer></script>
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to content</a>
     <svg class="sprite" aria-hidden="true">
       <defs>
         <symbol
@@ -90,12 +91,12 @@
       </div>
     </header>
 
-    <main class="shell docs">
+    <main class="shell docs" id="main">
       <nav class="docs-nav">
         <div class="docs-nav-group">
           <p class="micro">start</p>
           <div class="docs-nav-links">
-            <a class="is-current" href="#install">Install</a>
+            <a class="is-current" aria-current="location" href="#install">Install</a>
             <a href="#model">The model</a>
             <a href="#connect">Connect a tool</a>
           </div>
@@ -117,7 +118,14 @@
       </nav>
 
       <article class="docs-article">
-        <p class="mono docs-crumb">docs / start / install</p>
+        <div class="docs-crumb-row">
+          <p class="mono docs-crumb" data-crumb>docs / start / install</p>
+          <p class="mono docs-updated">
+            <a href="https://github.com/scottmallinson/chief.ai/commits/main/website/docs.html"
+              >when this page last changed</a
+            >
+          </p>
+        </div>
         <h1 id="install">Install Chief</h1>
         <p class="docs-lede">
           Chief needs one thing on the machine: the app. The llama.cpp engine is bundled inside it,
@@ -127,10 +135,11 @@
 
         <h2>1 · The app</h2>
         <p>
-          Download the build for your machine. Chief ships for macOS — Apple silicon and Intel — and
-          for Windows on x64. There is no Linux build. Every build is published on the
-          <a href="https://github.com/scottmallinson/chief.ai/releases">releases page</a>, alongside
-          the source it was built from.
+          Download the build for your machine. Chief ships for macOS — Apple silicon and Intel — for
+          Windows on x64, and for Linux on x64 as an AppImage, a <code>.deb</code> and an
+          <code>.rpm</code>, which are one build packaged three ways. Every build is published on
+          the <a href="https://github.com/scottmallinson/chief.ai/releases">releases page</a>,
+          alongside the source it was built from.
         </p>
 
         <div class="note is-attention">
@@ -221,14 +230,14 @@
         <h2 id="trouble">If something is wrong</h2>
         <div class="faq">
           <div class="faq-item">
-            <p>“Starting…” on the setup screen</p>
+            <h3>“Starting…” on the setup screen</h3>
             <p>
               The engine is reading the weights. A couple of gigabytes takes a few seconds, and the
               screen re-checks itself until it resolves. This is a state, not a failure.
             </p>
           </div>
           <div class="faq-item">
-            <p>Answers are slow</p>
+            <h3>Answers are slow</h3>
             <p>
               Speed follows the hardware. The status line under an answer names the step actually
               running; past three seconds it adds elapsed time, and past fifteen it says outright
@@ -236,7 +245,7 @@
             </p>
           </div>
           <div class="faq-item">
-            <p>The engine will not start</p>
+            <h3>The engine will not start</h3>
             <p>
               Chief keeps the last lines the server wrote and shows them rather than guessing. The
               usual causes are a machine without room for the model and, on macOS 12, a missing
@@ -244,7 +253,7 @@
             </p>
           </div>
           <div class="faq-item">
-            <p>Where is my data?</p>
+            <h3>Where is my data?</h3>
             <p>
               One SQLite file in the app data directory, set to mode 0600, plus your notes as
               markdown in a folder you chose. Deleting the file deletes the log — there is no second
@@ -286,6 +295,7 @@
             <p class="micro">trust</p>
             <a href="security.html">Security</a>
             <a href="security.html#collect">What it doesn’t collect</a>
+            <a href="security.html#site">What this website counts</a>
           </div>
           <div class="footer-col">
             <p class="micro">source</p>
@@ -296,7 +306,7 @@
       </div>
       <div class="footer-base">
         <div class="shell">
-          <p class="mono">© 2026 Chief · no accounts, no telemetry</p>
+          <p class="mono">© 2026 Chief · no accounts · no telemetry from the app</p>
           <p class="footer-badge">
             <svg width="14" height="14" aria-hidden="true"><use href="#i-shield-check" /></svg>
             on-device only
