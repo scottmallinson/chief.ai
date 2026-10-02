@@ -237,6 +237,47 @@ pub async fn forget_account(pool: &SqlitePool, account_id: i64) -> Result<u64, E
     Ok(done.rows_affected())
 }
 
+/// Drop the meetings an account logged for a window of time that its calendar
+/// no longer holds.
+///
+/// A meeting is keyed on its start and its subject, so one that moves is a new
+/// row and one that is cancelled is no row at all — and the old one stays
+/// behind, still claiming a place in the day. `keep` is the identifiers the
+/// calendar holds **now**; everything else this account logged as a meeting
+/// inside `[from, to)` is removed.
+///
+/// Only calendar rows, only this account, only that window, and never a row
+/// without an identifier, which is one the user typed. The search index
+/// follows through migration 8's delete trigger.
+pub async fn forget_meetings_except(
+    pool: &SqlitePool,
+    account_id: i64,
+    from: &str,
+    to: &str,
+    keep: &[String],
+) -> Result<u64, Error> {
+    // Numbered, like the three above: SQLite counts a bare `?` from one more
+    // than the highest number it has seen, which is easy to get wrong.
+    let marks = (4..4 + keep.len())
+        .map(|number| format!("?{number}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "DELETE FROM work_logs
+          WHERE source = 'calendar' AND account_id = ?1
+            AND timestamp >= ?2 AND timestamp < ?3
+            AND external_id IS NOT NULL
+            AND external_id NOT IN ({marks})"
+    );
+
+    let mut query = sqlx::query(&sql).bind(account_id).bind(from).bind(to);
+    for id in keep {
+        query = query.bind(id);
+    }
+
+    Ok(query.execute(pool).await?.rows_affected())
+}
+
 /// How many work log rows one account is holding.
 pub async fn count_for_account(pool: &SqlitePool, account_id: i64) -> Result<i64, Error> {
     Ok(

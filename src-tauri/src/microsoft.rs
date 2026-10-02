@@ -385,6 +385,13 @@ pub struct Event {
     /// mailbox address is more identifying than the answer needs.
     pub attendees: Vec<String>,
     pub online: bool,
+    /// A day-long event — school closed, a bank holiday, somebody away.
+    ///
+    /// Graph reports one as starting at midnight, so without this a day-long
+    /// fact reads as a meeting at 00:00 and a model will say so. Left out of
+    /// what the model reads when it is false, which is nearly always.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub all_day: bool,
 }
 
 /// One message, reduced the same way.
@@ -418,7 +425,7 @@ impl Client {
         limit: u8,
     ) -> Result<Vec<Event>, Error> {
         let url = format!(
-            "{}/v1.0/me/calendarView?startDateTime={}&endDateTime={}&$top={}&$orderby=start/dateTime&$select=subject,start,end,organizer,attendees,isOnlineMeeting",
+            "{}/v1.0/me/calendarView?startDateTime={}&endDateTime={}&$top={}&$orderby=start/dateTime&$select=subject,start,end,organizer,attendees,isOnlineMeeting,isAllDay",
             self.graph_host,
             urlencode(from),
             urlencode(to),
@@ -490,6 +497,7 @@ struct RawEvent {
     #[serde(default)]
     attendees: Vec<Recipient>,
     is_online_meeting: Option<bool>,
+    is_all_day: Option<bool>,
 }
 
 impl RawEvent {
@@ -507,6 +515,7 @@ impl RawEvent {
                 .filter_map(Recipient::name)
                 .collect(),
             online: self.is_online_meeting.unwrap_or(false),
+            all_day: self.is_all_day.unwrap_or(false),
         }
     }
 }
