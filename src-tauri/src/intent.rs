@@ -81,7 +81,10 @@ impl Window {
     ///
     /// Weeks start on Monday, matching `clock::describe` — the model and the
     /// router must not disagree about which days "this week" covers.
-    fn bounds<Tz: chrono::TimeZone>(self, now: &chrono::DateTime<Tz>) -> Option<(String, String)> {
+    pub(crate) fn bounds<Tz: chrono::TimeZone>(
+        self,
+        now: &chrono::DateTime<Tz>,
+    ) -> Option<(String, String)> {
         let today = now.date_naive();
 
         let (from, days) = match self {
@@ -481,7 +484,7 @@ async fn prep(context: &recipe::Context) -> Option<Answered> {
         &from,
         &to,
         Some("calendar"),
-        recipe::PER_SOURCE.into(),
+        recipe::CALENDAR_LIMIT.into(),
     )
     .await
     .ok()?;
@@ -505,7 +508,7 @@ async fn prep(context: &recipe::Context) -> Option<Answered> {
 /// Generic over the time zone, so the conversion is tested at a fixed offset
 /// rather than against whatever clock the test machine keeps — the same reason
 /// `clock::describe` is.
-fn day_window<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> (String, String) {
+pub(crate) fn day_window<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> (String, String) {
     let today = now.date_naive();
 
     between(now, today, today + chrono::Duration::days(1))

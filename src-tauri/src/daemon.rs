@@ -735,18 +735,47 @@ async fn log_one(
 /// A calendar that will not load costs that calendar and nothing else, the
 /// rule every source in `recipe::gather` already follows.
 pub async fn ingest_calendar(context: &recipe::Context) -> usize {
-    let zone = chrono::Local::now().timezone();
+    let now = chrono::Local::now();
+    let zone = now.timezone();
+    let (from, to) = crate::intent::day_window(&now);
     let mut written = 0;
 
-    for (account_id, event) in todays_meetings(context).await {
-        let Some(record) = ingest::from_event(&event, account_id, &zone) else {
+    for (account_id, read, whole) in todays_meetings(context, now).await {
+        // A calendar that would not answer says nothing about the day, so what
+        // was saved from the last pass stays. Silence is not a cancellation.
+        let Some(events) = read else {
             continue;
         };
 
-        match work_log::upsert(&context.pool, record).await {
-            Ok(true) => written += 1,
-            Ok(false) => {}
-            Err(error) => eprintln!("a meeting could not be logged: {error}"),
+        let mut current = Vec::new();
+
+        for event in &events {
+            let Some(record) = ingest::from_event(event, account_id, &zone) else {
+                continue;
+            };
+
+            current.push(record.external_id.clone());
+
+            match work_log::upsert(&context.pool, record).await {
+                Ok(true) => written += 1,
+                Ok(false) => {}
+                Err(error) => eprintln!("a meeting could not be logged: {error}"),
+            }
+        }
+
+        // **A meeting that moved or was cancelled has to leave.** Rows are keyed
+        // on start and subject, so a moved meeting is a new row and a cancelled
+        // one is no row at all; the old ones stayed, and "what is on my
+        // calendar" listed both times of a 1:1 and a meeting that no longer
+        // exists. Only when this read was the whole day: a calendar that
+        // stopped at its limit has not told us what is missing from it.
+        if whole {
+            if let Err(error) =
+                work_log::forget_meetings_except(&context.pool, account_id, &from, &to, &current)
+                    .await
+            {
+                eprintln!("old meetings could not be cleared: {error}");
+            }
         }
     }
 
@@ -759,18 +788,35 @@ pub async fn ingest_calendar(context: &recipe::Context) -> usize {
 /// `(source, account_id, external_id)`: two people sharing a machine, or one
 /// person with a work and a personal calendar, legitimately hold the same
 /// meeting twice and neither copy should overwrite the other.
-async fn todays_meetings(context: &recipe::Context) -> Vec<(i64, crate::microsoft::Event)> {
-    let mut found = recipe::subscribed_events_by_account(context).await;
+///
+/// `None` is a calendar that could not be read, and the flag says whether what
+/// came back is the whole day or stopped at [`recipe::CALENDAR_LIMIT`].
+async fn todays_meetings(
+    context: &recipe::Context,
+    now: chrono::DateTime<chrono::Local>,
+) -> Vec<(i64, Option<Vec<crate::microsoft::Event>>, bool)> {
+    // A subscription is read in full, so what it returns is the whole day.
+    let mut found: Vec<_> = recipe::read_subscriptions_at(context, now)
+        .await
+        .into_iter()
+        .map(|(account, read)| (account, read, true))
+        .collect();
 
-    let (from, to) = recipe::today();
+    let (from, to) = recipe::today_at(&now);
 
     for account in recipe::outlook_accounts(context).await {
         let session =
             crate::session::OutlookSession::new(&context.pool, &context.microsoft, account);
 
-        match session.events(&from, &to, recipe::PER_SOURCE).await {
-            Ok(events) => found.extend(events.into_iter().map(|event| (account, event))),
-            Err(error) => eprintln!("an Outlook calendar could not be read: {error}"),
+        match session.events(&from, &to, recipe::CALENDAR_LIMIT).await {
+            Ok(events) => {
+                let whole = events.len() < usize::from(recipe::CALENDAR_LIMIT);
+                found.push((account, Some(events), whole));
+            }
+            Err(error) => {
+                eprintln!("an Outlook calendar could not be read: {error}");
+                found.push((account, None, false));
+            }
         }
     }
 

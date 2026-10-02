@@ -335,7 +335,8 @@ impl ChatResponse {
 const ANSWER_CUT: &str = "\n\n[Cut short — this answer reached its length limit.]";
 
 /// What an answer the engine stopped delivering is marked with.
-const ANSWER_INTERRUPTED: &str = "\n\n[Cut short — the model engine stopped responding.]";
+pub(crate) const ANSWER_INTERRUPTED: &str =
+    "\n\n[Cut short — the model engine stopped responding.]";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Choice {
