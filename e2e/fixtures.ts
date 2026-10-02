@@ -101,6 +101,12 @@ export interface Backend {
   syncStates?: SyncState[];
   /** Today's brief, or null when none has been written. */
   brief?: Brief | null;
+  /**
+   * Briefs by the day they are for. When set, `todays_brief` answers with the
+   * one for the page's own current date, which is how a test lets the night
+   * pass: the brief the daemon wrote overnight is there once the clock moves.
+   */
+  briefByDate?: Record<string, Brief>;
   /** What `list_corpus` finds, which is where the day list comes from. */
   corpus?: string[];
   /** The drafts Chief has prepared. Nothing here has been sent. */
@@ -191,6 +197,7 @@ interface Setup {
   accounts: Account[];
   syncStates: SyncState[];
   brief: Brief | null;
+  briefByDate: Record<string, Brief> | null;
   corpus: string[];
   proposals: Proposal[];
   holdAnswers: boolean;
@@ -328,8 +335,18 @@ function installBackend(setup: Setup) {
         case 'sync_status':
           return Promise.resolve(setup.syncStates);
 
-        case 'todays_brief':
-          return Promise.resolve(setup.brief);
+        case 'todays_brief': {
+          if (setup.briefByDate === null) return Promise.resolve(setup.brief);
+
+          const now = new Date();
+          const day = [
+            now.getFullYear(),
+            `${now.getMonth() + 1}`.padStart(2, '0'),
+            `${now.getDate()}`.padStart(2, '0'),
+          ].join('-');
+
+          return Promise.resolve(setup.briefByDate[day] ?? null);
+        }
 
         case 'list_proposals':
           return Promise.resolve(setup.proposals);
@@ -469,6 +486,7 @@ function handleFor(page: Page): Chief {
         accounts: backend.accounts ?? [],
         syncStates: backend.syncStates ?? [],
         brief: backend.brief ?? null,
+        briefByDate: backend.briefByDate ?? null,
         corpus: backend.corpus ?? [],
         proposals: backend.proposals ?? [],
         holdAnswers: backend.holdAnswers ?? false,

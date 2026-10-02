@@ -15,7 +15,8 @@ pnpm verify           # everything CI runs
 ```
 
 `pnpm runbook` is `cargo test scenarios` plus the `across midnight` tests in
-`src/hooks/use-brief.test.ts`. The manual scenarios at the end need a real machine; run them with
+`src/hooks/use-brief.test.ts`. The same midnight scenarios also run in the built app, in a real browser
+with the clock under test control, as `e2e/midnight.spec.ts` (`pnpm test:e2e`). The manual scenarios at the end need a real machine; run them with
 the `on-device-validation` skill before a release.
 
 ## How the automatic scenarios work
