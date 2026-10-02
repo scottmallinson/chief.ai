@@ -250,12 +250,31 @@ impl Corpus {
                 })?;
         }
 
-        tokio::fs::write(&absolute, contents)
+        // **Written whole or not at all.** `fs::write` truncates the file and
+        // then fills it, so a machine that loses power — or a process that is
+        // killed — between the two leaves the file empty or cut off, and what
+        // was there before is gone. The new contents go to a neighbour first
+        // and are renamed over the old file, which the filesystem does in one
+        // step: after a crash the file is the old one or the new one. The
+        // neighbour is not a `.md`, so nothing that lists or watches the corpus
+        // takes it for a note.
+        let temporary = absolute.with_extension("md.chief-tmp");
+        let failed = |source| Error::Write {
+            path: absolute.display().to_string(),
+            source,
+        };
+
+        tokio::fs::write(&temporary, contents)
             .await
-            .map_err(|source| Error::Write {
-                path: absolute.display().to_string(),
-                source,
-            })
+            .map_err(failed)?;
+
+        if let Err(source) = tokio::fs::rename(&temporary, &absolute).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
+
+            return Err(failed(source));
+        }
+
+        Ok(())
     }
 
     /// When one file last changed, as an ISO-8601 instant, if it is there.
