@@ -242,6 +242,11 @@ pub struct Options {
     /// Low, because these answers are about what the tools actually returned.
     /// Invention is the failure mode here, not dullness.
     pub temperature: f32,
+    /// How hard to push the model off words it has just written. Absent unless
+    /// asked for: it would bend the arguments of a tool call, which are
+    /// repetitive by nature, so only a request for prose sets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat_penalty: Option<f32>,
 }
 
 impl Options {
@@ -250,7 +255,16 @@ impl Options {
         Self {
             max_tokens: 512,
             temperature: 0.2,
+            repeat_penalty: None,
         }
+    }
+
+    /// Discourage repeating what was just said. For long prose from a small
+    /// model, which at a low temperature will otherwise circle a list forever.
+    #[must_use]
+    pub const fn with_repeat_penalty(mut self, penalty: f32) -> Self {
+        self.repeat_penalty = Some(penalty);
+        self
     }
 
     /// Cap the reply at `tokens`.
@@ -332,7 +346,7 @@ impl ChatResponse {
 }
 
 /// What an answer cut short by the token ceiling is marked with.
-const ANSWER_CUT: &str = "\n\n[Cut short — this answer reached its length limit.]";
+pub(crate) const ANSWER_CUT: &str = "\n\n[Cut short — this answer reached its length limit.]";
 
 /// What an answer the engine stopped delivering is marked with.
 pub(crate) const ANSWER_INTERRUPTED: &str =

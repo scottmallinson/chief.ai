@@ -1867,4 +1867,44 @@ mod any {
             .expect("state");
         assert_eq!(state.status, sync_state::Status::Error);
     }
+    /// ANY-16. A small model circles one list until it runs out of room, as
+    /// Llama 3.2 1B did on an 8 GB Mac. The brief keeps each line once, drops
+    /// the apology, and the request asks the model not to repeat itself.
+    #[tokio::test]
+    async fn any_16_a_looping_model_cannot_fill_the_brief_with_one_list() {
+        let github = github_with(Github {
+            mine: search(&[pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z")]),
+            ..Github::default()
+        })
+        .await;
+        let engine = model_saying(
+            "- 10:00 Standup\n- Review the billing pull request\n- Review the search pull request\n\
+             - Review the billing pull request\n- Review the search pull request\n\
+             - Review the billing pull request\n- Review the search pull request",
+        )
+        .await;
+        let world = world(Some(&github.host), None, &engine.host).await;
+
+        let brief = recipe::daily_brief(&world.ctx).await.expect("a brief");
+
+        let written = world
+            .ctx
+            .corpus
+            .read(&format!("briefs/{}.md", recipe::today_date()))
+            .await
+            .expect("filed");
+        assert_eq!(
+            written.matches("billing pull request").count(),
+            1,
+            "the loop was filed as the brief: {written}"
+        );
+        assert!(written.contains("Standup") && brief.date == recipe::today_date());
+        assert!(
+            engine
+                .requests()
+                .iter()
+                .any(|seen| seen.body.contains("\"repeat_penalty\"")),
+            "the model was not asked to avoid repeating itself"
+        );
+    }
 }

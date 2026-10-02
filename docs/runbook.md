@@ -90,31 +90,32 @@ A stand-up each day, occasional ad-hoc meetings, focused on shipping and coordin
 
 ## Anyone: edges of the day, the network, the machine and the model
 
-| ID     | Scenario                                                                             | Expected                                                                                               | Check  |
-| ------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ------ |
-| ANY-01 | A brief starts at 23:59:50 on 31 December                                            | Filed under 31 December with that day's meetings, and told it is 23:59. Tomorrow starts un-briefed.    | Auto   |
-| ANY-02 | The same machine at 00:01 on 1 January                                               | Briefs the new day with the new day's meetings and none of yesterday's.                                | Auto   |
-| ANY-03 | "This week" and "last week" at Sunday 23:59:59 and Monday 00:00:00                   | Turn over exactly at midnight on Monday.                                                               | Auto   |
-| ANY-04 | Auckland (UTC+13), Los Angeles (UTC−8), London; meetings at 00:00 and 23:59          | Each lands in the user's own day, never the UTC one.                                                   | Auto   |
-| ANY-05 | The model engine is not running                                                      | Error, no file, and the day is not marked briefed, so the next pass tries again.                       | Auto   |
-| ANY-06 | The model answers with nothing                                                       | Not filed as the brief. It used to write an empty file and mark the day done.                          | Auto   |
-| ANY-07 | The power goes while the model is writing                                            | The half-answer is not the brief, and the day stays open. It used to keep it with an apology attached. | Auto   |
-| ANY-08 | Signed in, but offline, nothing saved yet                                            | Says it could not reach anything. It said "nothing is connected".                                      | Auto   |
-| ANY-09 | Offline, with a work log from earlier                                                | The brief is still written from the log.                                                               | Auto   |
-| ANY-10 | Wake with no network, then the network returns                                       | First pass records an outage, not a revoked sign-in. The next pass recovers by itself.                 | Auto   |
-| ANY-11 | Power loss while Chief writes a file                                                 | The file is whole or the old one, never torn. Nothing stray is left in the folder.                     | Auto   |
-| ANY-12 | The user edits today's brief and the background pass runs again                      | Their edit is kept.                                                                                    | Auto   |
-| ANY-13 | 60 meetings, 30 reviews, 30 own pull requests, 30 unread mails                       | One model call, and the prompt is inside the token budget.                                             | Auto   |
-| ANY-14 | Questions in each persona's words, including ones that merely mention a trigger word | The ones that mean a stored read take the free route. The others reach the model.                      | Auto   |
-| ANY-15 | The connection to GitHub is accepted and then dropped                                | The brief is written from the calendar. The account shows an outage.                                   | Auto   |
-| ANY-16 | The window is left open overnight (Chief lives in the tray) and shown the next day   | Heading and brief move to the new day, and the brief the background pass wrote is on screen.           | Auto   |
-| ANY-17 | The same, while an earlier day is being read                                         | The reader is not moved.                                                                               | Auto   |
-| ANY-18 | The window is left open and visible across midnight                                  | Rolls over by itself.                                                                                  | Auto   |
-| ANY-19 | Sleep the laptop across midnight with Chief hidden in the tray, then open the lid    | The window opens on the new day.                                                                       | Manual |
-| ANY-20 | Pull the plug during a brief on a real machine                                       | Chief starts cleanly, the day is un-briefed, and one is written.                                       | Manual |
-| ANY-21 | The night clocks change (spring forward and fall back)                               | The day still has exactly one brief and the right meetings. Needs a real clock change.                 | Manual |
-| ANY-22 | Wi-Fi off in the real app, then on                                                   | Settings shows an outage and recovers; no sign-in prompt.                                              | Manual |
-| ANY-23 | First launch on the oldest supported macOS                                           | Opens, sets up, answers.                                                                               | Manual |
+| ID     | Scenario                                                                                  | Expected                                                                                                   | Check  |
+| ------ | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------ |
+| ANY-01 | A brief starts at 23:59:50 on 31 December                                                 | Filed under 31 December with that day's meetings, and told it is 23:59. Tomorrow starts un-briefed.        | Auto   |
+| ANY-02 | The same machine at 00:01 on 1 January                                                    | Briefs the new day with the new day's meetings and none of yesterday's.                                    | Auto   |
+| ANY-03 | "This week" and "last week" at Sunday 23:59:59 and Monday 00:00:00                        | Turn over exactly at midnight on Monday.                                                                   | Auto   |
+| ANY-04 | Auckland (UTC+13), Los Angeles (UTC−8), London; meetings at 00:00 and 23:59               | Each lands in the user's own day, never the UTC one.                                                       | Auto   |
+| ANY-05 | The model engine is not running                                                           | Error, no file, and the day is not marked briefed, so the next pass tries again.                           | Auto   |
+| ANY-06 | The model answers with nothing                                                            | Not filed as the brief. It used to write an empty file and mark the day done.                              | Auto   |
+| ANY-07 | The power goes while the model is writing                                                 | The half-answer is not the brief, and the day stays open. It used to keep it with an apology attached.     | Auto   |
+| ANY-08 | Signed in, but offline, nothing saved yet                                                 | Says it could not reach anything. It said "nothing is connected".                                          | Auto   |
+| ANY-09 | Offline, with a work log from earlier                                                     | The brief is still written from the log.                                                                   | Auto   |
+| ANY-10 | Wake with no network, then the network returns                                            | First pass records an outage, not a revoked sign-in. The next pass recovers by itself.                     | Auto   |
+| ANY-11 | Power loss while Chief writes a file                                                      | The file is whole or the old one, never torn. Nothing stray is left in the folder.                         | Auto   |
+| ANY-12 | The user edits today's brief and the background pass runs again                           | Their edit is kept.                                                                                        | Auto   |
+| ANY-13 | 60 meetings, 30 reviews, 30 own pull requests, 30 unread mails                            | One model call, and the prompt is inside the token budget.                                                 | Auto   |
+| ANY-14 | Questions in each persona's words, including ones that merely mention a trigger word      | The ones that mean a stored read take the free route. The others reach the model.                          | Auto   |
+| ANY-15 | The connection to GitHub is accepted and then dropped                                     | The brief is written from the calendar. The account shows an outage.                                       | Auto   |
+| ANY-16 | A small model loops, listing the same items until the length limit (seen on 1B, 8 GB Mac) | Each line is kept once, the length-limit apology is dropped, and the request asks the model not to repeat. | Auto   |
+| ANY-16 | The window is left open overnight (Chief lives in the tray) and shown the next day        | Heading and brief move to the new day, and the brief the background pass wrote is on screen.               | Auto   |
+| ANY-17 | The same, while an earlier day is being read                                              | The reader is not moved.                                                                                   | Auto   |
+| ANY-18 | The window is left open and visible across midnight                                       | Rolls over by itself.                                                                                      | Auto   |
+| ANY-19 | Sleep the laptop across midnight with Chief hidden in the tray, then open the lid         | The window opens on the new day.                                                                           | Manual |
+| ANY-20 | Pull the plug during a brief on a real machine                                            | Chief starts cleanly, the day is un-briefed, and one is written.                                           | Manual |
+| ANY-21 | The night clocks change (spring forward and fall back)                                    | The day still has exactly one brief and the right meetings. Needs a real clock change.                     | Manual |
+| ANY-22 | Wi-Fi off in the real app, then on                                                        | Settings shows an outage and recovers; no sign-in prompt.                                                  | Manual |
+| ANY-23 | First launch on the oldest supported macOS                                                | Opens, sets up, answers.                                                                                   | Manual |
 
 ## What the first pass found
 
@@ -130,6 +131,7 @@ Each of these scenarios was red against the code as it stood, for the reason in 
 | PAR-02         | All-day events read as a meeting at 00:00.                                                                               | Graph's `isAllDay` is read, and the line says "all day".                                               |
 | ANY-06         | An empty model answer was written as the brief and the day marked done.                                                  | Rejected, so the next pass tries again.                                                                |
 | ANY-07         | An interrupted answer was kept with an apology attached and the day marked done.                                         | Rejected, so the next pass tries again.                                                                |
+| ANY-16         | A looping 1B brief filed the same four pull requests repeatedly, ending in a length-limit apology.                       | Repeats removed; a repeat penalty is sent with brief requests only.                                    |
 | ANY-08         | Connected but unreachable said "nothing is connected yet".                                                               | A separate message that says the network could not be reached.                                         |
 | ANY-11         | Files were written in place, so a power cut could leave one empty or cut off.                                            | Written to a neighbour and renamed over the original.                                                  |
 

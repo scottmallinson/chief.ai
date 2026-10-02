@@ -36,6 +36,15 @@ use crate::{clock, corpus, github, integrations};
 /// context, short enough that a slow machine finishes it.
 const BRIEF_TOKENS: u32 = 500;
 
+/// Pushes the model off lines it has already written. Measured need: Llama 3.2
+/// 1B at temperature 0.2 listed the same four pull requests until it hit the
+/// length limit. Mild, because a brief legitimately reuses names.
+const BRIEF_REPEAT_PENALTY: f32 = 1.15;
+
+/// A line this long, written this many times, is a loop and not a list.
+const LOOP_MIN_CHARS: usize = 12;
+const LOOP_REPEATS: usize = 3;
+
 /// How many of anything is gathered for one brief.
 pub(crate) const PER_SOURCE: u8 = 10;
 
@@ -641,7 +650,11 @@ Rules:
 /// timed correctly rather than to show progress. See REC-65.
 async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
     let request = ChatRequest::new(crate::agent::DEFAULT_MODEL, vec![Message::user(prompt)])
-        .with_options(Options::new().with_answer_length(BRIEF_TOKENS));
+        .with_options(
+            Options::new()
+                .with_answer_length(BRIEF_TOKENS)
+                .with_repeat_penalty(BRIEF_REPEAT_PENALTY),
+        );
 
     let reply = engine.chat_stream(&request, |_| {}).await?;
 
@@ -654,13 +667,57 @@ async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
         return Err(Error::Engine(llama::Error::Interrupted));
     }
 
-    let written = reply.content.trim();
+    let written = break_loop(reply.content.trim());
 
     if written.is_empty() {
         return Err(Error::EmptyAnswer);
     }
 
-    Ok(written.to_string())
+    Ok(written)
+}
+
+/// The line as compared for repeats: no list marker, no case, no padding.
+fn loop_key(line: &str) -> String {
+    line.trim()
+        .trim_start_matches(['-', '*', '•', ' '])
+        .to_lowercase()
+}
+
+/// Whether the model circled: one substantial line written three or more times.
+fn is_looping(text: &str) -> bool {
+    let mut counts = std::collections::HashMap::new();
+    text.lines().map(loop_key).any(|key| {
+        if key.chars().count() < LOOP_MIN_CHARS {
+            return false;
+        }
+        let seen = counts.entry(key).or_insert(0usize);
+        *seen += 1;
+        *seen >= LOOP_REPEATS
+    })
+}
+
+/// A brief with its loop taken out.
+///
+/// A small model that cannot stop listing the same items runs to the length
+/// limit and leaves one good copy of each, then the same lines again, then an
+/// apology. Rejecting that would retry on every pass and loop again on a slow
+/// machine, so instead each line is kept once, in order, and the length-limit
+/// marker is dropped: the model did not run out of things to say, it ran out of
+/// new ones. A brief that never loops is returned exactly as written.
+fn break_loop(text: &str) -> String {
+    if !is_looping(text) {
+        return text.to_string();
+    }
+    let body = text.strip_suffix(llama::ANSWER_CUT).unwrap_or(text);
+    let mut seen = std::collections::HashSet::new();
+    let kept: Vec<&str> = body
+        .lines()
+        .filter(|line| {
+            let key = loop_key(line);
+            key.chars().count() < LOOP_MIN_CHARS || seen.insert(key)
+        })
+        .collect();
+    kept.join("\n").trim().to_string()
 }
 
 /// Make today's brief and write it into the corpus.
@@ -931,6 +988,31 @@ pub async fn todays_brief<R: tauri::Runtime>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_brief_that_does_not_loop_is_returned_exactly_as_written() {
+        let text = "- Review the billing pull request\n- Review the billing pull request\n- ok";
+        assert_eq!(super::break_loop(text), text);
+    }
+
+    #[test]
+    fn a_loop_is_cut_to_one_copy_of_each_line_and_loses_its_apology() {
+        let looped = format!(
+            "- Fix the login bug today\n- Ship the release notes\n- Fix the login bug today\n\
+             - Ship the release notes\n- Fix the login bug today{}",
+            crate::llama::ANSWER_CUT
+        );
+        assert_eq!(
+            super::break_loop(&looped),
+            "- Fix the login bug today\n- Ship the release notes"
+        );
+    }
+
+    #[test]
+    fn short_lines_and_headings_are_never_treated_as_a_loop() {
+        let text = "## Today\n- ok\n- ok\n- ok\n- ok";
+        assert_eq!(super::break_loop(text), text);
+    }
+
     use super::*;
     use crate::work_log;
 
