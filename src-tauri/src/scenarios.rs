@@ -1907,4 +1907,36 @@ mod any {
             "the model was not asked to avoid repeating itself"
         );
     }
+
+    /// ANY-24. Qwen3 reasons at length before it answers unless its template is
+    /// told not to, which on an 8 GB Intel Mac is minutes of writing nobody
+    /// reads. The brief request says so, and asks for the mildest repeat penalty
+    /// the benchmark found to cost nothing.
+    #[tokio::test]
+    async fn any_24_the_brief_request_switches_thinking_off_and_stays_mild() {
+        let github = github_with(Github {
+            mine: search(&[pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z")]),
+            ..Github::default()
+        })
+        .await;
+        let engine = model_saying("- 10:00 Standup").await;
+        let world = world(Some(&github.host), None, &engine.host).await;
+
+        recipe::daily_brief(&world.ctx).await.expect("a brief");
+
+        let body: serde_json::Value = serde_json::from_str(
+            engine
+                .requests()
+                .last()
+                .expect("the model was asked")
+                .body
+                .as_str(),
+        )
+        .expect("json");
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(
+            body["repeat_penalty"].as_f64().map(|p| (p * 100.0).round()),
+            Some(105.0)
+        );
+    }
 }
