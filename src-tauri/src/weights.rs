@@ -27,8 +27,8 @@ use crate::probe::Tier;
 /// calling**: Chief's orchestrator asks the model which tool to run and with
 /// what arguments through the model's own chat template, so a template with no
 /// tool-use structures is not a smaller option, it is a different application.
-/// That is why both entries are Llama 3.2 — same family, same template, one
-/// third the size — rather than the lightest model that would load.
+/// That is why Gemma 3 and Phi-4-mini were measured and rejected: neither made
+/// a single tool call in Chief's setup, however small they are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Model {
     /// What a person calls it.
@@ -120,18 +120,26 @@ pub const STANDARD: Model = Model {
     head_dim: 128,
 };
 
-/// The same family a third of the size, for a machine that cannot hold the
-/// other one. It answers less well; it answers.
+/// The model for a machine that cannot hold the other one: Qwen3 1.7B.
+///
+/// **Chosen by measurement, not by family.** On an Intel Mac mini with 8 GB and
+/// two cores it read 15 tokens a second against the 1B's 22 and wrote 8 against
+/// 11, in 2.0 GB, and it was the only small model that was clean on the repeated
+/// pull request case, a day with nothing but school logistics and both tool
+/// calls. Llama 3.2 1B invented meetings on that school day in two runs of
+/// three. The 3B Llama is no better on that machine, at 7 tokens a second, and
+/// sent an invalid argument on every review request. Qwen3 thinks before it
+/// answers unless told not to; [`crate::llama::ChatRequest`] tells it.
 pub const LIGHT: Model = Model {
-    name: "Llama 3.2 1B Instruct",
+    name: "Qwen3 1.7B",
     quantisation: "Q4_K_M",
-    file_name: "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-    source: "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/067b946cf014b7c697f3654f621d577a3e3afd1c/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-    approx_resident_mb: 1100,
-    weights_mb: 800,
-    layers: 16,
+    file_name: "Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+    source: "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/dcb19155b962dbb6389f4691a982043a8e651022/Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+    approx_resident_mb: 2000,
+    weights_mb: 1223,
+    layers: 28,
     kv_heads: 8,
-    head_dim: 64,
+    head_dim: 128,
 };
 
 /// Everything Chief can run.
@@ -450,9 +458,10 @@ mod tests {
         assert_eq!(kv_bytes_per_token(STANDARD, KV_BYTES_F16), 114_688);
         assert_eq!(kv_bytes_per_token(STANDARD, KV_BYTES_F16) / 1024, 112);
 
-        // The smaller model is a quarter of that: half the layers, half the
-        // head width.
-        assert_eq!(kv_bytes_per_token(LIGHT, KV_BYTES_F16), 32_768);
+        // The light model has the same geometry per token as the standard one
+        // (28 layers, 8 heads of 128), so a token of context costs the same.
+        // What makes it lighter is its weights, and the tier's window being half.
+        assert_eq!(kv_bytes_per_token(LIGHT, KV_BYTES_F16), 114_688);
     }
 
     /// **Resident memory is chosen, not capped.** The DLE specification asked
@@ -584,7 +593,7 @@ mod tests {
     #[test]
     fn describes_the_model_for_the_setup_screen() {
         assert_eq!(STANDARD.describe(), "Llama 3.2 3B Instruct (Q4_K_M)");
-        assert_eq!(LIGHT.describe(), "Llama 3.2 1B Instruct (Q4_K_M)");
+        assert_eq!(LIGHT.describe(), "Qwen3 1.7B (Q4_K_M)");
     }
 
     /// The real download, against the real host.
