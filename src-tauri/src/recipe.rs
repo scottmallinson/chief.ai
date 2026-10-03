@@ -38,8 +38,12 @@ const BRIEF_TOKENS: u32 = 500;
 
 /// Pushes the model off lines it has already written. Measured need: Llama 3.2
 /// 1B at temperature 0.2 listed the same four pull requests until it hit the
-/// length limit. Mild, because a brief legitimately reuses names.
-const BRIEF_REPEAT_PENALTY: f32 = 1.15;
+/// length limit. Mild, because a brief legitimately reuses names: on the 1B,
+/// 80 runs on an 8 GB Intel Mac kept 83% of the meeting times and pull request
+/// numbers in the prompt with no penalty, 86% at 1.05, 64% at 1.10 and 53% at
+/// 1.15, where it also dropped meetings and invented some. Qwen3 1.7B never
+/// looped in 40 runs. `break_loop` is the real guard; this is only the nudge.
+const BRIEF_REPEAT_PENALTY: f32 = 1.05;
 
 /// A line this long, written this many times, is a loop and not a list.
 const LOOP_MIN_CHARS: usize = 12;
