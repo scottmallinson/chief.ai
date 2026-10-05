@@ -1072,7 +1072,7 @@ mod par {
 mod eng {
     use super::*;
 
-    /// ENG-01. The morning stand-up: what merged since yesterday is in the
+    /// ENG-01 and ENG-08. The morning stand-up, any day of the week: what merged since yesterday is in the
     /// material the model drafts it from, by name, and nothing is invented.
     #[tokio::test]
     async fn eng_01_standup_material_names_what_merged() {
@@ -1867,11 +1867,11 @@ mod any {
             .expect("state");
         assert_eq!(state.status, sync_state::Status::Error);
     }
-    /// ANY-16. A small model circles one list until it runs out of room, as
+    /// ANY-24. A small model circles one list until it runs out of room, as
     /// Llama 3.2 1B did on an 8 GB Mac. The brief keeps each line once, drops
     /// the apology, and the request asks the model not to repeat itself.
     #[tokio::test]
-    async fn any_16_a_looping_model_cannot_fill_the_brief_with_one_list() {
+    async fn any_24_a_looping_model_cannot_fill_the_brief_with_one_list() {
         let github = github_with(Github {
             mine: search(&[pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z")]),
             ..Github::default()

@@ -87,6 +87,7 @@ A stand-up each day, occasional ad-hoc meetings, focused on shipping and coordin
 | ENG-05 | "What did I ship today / this week", just after a merge         | Answered from the log, naming the pull request, with no model call.                    | Auto   |
 | ENG-06 | Ask the chat a question that needs a live GitHub read, offline  | The model is handed a plain error to explain, with no credential in it. No crash.      | Auto   |
 | ENG-07 | Stand-up at 09:30 and the draft reads as something to say aloud | Short, first person, no invented work.                                                 | Manual |
+| ENG-08 | "Draft my standup" first thing on a Monday                      | Friday's merges are in the material, not an empty log.                                 | Auto   |
 
 ## Anyone: edges of the day, the network, the machine and the model
 
@@ -107,7 +108,6 @@ A stand-up each day, occasional ad-hoc meetings, focused on shipping and coordin
 | ANY-13 | 60 meetings, 30 reviews, 30 own pull requests, 30 unread mails                            | One model call, and the prompt is inside the token budget.                                                 | Auto   |
 | ANY-14 | Questions in each persona's words, including ones that merely mention a trigger word      | The ones that mean a stored read take the free route. The others reach the model.                          | Auto   |
 | ANY-15 | The connection to GitHub is accepted and then dropped                                     | The brief is written from the calendar. The account shows an outage.                                       | Auto   |
-| ANY-16 | A small model loops, listing the same items until the length limit (seen on 1B, 8 GB Mac) | Each line is kept once, the length-limit apology is dropped, and the request asks the model not to repeat. | Auto   |
 | ANY-16 | The window is left open overnight (Chief lives in the tray) and shown the next day        | Heading and brief move to the new day, and the brief the background pass wrote is on screen.               | Auto   |
 | ANY-17 | The same, while an earlier day is being read                                              | The reader is not moved.                                                                                   | Auto   |
 | ANY-18 | The window is left open and visible across midnight                                       | Rolls over by itself.                                                                                      | Auto   |
@@ -116,6 +116,7 @@ A stand-up each day, occasional ad-hoc meetings, focused on shipping and coordin
 | ANY-21 | The night clocks change (spring forward and fall back)                                    | The day still has exactly one brief and the right meetings. Needs a real clock change.                     | Manual |
 | ANY-22 | Wi-Fi off in the real app, then on                                                        | Settings shows an outage and recovers; no sign-in prompt.                                                  | Manual |
 | ANY-23 | First launch on the oldest supported macOS                                                | Opens, sets up, answers.                                                                                   | Manual |
+| ANY-24 | A small model loops, listing the same items until the length limit (seen on 1B, 8 GB Mac) | Each line is kept once, the length-limit apology is dropped, and the request asks the model not to repeat. | Auto   |
 
 ## What the first pass found
 
@@ -127,11 +128,12 @@ Each of these scenarios was red against the code as it stood, for the reason in 
 | ANY-16–18      | The window worked out the date once when it opened. After a night in the tray it still said yesterday.                   | The date is re-read on focus, on becoming visible and at midnight; a reader of an earlier day is kept. |
 | EM-01          | Only the first ten meetings of a day were read, so a busy afternoon was invisible. No warning.                           | Twenty. About 280 prompt tokens at the most, and sorted, de-duplicated and capped before the budget.   |
 | EM-03, EM-04   | A meeting is keyed on its start time, so a move left the old row and a cancellation left the meeting.                    | A pass that read a calendar in full clears that account's rows for today that it no longer holds.      |
+| ENG-08         | A Monday-morning stand-up read "this week", which starts at midnight, and reported nothing to report.                    | The last 7 days, so Friday is in.                                                                      |
 | ENG-02         | GitHub issues were fetched and then overwritten by the Linear read. A wasted request, and the brief never listed them.   | Their own field and source name.                                                                       |
 | PAR-02         | All-day events read as a meeting at 00:00.                                                                               | Graph's `isAllDay` is read, and the line says "all day".                                               |
 | ANY-06         | An empty model answer was written as the brief and the day marked done.                                                  | Rejected, so the next pass tries again.                                                                |
 | ANY-07         | An interrupted answer was kept with an apology attached and the day marked done.                                         | Rejected, so the next pass tries again.                                                                |
-| ANY-16         | A looping 1B brief filed the same four pull requests repeatedly, ending in a length-limit apology.                       | Repeats removed; a repeat penalty is sent with brief requests only.                                    |
+| ANY-24         | A looping 1B brief filed the same four pull requests repeatedly, ending in a length-limit apology.                       | Repeats removed; a repeat penalty is sent with brief requests only.                                    |
 | ANY-08         | Connected but unreachable said "nothing is connected yet".                                                               | A separate message that says the network could not be reached.                                         |
 | ANY-11         | Files were written in place, so a power cut could leave one empty or cut off.                                            | Written to a neighbour and renamed over the original.                                                  |
 

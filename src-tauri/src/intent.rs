@@ -342,17 +342,30 @@ pub async fn material(ground: Ground, pool: &sqlx::SqlitePool) -> String {
     }
 }
 
+/// Today and the six days before it, as the UTC instants the work log stores.
+pub(crate) fn standup_window<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> (String, String) {
+    let today = now.date_naive();
+    between(
+        now,
+        today - chrono::Duration::days(6),
+        today + chrono::Duration::days(1),
+    )
+}
+
 /// The work log, in the three buckets a standup is made of.
 async fn standup(pool: &sqlx::SqlitePool) -> String {
     let mut sections: Vec<String> = Vec::new();
 
-    let shipped = match Window::ThisWeek.bounds(&chrono::Local::now()) {
-        Some((from, to)) => retrieval::shipped_in_window(pool, &from, &to, LOG_ENTRIES).await,
-        None => retrieval::shipped_latest(pool, LOG_ENTRIES).await,
-    };
+    // **The last seven days, not "this week".** A calendar week starts on
+    // Monday, so on a Monday morning "this week" held nothing, and the one
+    // stand-up of the week that has the most to report said there was nothing
+    // to report. Found by the runbook's ENG-01 failing on the first Monday it
+    // ran on CI.
+    let (from, to) = standup_window(&chrono::Local::now());
+    let shipped = retrieval::shipped_in_window(pool, &from, &to, LOG_ENTRIES).await;
 
     for (heading, hits) in [
-        ("Shipped this week", shipped),
+        ("Shipped in the last 7 days", shipped),
         (
             "Still open",
             retrieval::latest_in_category(pool, ingest::IN_FLIGHT, LOG_ENTRIES).await,
@@ -372,7 +385,7 @@ async fn standup(pool: &sqlx::SqlitePool) -> String {
     }
 
     if sections.is_empty() {
-        return "Chief's work log has nothing in it for this week. Say that there is nothing to \
+        return "Chief's work log has nothing in it for the last 7 days. Say that there is nothing to \
                 report and that connecting GitHub in Settings is what would fill it. Do not \
                 invent any work."
             .to_string();
@@ -805,6 +818,28 @@ mod tests {
                 "{asked:?} must be answered about {expected:?}"
             );
         }
+    }
+
+    /// A Monday-morning stand-up reaches back over the weekend to Friday. The
+    /// window was "this week", which on a Monday starts at midnight today.
+    #[test]
+    fn a_monday_standup_still_sees_fridays_work() {
+        use chrono::TimeZone;
+
+        let zone = chrono::FixedOffset::west_opt(5 * 3600).expect("a real offset");
+        let monday = zone
+            .with_ymd_and_hms(2026, 10, 5, 9, 0, 0)
+            .single()
+            .expect("a real instant");
+
+        let (from, to) = standup_window(&monday);
+
+        assert_eq!(from, "2026-09-29T05:00:00.000Z");
+        assert_eq!(to, "2026-10-06T05:00:00.000Z");
+        assert!(
+            from.as_str() < "2026-10-02T05:00:00.000Z",
+            "Friday is inside"
+        );
     }
 
     /// The windows, at a fixed offset rather than the test machine's clock.
