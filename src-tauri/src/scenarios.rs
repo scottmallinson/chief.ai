@@ -475,6 +475,14 @@ fn at(day: &str, time: &str) -> String {
     format!("{day}T{time}:00")
 }
 
+/// Today's brief, written at six in the morning whatever the machine's clock
+/// says. A brief is a window onto what has not happened yet, so a scenario
+/// that put a meeting at 07:45 and ran at 08:30 asked for an afternoon brief
+/// and failed — which is how the CI runner found this.
+async fn dawn_brief(ctx: &recipe::Context) -> Result<recipe::Brief, recipe::Error> {
+    recipe::daily_brief_at(ctx, local(&format!("{}T06:00:00", today()))).await
+}
+
 fn local(stamp: &str) -> DateTime<Local> {
     let naive = chrono::NaiveDateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M:%S").expect("stamp");
 
@@ -491,13 +499,13 @@ fn local(stamp: &str) -> DateTime<Local> {
 mod em {
     use super::*;
 
-    /// EM-01. A manager's day is mostly meetings. All of them reach the model,
-    /// including the afternoon, and in the order they happen.
-    #[tokio::test]
-    async fn em_01_a_full_day_of_meetings_all_reach_the_brief() {
+    type Subjects = [(&'static str, &'static str, &'static [&'static str]); 14];
+
+    /// Fourteen meetings, 08:30 to 16:30, on a graph the brief reads.
+    async fn full_day() -> (Subjects, World, Mock) {
         let day = today();
-        let subjects = [
-            ("08:30", "Team standup", &["Priya", "Tom", "Ana"][..]),
+        let subjects: Subjects = [
+            ("08:30", "Team standup", &["Priya", "Tom", "Ana"]),
             ("09:00", "1:1 with Priya", &["Priya"]),
             ("09:30", "1:1 with Tom", &["Tom"]),
             ("10:00", "Sprint planning", &["Team"]),
@@ -523,21 +531,112 @@ mod em {
         let engine = model_saying("- ok").await;
         let world = world(None, Some(&graph.host), &engine.host).await;
 
-        recipe::daily_brief(&world.ctx).await.expect("a brief");
+        (subjects, world, engine)
+    }
+
+    /// EM-01. A manager's day is mostly meetings, and the brief is a window
+    /// onto it. At 08:00 the model is told about the next three, in the order
+    /// they happen, and the brief says in words that eleven more are coming.
+    /// It used to be told about all fourteen and wrote fourteen bullets.
+    #[tokio::test]
+    async fn em_01_a_full_day_of_meetings_reaches_the_brief_three_at_a_time() {
+        let (subjects, world, engine) = full_day().await;
+
+        let brief = recipe::daily_brief_at(&world.ctx, local(&format!("{}T08:00:00", today())))
+            .await
+            .expect("a brief");
         let prompt = engine.last_prompt();
 
-        for (_, subject, _) in subjects {
+        for (_, subject, _) in &subjects[..3] {
+            assert!(prompt.contains(subject), "{subject:?} is next:\n{prompt}");
+        }
+        for (_, subject, _) in &subjects[3..] {
             assert!(
-                prompt.contains(subject),
-                "the model was never told about {subject:?}, so the brief cannot warn about it:\n{prompt}"
+                !prompt.contains(subject),
+                "{subject:?} is beyond the window and would crowd out the reviews:\n{prompt}"
             );
         }
 
         let first = prompt.find("Team standup").expect("first meeting");
-        let last = prompt
-            .find("Performance calibration")
-            .expect("last meeting");
-        assert!(first < last, "meetings must stay in the order they happen");
+        let third = prompt.find("1:1 with Tom").expect("third meeting");
+        assert!(first < third, "meetings must stay in the order they happen");
+
+        assert!(
+            brief
+                .markdown
+                .contains("Showing the next 3 of 14 meetings still to come."),
+            "the brief says what it left out, in the code's own words:\n{}",
+            brief.markdown
+        );
+    }
+
+    /// EM-13. As the clock moves the window moves with it: at 14:10 the
+    /// morning has gone and the afternoon is what the brief is about. The
+    /// daemon asks `refresh_due` and writes the brief again.
+    #[tokio::test]
+    async fn em_13_the_window_moves_as_the_day_goes() {
+        let (subjects, world, engine) = full_day().await;
+        let day = today();
+
+        recipe::daily_brief_at(&world.ctx, local(&format!("{day}T08:00:00")))
+            .await
+            .expect("the morning brief");
+
+        let pool = &world.ctx.pool;
+        let morning = local(&format!("{day}T08:00:00"));
+        assert!(
+            !recipe::refresh_due(pool, &day, &morning)
+                .await
+                .expect("read"),
+            "nothing has moved yet"
+        );
+
+        // 09:30 is when the third meeting in the window starts.
+        let due = local(&format!("{day}T09:30:00"));
+        assert!(
+            recipe::refresh_due(pool, &day, &due).await.expect("read"),
+            "the window has moved and the brief should be written again"
+        );
+
+        let brief = recipe::daily_brief_at(&world.ctx, local(&format!("{day}T14:10:00")))
+            .await
+            .expect("the afternoon brief");
+        let prompt = engine.last_prompt();
+
+        assert!(prompt.contains("Vendor call"), "{prompt}");
+        assert!(prompt.contains("Budget check-in"), "{prompt}");
+        assert!(prompt.contains("Design critique"), "{prompt}");
+        assert!(
+            !prompt.contains("Team standup") && !prompt.contains("Sprint planning"),
+            "the morning has gone:\n{prompt}"
+        );
+        assert!(
+            brief.markdown.contains("Showing the next 3 of 5"),
+            "{}",
+            brief.markdown
+        );
+        let _ = subjects;
+    }
+
+    /// EM-14. When the last meeting has finished there is nothing to ask a
+    /// model about, so it is not asked.
+    #[tokio::test]
+    async fn em_14_a_day_that_has_finished_costs_no_model_call() {
+        let (_, world, engine) = full_day().await;
+        let day = today();
+
+        let brief = recipe::daily_brief_at(&world.ctx, local(&format!("{day}T19:00:00")))
+            .await
+            .expect("an evening brief");
+
+        assert_eq!(engine.count(), 0, "the model was asked about an empty day");
+        assert!(brief.markdown.contains("Nothing else is scheduled"));
+        assert!(
+            !recipe::refresh_due(&world.ctx.pool, &day, &local(&format!("{day}T23:00:00")))
+                .await
+                .expect("read"),
+            "a finished day has nothing to refresh for"
+        );
     }
 
     /// EM-02. A review somebody asked for and a pull request the manager opened
@@ -575,7 +674,7 @@ mod em {
         let engine = model_saying("- ok").await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        let brief = recipe::daily_brief(&world.ctx).await.expect("a brief");
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
         let prompt = engine.last_prompt();
 
         let waiting = prompt.find("Waiting on you").expect("waiting heading");
@@ -768,7 +867,7 @@ mod em {
         let engine = model_saying("- review #41").await;
         let world = world(Some(&github.host), Some(&graph.host), &engine.host).await;
 
-        let brief = recipe::daily_brief(&world.ctx).await.expect("a brief");
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
         assert!(engine.last_prompt().contains("Retry payment webhooks"));
         assert_eq!(brief.sources, ["review requests"]);
@@ -789,7 +888,7 @@ mod em {
         let engine = model_saying("- ok").await;
         let world = world(None, Some(&graph.host), &engine.host).await;
 
-        recipe::daily_brief(&world.ctx).await.expect("a brief");
+        dawn_brief(&world.ctx).await.expect("a brief");
         let prompt = engine.last_prompt();
 
         assert!(prompt.contains("Can we move our 1:1?"));
@@ -936,7 +1035,7 @@ mod par {
         let engine = model_saying("- ok").await;
         let world = world(None, Some(&graph.host), &engine.host).await;
 
-        let brief = recipe::daily_brief(&world.ctx).await.expect("a brief");
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
         let prompt = engine.last_prompt();
 
         assert!(prompt.contains("breakfast club") && prompt.contains("Dentist"));
@@ -960,7 +1059,7 @@ mod par {
         let engine = model_saying("- ok").await;
         let world = world(None, Some(&graph.host), &engine.host).await;
 
-        recipe::daily_brief(&world.ctx).await.expect("a brief");
+        dawn_brief(&world.ctx).await.expect("a brief");
         let prompt = engine.last_prompt();
 
         assert!(prompt.contains("INSET day"), "{prompt}");
@@ -977,7 +1076,7 @@ mod par {
         let engine = model_saying("- an invented meeting").await;
         let world = world(None, None, &engine.host).await;
 
-        let refused = recipe::daily_brief(&world.ctx).await.expect_err("no brief");
+        let refused = dawn_brief(&world.ctx).await.expect_err("no brief");
         assert!(
             refused.to_string().contains("nothing is connected"),
             "{refused}"
@@ -1015,7 +1114,7 @@ mod par {
         let engine = model_saying("- ok").await;
         let world = world(None, Some(&graph.host), &engine.host).await;
 
-        recipe::daily_brief(&world.ctx).await.expect("a brief");
+        dawn_brief(&world.ctx).await.expect("a brief");
         assert!(engine
             .last_prompt()
             .contains("🎒 Réunion Maïté & Zoë’s café ☕"));
@@ -1035,7 +1134,7 @@ mod par {
         let engine = model_saying("- ok").await;
         let world = super::world(None, Some(&graph.host), &engine.host).await;
 
-        recipe::daily_brief(&world.ctx)
+        dawn_brief(&world.ctx)
             .await
             .expect("a brief, whatever the flood");
     }
@@ -1129,7 +1228,7 @@ mod eng {
         let engine = model_saying("- ok").await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        let brief = recipe::daily_brief(&world.ctx).await.expect("a brief");
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
         assert!(
             engine.last_prompt().contains("Timeouts on bulk export"),
@@ -1162,7 +1261,7 @@ mod eng {
         let engine = model_saying("- ok").await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        let brief = recipe::daily_brief(&world.ctx).await.expect("a brief");
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
         assert!(engine.last_prompt().contains("Paginate the audit log"));
         assert_eq!(brief.sources, ["pull requests"]);
@@ -1303,8 +1402,8 @@ mod any {
             vec![
                 meeting(
                     "New Year's Eve dinner",
-                    &at(day, "19:00"),
-                    &at(day, "22:00"),
+                    &at(day, "23:45"),
+                    &at(day, "23:59"),
                     &[],
                 ),
                 meeting(
@@ -1317,7 +1416,7 @@ mod any {
             vec![],
         )
         .await;
-        let engine = model_saying("- dinner at 19:00").await;
+        let engine = model_saying("- dinner at 23:45").await;
         let world = world(None, Some(&graph.host), &engine.host).await;
 
         let started = local("2026-12-31T23:59:50");
@@ -1481,7 +1580,7 @@ mod any {
         .await;
         let world = world(Some(&github.host), None, NOWHERE).await;
 
-        let failed = recipe::daily_brief(&world.ctx).await;
+        let failed = dawn_brief(&world.ctx).await;
 
         assert!(failed.is_err());
         let path = format!("briefs/{}.md", recipe::today_date());
@@ -1507,7 +1606,7 @@ mod any {
         let engine = model_saying("   \n  ").await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        let result = recipe::daily_brief(&world.ctx).await;
+        let result = dawn_brief(&world.ctx).await;
 
         assert!(result.is_err(), "a blank brief was accepted: {result:?}");
         assert_eq!(
@@ -1533,7 +1632,7 @@ mod any {
             mock(|_| Reply::Torn(sse("- 10:00 stand").replace("data: [DONE]\n\n", ""))).await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        let result = recipe::daily_brief(&world.ctx).await;
+        let result = dawn_brief(&world.ctx).await;
 
         let path = format!("briefs/{}.md", recipe::today_date());
         let written = world.ctx.corpus.read(&path).await;
@@ -1557,9 +1656,7 @@ mod any {
         let engine = model_saying("- ok").await;
         let world = world(Some(NOWHERE), Some(NOWHERE), &engine.host).await;
 
-        let refused = recipe::daily_brief(&world.ctx)
-            .await
-            .expect_err("nothing to say");
+        let refused = dawn_brief(&world.ctx).await.expect_err("nothing to say");
 
         assert!(
             !refused.to_string().contains("nothing is connected"),
@@ -1596,7 +1693,7 @@ mod any {
         .await
         .expect("stored");
 
-        let brief = recipe::daily_brief(&world.ctx).await.expect("a brief");
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
         assert!(engine.last_prompt().contains("Add rate limiting"));
         assert_eq!(brief.sources, ["work log"]);
@@ -1721,7 +1818,7 @@ mod any {
         let engine = model_saying("- the first brief").await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        let first = recipe::daily_brief(&world.ctx).await.expect("a brief");
+        let first = dawn_brief(&world.ctx).await.expect("a brief");
 
         tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
         world
@@ -1731,7 +1828,7 @@ mod any {
             .await
             .expect("edit");
 
-        let again = recipe::daily_brief(&world.ctx).await;
+        let again = dawn_brief(&world.ctx).await;
 
         assert!(again.is_err());
         assert_eq!(
@@ -1783,7 +1880,7 @@ mod any {
         let engine = model_saying("- ok").await;
         let world = world(Some(&github.host), Some(&graph.host), &engine.host).await;
 
-        recipe::daily_brief(&world.ctx).await.expect("a brief");
+        dawn_brief(&world.ctx).await.expect("a brief");
 
         assert_eq!(engine.count(), 1, "one model call per brief");
         assert!(
@@ -1851,7 +1948,7 @@ mod any {
         let engine = model_saying("- ok").await;
         let world = world(Some(&github.host), Some(&graph.host), &engine.host).await;
 
-        let brief = recipe::daily_brief(&world.ctx).await.expect("a brief");
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
         assert_eq!(brief.sources, ["calendar"]);
 
         daemon::run_once(&world.daemon())
@@ -1885,7 +1982,7 @@ mod any {
         .await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        let brief = recipe::daily_brief(&world.ctx).await.expect("a brief");
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
         let written = world
             .ctx
@@ -1922,7 +2019,7 @@ mod any {
         let engine = model_saying("- 10:00 Standup").await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        recipe::daily_brief(&world.ctx).await.expect("a brief");
+        dawn_brief(&world.ctx).await.expect("a brief");
 
         let body: serde_json::Value = serde_json::from_str(
             engine
