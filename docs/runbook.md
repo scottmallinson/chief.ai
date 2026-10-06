@@ -78,16 +78,17 @@ calendar and an inbox, often with no work tools connected at all.
 
 A stand-up each day, occasional ad-hoc meetings, focused on shipping and coordinating.
 
-| ID     | Scenario                                                        | Expected                                                                               | Check  |
-| ------ | --------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------ |
-| ENG-01 | "Draft my standup" after two merges yesterday                   | The material names both pull requests by title. Gathering is not a model call.         | Auto   |
-| ENG-02 | An issue assigned to me on GitHub                               | It is in the brief, and the source is "GitHub issues". It was fetched and thrown away. | Auto   |
-| ENG-03 | GitHub rate-limits one of the searches                          | The other searches still land. One bucket is lost, not the brief.                      | Auto   |
-| ENG-04 | A pull request open at 09:00 and merged at 09:30                | One row that changes from open to merged. Running more passes adds nothing.            | Auto   |
-| ENG-05 | "What did I ship today / this week", just after a merge         | Answered from the log, naming the pull request, with no model call.                    | Auto   |
-| ENG-06 | Ask the chat a question that needs a live GitHub read, offline  | The model is handed a plain error to explain, with no credential in it. No crash.      | Auto   |
-| ENG-07 | Stand-up at 09:30 and the draft reads as something to say aloud | Short, first person, no invented work.                                                 | Manual |
-| ENG-09 | "Draft my standup" first thing on a Monday                      | Friday's merges are in the material, not an empty log.                                 | Auto   |
+| ID     | Scenario                                                                            | Expected                                                                                                              | Check  |
+| ------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------ |
+| ENG-01 | "Draft my standup" after two merges yesterday                                       | The material names both pull requests by title. Gathering is not a model call.                                        | Auto   |
+| ENG-02 | An issue assigned to me on GitHub                                                   | It is in the brief, and the source is "GitHub issues". It was fetched and thrown away.                                | Auto   |
+| ENG-03 | GitHub rate-limits one of the searches                                              | The other searches still land. One bucket is lost, not the brief.                                                     | Auto   |
+| ENG-04 | A pull request open at 09:00 and merged at 09:30                                    | One row that changes from open to merged. Running more passes adds nothing.                                           | Auto   |
+| ENG-05 | "What did I ship today / this week", just after a merge                             | Answered from the log, naming the pull request, with no model call.                                                   | Auto   |
+| ENG-06 | Ask the chat a question that needs a live GitHub read, offline                      | The model is handed a plain error to explain, with no credential in it. No crash.                                     | Auto   |
+| ENG-07 | Stand-up at 09:30 and the draft reads as something to say aloud                     | Short, first person, no invented work.                                                                                | Manual |
+| ENG-08 | "Draft my standup", asked of a model whose template rejects two user turns in a row | The facts and the question are one user turn, and no tools are offered. It was a 400 on Gemma and a 500 on Llama 3.2. | Auto   |
+| ENG-09 | "Draft my standup" first thing on a Monday                                          | Friday's merges are in the material, not an empty log.                                                                | Auto   |
 
 ## Anyone: edges of the day, the network, the machine and the model
 
@@ -116,7 +117,22 @@ A stand-up each day, occasional ad-hoc meetings, focused on shipping and coordin
 | ANY-21 | The night clocks change (spring forward and fall back)                                    | The day still has exactly one brief and the right meetings. Needs a real clock change.                     | Manual |
 | ANY-22 | Wi-Fi off in the real app, then on                                                        | Settings shows an outage and recovers; no sign-in prompt.                                                  | Manual |
 | ANY-23 | First launch on the oldest supported macOS                                                | Opens, sets up, answers.                                                                                   | Manual |
+| ANY-24 | A brief is requested of Qwen3 on a machine that writes 8 tokens a second                  | The request switches the template's thinking off and carries a repeat penalty of 1.05, no stronger.        | Auto   |
 | ANY-25 | A small model loops, listing the same items until the length limit (seen on 1B, 8 GB Mac) | Each line is kept once, the length-limit apology is dropped, and the request asks the model not to repeat. | Auto   |
+
+## The model: what the benchmark graded, run by hand
+
+The automatic scenarios mock the model, so they pass for every model and cannot choose between them.
+These are the cases the 2026-10-02 benchmark on an Intel Mac mini (8 GB, two cores) graded, three runs
+each. Run them against any model Chief ships, on the machine it will run on.
+
+| ID     | Scenario                                                        | Expected                                                                  | Check  |
+| ------ | --------------------------------------------------------------- | ------------------------------------------------------------------------- | ------ |
+| MOD-01 | The same pull request appears on several lines of the material  | Each is listed once. No loop, and the answer ends without the length cap. | Manual |
+| MOD-02 | A school-only day, no work tools connected                      | Only the school events. No invented meetings, names or numbers.           | Manual |
+| MOD-03 | "Draft my standup" from a work log with two merges              | Written in words from the log. No tool call, no error from the engine.    | Manual |
+| MOD-04 | A question that needs a live lookup (calendar, review requests) | One well-formed tool call whose arguments are values the tool accepts.    | Manual |
+| MOD-05 | Speed on the target machine: cold and warm brief                | Tokens a second recorded for reading and writing, and resident memory.    | Manual |
 
 ## What the first pass found
 

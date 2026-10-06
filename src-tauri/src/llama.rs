@@ -296,6 +296,18 @@ pub struct ChatRequest {
     /// Sampling limits, which the OpenAI contract carries at the top level.
     #[serde(flatten)]
     pub options: Options,
+    /// Settings the model's own chat template reads. Always `enable_thinking:
+    /// false`: Qwen3 writes a long private reasoning pass before it answers
+    /// unless told not to, and on a machine that writes 8 tokens a second that
+    /// is minutes of silence spent on words nobody reads. A template that has
+    /// no such switch, Llama's or Gemma's, ignores the setting.
+    pub chat_template_kwargs: TemplateKwargs,
+}
+
+/// The template settings Chief sends with every request.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct TemplateKwargs {
+    pub enable_thinking: bool,
 }
 
 impl ChatRequest {
@@ -306,6 +318,9 @@ impl ChatRequest {
             stream: false,
             tools: Vec::new(),
             options: Options::new(),
+            chat_template_kwargs: TemplateKwargs {
+                enable_thinking: false,
+            },
         }
     }
 
@@ -892,6 +907,19 @@ mod tests {
 
         assert_eq!(brief.max_tokens, 80);
         assert_eq!(brief.temperature, Options::new().temperature);
+    }
+
+    /// Qwen3 reasons at length before answering unless the template is told not
+    /// to, and at 8 tokens a second that is minutes. Every request says so.
+    #[test]
+    fn every_request_switches_the_models_thinking_off() {
+        let request = ChatRequest::new("chief", vec![Message::user("hello")]);
+        let body = serde_json::to_value(&request).expect("should serialize");
+
+        assert_eq!(
+            body["chat_template_kwargs"],
+            json!({ "enable_thinking": false })
+        );
     }
 
     #[test]
