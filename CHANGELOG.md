@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1 (2026-10-06)
+
+### Fixes
+
+- **agent:** let a Monday stand-up see the previous week's work ([800d18f](https://github.com/scottmallinson/chief.ai/commit/800d18fd55e36acb12c407eeafc760f0b5050063))
+- **agent:** stop a looping model filling the brief with one list ([24681b0](https://github.com/scottmallinson/chief.ai/commit/24681b08bdb8b577a380b78fa54cda1a8009a4b7))
+- **daemon:** get the brief and the calendar right at the edges of a day ([56c34f2](https://github.com/scottmallinson/chief.ai/commit/56c34f27b893fe9d90b13d340ec72584eb1c8102))
+- **corpus:** write a file whole or not at all ([a6621f6](https://github.com/scottmallinson/chief.ai/commit/a6621f6a6a35f7c6bde45d45750b99e1103eb9a7))
+- **ui:** move to the new day when the window outlives midnight ([a3c44f1](https://github.com/scottmallinson/chief.ai/commit/a3c44f12f5fcb3f1563dc3c659b1abd30073e802))
+
 ## 0.8.0 (2026-09-23)
 
 ### Features
