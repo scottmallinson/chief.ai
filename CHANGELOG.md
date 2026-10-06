@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.0 (2026-10-06)
+
+### Features
+
+- **agent:** brief the next three meetings and write the brief again as the day moves ([9721a54](https://github.com/scottmallinson/chief.ai/commit/9721a54ff566c47593cedda786c7a30345126b6b))
+
+### Fixes
+
+- **repo:** pin the scenario briefs to the morning so the runner's clock cannot fail them ([dfff233](https://github.com/scottmallinson/chief.ai/commit/dfff233e8de391ce457e88bac134724e1a8ede8a))
+- **ui:** leave the setup screen by itself when the engine was loading at launch ([f5320ae](https://github.com/scottmallinson/chief.ai/commit/f5320ae7f577d19488a515124ac43bbc19f5922e))
+
 ## 0.9.0 (2026-10-06)
 
 ### Features
