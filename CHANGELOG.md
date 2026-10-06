@@ -4,7 +4,7 @@
 
 ### Features
 
-- **agent:** run the light tier on Qwen3 1.7B and fix the standup request (#105) ([a9e9d36](https://github.com/scottmallinson/chief.ai/commit/a9e9d364bc3a2fc35c4bd09d72c60a32a88b05a6))
+- **agent:** run the light tier on Qwen3 1.7B and fix the standup request ([a9e9d36](https://github.com/scottmallinson/chief.ai/commit/a9e9d364bc3a2fc35c4bd09d72c60a32a88b05a6))
 
 ## 0.8.1 (2026-10-06)
 
