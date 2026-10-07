@@ -260,7 +260,7 @@ impl Output {
 }
 
 /// The executable's name on this platform.
-fn server_file_name() -> &'static str {
+pub(crate) fn server_file_name() -> &'static str {
     if cfg!(windows) {
         "llama-server.exe"
     } else {
@@ -273,7 +273,7 @@ fn server_file_name() -> &'static str {
 /// llama.cpp ships its backends as separate libraries next to the server, so
 /// wherever the bundle puts them has to be on this path or the engine will not
 /// start.
-fn library_path_variable() -> &'static str {
+pub(crate) fn library_path_variable() -> &'static str {
     if cfg!(target_os = "macos") {
         "DYLD_LIBRARY_PATH"
     } else if cfg!(windows) {
@@ -299,7 +299,7 @@ fn library_path(directories: &[PathBuf], inherited: Option<OsString>) -> OsStrin
 /// Kept separate from the spawning so the flags Chief actually relies on —
 /// loopback only, a fixed context window, and the Jinja chat templates that
 /// tool calling needs — are covered by a test rather than by hoping.
-fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> {
+pub(crate) fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> {
     vec![
         OsString::from("--model"),
         weights.into(),
