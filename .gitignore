@@ -49,3 +49,7 @@ src-tauri/binaries
 # Model weights, wherever one is left lying around. The app keeps its own in
 # the OS app-data directory.
 *.gguf
+
+# Model benchmark: downloaded weights and run output stay on the machine that made them.
+bench/.models
+bench-results
