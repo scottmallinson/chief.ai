@@ -350,9 +350,10 @@ export function renderMarkdown(dir, env, scored, judged, summary) {
       // The check that matters most for trusting the judge: does it agree with the deterministic one?
       const disagreements = [];
       for (const i of judged.items) {
-        const f = scored[i.model]?.fixtures.find((x) => x.id === i.fixture);
-        if (!f) continue;
-        const code = f.clean_rate === 1;
+        // The judge saw the first repeat, so compare with that repeat, not the average.
+        const run = scored[i.model]?.runs.find((x) => x.fixture === i.fixture && x.repeat === 0);
+        if (!run) continue;
+        const code = run.m.clean;
         const judge = i.grounded >= 4;
         if (code !== judge)
           disagreements.push(

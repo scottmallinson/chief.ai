@@ -13,12 +13,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { promptText } from './score.mjs';
+import { promptText, withoutNote } from './score.mjs';
 
 export const JUDGE_PROMPT_VERSION = 'v1';
 export const API_MODEL = 'claude-haiku-5-5';
 // Dollars per million tokens, from the pinned price table. Haiku 5.5.
 export const PRICE = { input: 0.1, output: 0.5 };
+// The "Showing the next 3 of 14" line is written by Chief's code, not the model, so it is not marked.
 const MAX_MATERIAL = 6000;
 
 const RUBRIC = `You are marking one answer written by a small AI assistant that acts as a user's chief of staff.
@@ -153,7 +154,12 @@ function chosen(scored) {
     for (const run of model.runs) {
       if (run.repeat !== 0 || seen.has(run.fixture) || !run.answer) continue;
       seen.add(run.fixture);
-      out.push({ model: id, fixture: run.fixture, group: run.fixtureGroup, answer: run.answer });
+      out.push({
+        model: id,
+        fixture: run.fixture,
+        group: run.fixtureGroup,
+        answer: withoutNote(run.answer),
+      });
     }
   }
   return out;
