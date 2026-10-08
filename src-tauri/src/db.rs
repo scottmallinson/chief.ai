@@ -204,6 +204,14 @@ CREATE TABLE IF NOT EXISTS briefs (
 );
 ";
 
+/// When a brief that left meetings out is worth writing again.
+///
+/// Nullable and absent on every brief written before this: `NULL` means "said
+/// everything it had to", which is what all of them were.
+const ADD_BRIEF_REFRESH: &str = r"
+ALTER TABLE briefs ADD COLUMN refresh_after TEXT;
+";
+
 /// The drafts Chief prepared for things it noticed, and what became of them.
 ///
 /// COSTA's `task-action-state.json`, in the store Chief already has. The body
@@ -376,6 +384,12 @@ pub fn migrations() -> Vec<Migration> {
             version: 8,
             description: "structure the work log and index it for search",
             sql: ADD_STRUCTURED_WORK_LOG,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 9,
+            description: "say when a partial brief is due a rewrite",
+            sql: ADD_BRIEF_REFRESH,
             kind: MigrationKind::Up,
         },
     ]

@@ -351,11 +351,30 @@ pub(crate) fn conversation_within(turns: Vec<Turn>, present: &str, ceiling: u32)
 /// `on_update` is called as the answer takes shape. Nothing depends on it
 /// arriving — the finished answer is returned either way — so a window that has
 /// stopped listening costs nothing.
+#[cfg(test)]
 async fn respond<F>(
     client: &Client,
     context: &tools::Context,
     model: &str,
+    messages: Vec<Message>,
+    on_update: F,
+) -> Result<String, Error>
+where
+    F: FnMut(Update),
+{
+    respond_offering(client, context, model, messages, true, on_update).await
+}
+
+/// [`respond`], with the choice of whether the tools are offered at all.
+///
+/// Off for a question whose facts are already in the prompt: the model has
+/// nothing to look up, and offering a catalogue only invites a call.
+async fn respond_offering<F>(
+    client: &Client,
+    context: &tools::Context,
+    model: &str,
     mut messages: Vec<Message>,
+    offer_tools_at_first: bool,
     mut on_update: F,
 ) -> Result<String, Error>
 where
@@ -366,7 +385,7 @@ where
     // Whether the tool catalogue is still being offered. It stops being offered
     // for the rest of this answer the first time the engine cannot parse what
     // the model made of it — see the retry below.
-    let mut offer_tools = true;
+    let mut offer_tools = offer_tools_at_first;
 
     for _ in 0..MAX_TOOL_ROUNDS {
         let request = ChatRequest::new(model, messages.clone());
@@ -510,25 +529,24 @@ pub struct Answer {
 /// the model reads the facts and then what is being asked of them — and so the
 /// question stays the newest turn, which is the one `conversation_within`
 /// guarantees survives trimming.
-async fn grounded(messages: Vec<Turn>, pool: &sqlx::SqlitePool) -> Vec<Turn> {
+async fn grounded(messages: Vec<Turn>, pool: &sqlx::SqlitePool) -> (Vec<Turn>, bool) {
     let Some(at) = messages.iter().rposition(|turn| turn.role == Role::User) else {
-        return messages;
+        return (messages, false);
     };
 
     let Some(ground) = intent::ground(&messages[at].content) else {
-        return messages;
+        return (messages, false);
     };
 
+    // **One user turn, not two.** The material used to be its own turn ahead of
+    // the question. Gemma's chat template refuses two user turns in a row with a
+    // 400, and with the tools offered Llama 3.2 answered the same layout with a
+    // 500; joined, the layout is the plain one every template accepts.
     let mut grounded = messages;
-    grounded.insert(
-        at,
-        Turn {
-            role: Role::User,
-            content: intent::material(ground, pool).await,
-        },
-    );
+    let question = grounded[at].content.clone();
+    grounded[at].content = format!("{}\n\n{question}", intent::material(ground, pool).await);
 
-    grounded
+    (grounded, true)
 }
 
 #[tauri::command]
@@ -613,22 +631,32 @@ pub async fn ask_agent<R: Runtime>(
     // questions. Injected as a turn rather than folded into the system prompt:
     // the opening is the cached prefix llama.cpp reuses, and material that
     // changes per question does not belong in it.
-    let messages = grounded(messages, &context.pool).await;
+    let (messages, has_material) = grounded(messages, &context.pool).await;
 
     let conversation =
         adapter::Adapter::for_tier(engine.tier()).assemble(messages, &clock::present());
 
-    let content = respond(&client, &context, &model, conversation, |update| {
-        // A dropped update costs a frame of the answer, nothing more: the whole
-        // reply is returned from this command regardless.
-        let _ = app.emit(
-            STREAM_EVENT,
-            StreamEvent {
-                request_id: request_id.clone(),
-                update,
-            },
-        );
-    })
+    // A question that arrives with its facts needs no lookup, so the tools are
+    // not offered: Qwen3 1.7B called one instead of writing the standup, and the
+    // catalogue is about 500 tokens of prefill nobody asked to read.
+    let content = respond_offering(
+        &client,
+        &context,
+        &model,
+        conversation,
+        !has_material,
+        |update| {
+            // A dropped update costs a frame of the answer, nothing more: the whole
+            // reply is returned from this command regardless.
+            let _ = app.emit(
+                STREAM_EVENT,
+                StreamEvent {
+                    request_id: request_id.clone(),
+                    update,
+                },
+            );
+        },
+    )
     .await?;
 
     // No provenance on the tool path. The tools reach services live, so there
@@ -1076,6 +1104,58 @@ mod orchestration_tests {
 
     fn asked(question: &str) -> Vec<Message> {
         conversation(vec![turn(Role::User, question)], PRESENT)
+    }
+
+    /// ENG-08. A standup arrives with its facts, so the question is one user
+    /// turn that carries them. Two user turns in a row is a 400 from Gemma's
+    /// template and a 500 from Llama 3.2 once tools are offered.
+    #[tokio::test]
+    async fn a_grounded_question_is_one_user_turn() {
+        let context = context_connected_to("http://127.0.0.1:1").await;
+
+        let (messages, has_material) =
+            grounded(vec![turn(Role::User, "Draft my standup")], &context.pool).await;
+
+        assert!(has_material);
+        assert_eq!(messages.len(), 1, "the facts were a second turn");
+        assert!(
+            messages[0].content.contains("work log"),
+            "{:?}",
+            messages[0]
+        );
+        assert!(
+            messages[0].content.ends_with("Draft my standup"),
+            "the question must stay the last words the model reads"
+        );
+
+        let (messages, has_material) =
+            grounded(vec![turn(Role::User, "Tell me a joke")], &context.pool).await;
+        assert!(!has_material);
+        assert_eq!(messages[0].content, "Tell me a joke");
+    }
+
+    /// ENG-08. With the facts in the prompt there is nothing to look up, and
+    /// offering the catalogue only invites the call Qwen3 1.7B made instead of
+    /// writing the standup.
+    #[tokio::test]
+    async fn a_question_that_arrives_with_its_facts_is_offered_no_tools() {
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", answers())]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("http://127.0.0.1:1").await;
+
+        respond_offering(
+            &client,
+            &context,
+            MODEL,
+            asked("Draft my standup"),
+            false,
+            |_| {},
+        )
+        .await
+        .expect("the stub should answer");
+
+        let requests = server.await.expect("the stub should finish");
+        assert!(body_of(&requests[0]).get("tools").is_none());
     }
 
     #[tokio::test]

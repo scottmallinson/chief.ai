@@ -250,4 +250,109 @@ describe('useBrief', () => {
 
     await waitFor(() => expect(result.current.brief?.date).toBe('2026-08-29'));
   });
+
+  /**
+   * Chief stays open in the tray, so the window is routinely mounted when the
+   * date changes. The day was read once on mount, so the next morning the
+   * screen still called yesterday "today", showed yesterday's brief under it,
+   * and never found the one the daemon had written overnight.
+   */
+  describe('across midnight', () => {
+    const tomorrow = {
+      date: '2026-08-30',
+      path: 'briefs/2026-08-30.md',
+      markdown: '- Dentist at 08:15',
+      sources: ['calendar'],
+    };
+
+    function overnight() {
+      let morning = false;
+
+      invoke.mockImplementation((command: string) => {
+        switch (command) {
+          case 'todays_brief':
+            return Promise.resolve(morning ? tomorrow : today);
+          case 'list_corpus':
+            return Promise.resolve(
+              morning
+                ? corpus('briefs/2026-08-29.md', 'briefs/2026-08-30.md')
+                : corpus('briefs/2026-08-29.md'),
+            );
+          default:
+            return Promise.resolve(null);
+        }
+      });
+
+      return () => {
+        morning = true;
+      };
+    }
+
+    it('moves to the new day when the window is shown again', async () => {
+      vi.setSystemTime(new Date(2026, 7, 29, 23, 30));
+      const dawn = overnight();
+
+      const { result } = renderHook(() => useBrief());
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+      expect(result.current.today).toBe('2026-08-29');
+
+      // The laptop sleeps, the daemon writes a brief, the user opens the lid.
+      dawn();
+      vi.setSystemTime(new Date(2026, 7, 30, 7, 45));
+      act(() => {
+        window.dispatchEvent(new Event('focus'));
+      });
+
+      await waitFor(() => expect(result.current.today).toBe('2026-08-30'));
+      await waitFor(() => expect(result.current.brief?.date).toBe('2026-08-30'));
+      expect(result.current.selected).toBe('2026-08-30');
+    });
+
+    it('moves on by itself when the window is left open and visible', async () => {
+      vi.setSystemTime(new Date(2026, 7, 29, 23, 59, 30));
+      const dawn = overnight();
+
+      const { result } = renderHook(() => useBrief());
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      dawn();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+      });
+
+      await waitFor(() => expect(result.current.today).toBe('2026-08-30'));
+      await waitFor(() => expect(result.current.brief?.date).toBe('2026-08-30'));
+    });
+
+    it('does not pull somebody off an earlier day they are reading', async () => {
+      vi.setSystemTime(new Date(2026, 7, 29, 23, 30));
+      const dawn = overnight();
+      const earlier = '- Walked the dog';
+
+      invoke.mockImplementation((command: string, args?: { path?: string }) => {
+        if (command === 'read_corpus_file') return Promise.resolve(earlier);
+        if (command === 'todays_brief') return Promise.resolve(today);
+        if (command === 'list_corpus') {
+          return Promise.resolve(corpus('briefs/2026-08-27.md', 'briefs/2026-08-29.md'));
+        }
+        void args;
+        return Promise.resolve(null);
+      });
+
+      const { result } = renderHook(() => useBrief());
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+      act(() => result.current.select('2026-08-27'));
+      await waitFor(() => expect(result.current.selected).toBe('2026-08-27'));
+
+      dawn();
+      vi.setSystemTime(new Date(2026, 7, 30, 7, 45));
+      act(() => {
+        window.dispatchEvent(new Event('focus'));
+      });
+
+      await waitFor(() => expect(result.current.today).toBe('2026-08-30'));
+      expect(result.current.selected).toBe('2026-08-27');
+      expect(result.current.brief?.markdown).toBe(earlier);
+    });
+  });
 });

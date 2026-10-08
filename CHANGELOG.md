@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.10.0 (2026-10-06)
+
+### Features
+
+- **agent:** brief the next three meetings and write the brief again as the day moves ([9721a54](https://github.com/scottmallinson/chief.ai/commit/9721a54ff566c47593cedda786c7a30345126b6b))
+
+### Fixes
+
+- **repo:** pin the scenario briefs to the morning so the runner's clock cannot fail them ([dfff233](https://github.com/scottmallinson/chief.ai/commit/dfff233e8de391ce457e88bac134724e1a8ede8a))
+- **ui:** leave the setup screen by itself when the engine was loading at launch ([f5320ae](https://github.com/scottmallinson/chief.ai/commit/f5320ae7f577d19488a515124ac43bbc19f5922e))
+
+## 0.9.0 (2026-10-06)
+
+### Features
+
+- **agent:** run the light tier on Qwen3 1.7B and fix the standup request ([a9e9d36](https://github.com/scottmallinson/chief.ai/commit/a9e9d364bc3a2fc35c4bd09d72c60a32a88b05a6))
+
+## 0.8.1 (2026-10-06)
+
+### Fixes
+
+- **agent:** let a Monday stand-up see the previous week's work ([800d18f](https://github.com/scottmallinson/chief.ai/commit/800d18fd55e36acb12c407eeafc760f0b5050063))
+- **agent:** stop a looping model filling the brief with one list ([24681b0](https://github.com/scottmallinson/chief.ai/commit/24681b08bdb8b577a380b78fa54cda1a8009a4b7))
+- **daemon:** get the brief and the calendar right at the edges of a day ([56c34f2](https://github.com/scottmallinson/chief.ai/commit/56c34f27b893fe9d90b13d340ec72584eb1c8102))
+- **corpus:** write a file whole or not at all ([a6621f6](https://github.com/scottmallinson/chief.ai/commit/a6621f6a6a35f7c6bde45d45750b99e1103eb9a7))
+- **ui:** move to the new day when the window outlives midnight ([a3c44f1](https://github.com/scottmallinson/chief.ai/commit/a3c44f12f5fcb3f1563dc3c659b1abd30073e802))
+
 ## 0.8.0 (2026-09-23)
 
 ### Features

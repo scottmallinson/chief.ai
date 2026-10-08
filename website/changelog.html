@@ -103,15 +103,104 @@
         Every release of Chief since the first one. The list is written from the commits at release
         time rather than by hand, so it says what actually shipped — and a release only happens when
         something a person can download has changed. Version
-        <span data-version>0.8.0</span> is current.
+        <span data-version>0.10.0</span> is current.
       </p>
 
       <div class="changelog">
+        <section class="release" id="v0-10-0">
+          <div class="release-mark">
+            <p class="release-version">0.10.0</p>
+            <p class="release-date mono">2026-10-06</p>
+            <p class="release-latest">current release</p>
+          </div>
+          <div class="release-changes">
+            <div class="release-group">
+              <p class="micro">Features</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">brief the next three meetings and write the brief again as the day moves</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/9721a54ff566c47593cedda786c7a30345126b6b">9721a54</a>
+                </li>
+              </ul>
+            </div>
+            <div class="release-group">
+              <p class="micro">Fixes</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">repo</span>
+                  <span class="change-subject">pin the scenario briefs to the morning so the runner's clock cannot fail them</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/dfff233e8de391ce457e88bac134724e1a8ede8a">dfff233</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">ui</span>
+                  <span class="change-subject">leave the setup screen by itself when the engine was loading at launch</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/f5320ae7f577d19488a515124ac43bbc19f5922e">f5320ae</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
+        <section class="release" id="v0-9-0">
+          <div class="release-mark">
+            <p class="release-version">0.9.0</p>
+            <p class="release-date mono">2026-10-06</p>
+          </div>
+          <div class="release-changes">
+            <div class="release-group">
+              <p class="micro">Features</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">run the light tier on Qwen3 1.7B and fix the standup request</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/a9e9d364bc3a2fc35c4bd09d72c60a32a88b05a6">a9e9d36</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
+        <section class="release" id="v0-8-1">
+          <div class="release-mark">
+            <p class="release-version">0.8.1</p>
+            <p class="release-date mono">2026-10-06</p>
+          </div>
+          <div class="release-changes">
+            <div class="release-group">
+              <p class="micro">Fixes</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">let a Monday stand-up see the previous week's work</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/800d18fd55e36acb12c407eeafc760f0b5050063">800d18f</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">stop a looping model filling the brief with one list</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/24681b08bdb8b577a380b78fa54cda1a8009a4b7">24681b0</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">daemon</span>
+                  <span class="change-subject">get the brief and the calendar right at the edges of a day</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/56c34f27b893fe9d90b13d340ec72584eb1c8102">56c34f2</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">corpus</span>
+                  <span class="change-subject">write a file whole or not at all</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/a6621f6a6a35f7c6bde45d45750b99e1103eb9a7">a6621f6</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">ui</span>
+                  <span class="change-subject">move to the new day when the window outlives midnight</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/a3c44f12f5fcb3f1563dc3c659b1abd30073e802">a3c44f1</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
         <section class="release" id="v0-8-0">
           <div class="release-mark">
             <p class="release-version">0.8.0</p>
             <p class="release-date mono">2026-09-23</p>
-            <p class="release-latest">current release</p>
           </div>
           <div class="release-changes">
             <div class="release-group">

@@ -39,8 +39,11 @@ pub fn present() -> String {
 /// its opening line stapled to each. Asked for bullets, a 1B model reached for
 /// the most list-shaped thing in front of it — and that was a hundred and fifty
 /// tokens of dates sitting second from the top. See REC-64.
-pub fn today() -> String {
-    stamp(&Local::now())
+///
+/// Takes the moment rather than reading the clock, so one brief is written
+/// against one reading of it.
+pub fn stamp_at(now: &DateTime<Local>) -> String {
+    stamp(now)
 }
 
 /// The clock itself, as one sentence.

@@ -229,6 +229,7 @@ fn as_event(occurrence: Occurrence) -> Event {
         // A subscription file does not say, and guessing from a location that
         // happens to contain a URL would be a guess.
         online: false,
+        all_day: occurrence.all_day,
     }
 }
 

@@ -242,6 +242,11 @@ pub struct Options {
     /// Low, because these answers are about what the tools actually returned.
     /// Invention is the failure mode here, not dullness.
     pub temperature: f32,
+    /// How hard to push the model off words it has just written. Absent unless
+    /// asked for: it would bend the arguments of a tool call, which are
+    /// repetitive by nature, so only a request for prose sets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat_penalty: Option<f32>,
 }
 
 impl Options {
@@ -250,7 +255,16 @@ impl Options {
         Self {
             max_tokens: 512,
             temperature: 0.2,
+            repeat_penalty: None,
         }
+    }
+
+    /// Discourage repeating what was just said. For long prose from a small
+    /// model, which at a low temperature will otherwise circle a list forever.
+    #[must_use]
+    pub const fn with_repeat_penalty(mut self, penalty: f32) -> Self {
+        self.repeat_penalty = Some(penalty);
+        self
     }
 
     /// Cap the reply at `tokens`.
@@ -282,6 +296,18 @@ pub struct ChatRequest {
     /// Sampling limits, which the OpenAI contract carries at the top level.
     #[serde(flatten)]
     pub options: Options,
+    /// Settings the model's own chat template reads. Always `enable_thinking:
+    /// false`: Qwen3 writes a long private reasoning pass before it answers
+    /// unless told not to, and on a machine that writes 8 tokens a second that
+    /// is minutes of silence spent on words nobody reads. A template that has
+    /// no such switch, Llama's or Gemma's, ignores the setting.
+    pub chat_template_kwargs: TemplateKwargs,
+}
+
+/// The template settings Chief sends with every request.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct TemplateKwargs {
+    pub enable_thinking: bool,
 }
 
 impl ChatRequest {
@@ -292,6 +318,9 @@ impl ChatRequest {
             stream: false,
             tools: Vec::new(),
             options: Options::new(),
+            chat_template_kwargs: TemplateKwargs {
+                enable_thinking: false,
+            },
         }
     }
 
@@ -332,10 +361,11 @@ impl ChatResponse {
 }
 
 /// What an answer cut short by the token ceiling is marked with.
-const ANSWER_CUT: &str = "\n\n[Cut short — this answer reached its length limit.]";
+pub(crate) const ANSWER_CUT: &str = "\n\n[Cut short — this answer reached its length limit.]";
 
 /// What an answer the engine stopped delivering is marked with.
-const ANSWER_INTERRUPTED: &str = "\n\n[Cut short — the model engine stopped responding.]";
+pub(crate) const ANSWER_INTERRUPTED: &str =
+    "\n\n[Cut short — the model engine stopped responding.]";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Choice {
@@ -877,6 +907,19 @@ mod tests {
 
         assert_eq!(brief.max_tokens, 80);
         assert_eq!(brief.temperature, Options::new().temperature);
+    }
+
+    /// Qwen3 reasons at length before answering unless the template is told not
+    /// to, and at 8 tokens a second that is minutes. Every request says so.
+    #[test]
+    fn every_request_switches_the_models_thinking_off() {
+        let request = ChatRequest::new("chief", vec![Message::user("hello")]);
+        let body = serde_json::to_value(&request).expect("should serialize");
+
+        assert_eq!(
+            body["chat_template_kwargs"],
+            json!({ "enable_thinking": false })
+        );
     }
 
     #[test]

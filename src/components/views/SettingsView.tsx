@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { FolderOpen, Github, Mail, RefreshCw, SquareKanban } from 'lucide-react';
+import { FolderOpen, Mail, RefreshCw, SquareKanban } from 'lucide-react';
+import { Github } from '@/components/icons/brand';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 
 import { Button } from '@/components/ui/button';

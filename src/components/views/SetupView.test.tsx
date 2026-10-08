@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -119,8 +119,38 @@ describe('SetupView', () => {
     invoke.mockResolvedValue(allSet);
 
     render(<SetupView onSkip={onSkip} />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Start using Chief' }));
+    const start = await screen.findByRole('button', { name: 'Start using Chief' });
+
+    expect(onSkip).not.toHaveBeenCalled();
+
+    await userEvent.click(start);
 
     expect(onSkip).toHaveBeenCalled();
+  });
+
+  /**
+   * EM-11. A window opened hidden at login meets an engine that is still
+   * reading the weights, and the person who set Chief up weeks ago must not be
+   * asked to click through a first-run screen when it finishes.
+   */
+  it('lets itself out when an engine that was loading at launch starts answering', async () => {
+    const onSkip = vi.fn();
+    invoke.mockResolvedValueOnce(loadingEngine).mockResolvedValue(allSet);
+
+    render(<SetupView onSkip={onSkip} />);
+
+    await waitFor(() => expect(onSkip).toHaveBeenCalled(), { timeout: 4000 });
+  });
+
+  it('waits to be told when the engine was not loading at launch', async () => {
+    const onSkip = vi.fn();
+    invoke.mockResolvedValueOnce(stoppedEngine).mockResolvedValue(allSet);
+
+    render(<SetupView onSkip={onSkip} />);
+    await screen.findByRole('button', { name: 'Start engine' });
+    await userEvent.click(screen.getByRole('button', { name: 'Start engine' }));
+    await screen.findByRole('button', { name: 'Start using Chief' });
+
+    expect(onSkip).not.toHaveBeenCalled();
   });
 });

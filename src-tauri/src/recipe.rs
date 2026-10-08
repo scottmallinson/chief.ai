@@ -36,8 +36,59 @@ use crate::{clock, corpus, github, integrations};
 /// context, short enough that a slow machine finishes it.
 const BRIEF_TOKENS: u32 = 500;
 
+/// Pushes the model off lines it has already written. Measured need: Llama 3.2
+/// 1B at temperature 0.2 listed the same four pull requests until it hit the
+/// length limit. Mild, because a brief legitimately reuses names: on the 1B,
+/// 80 runs on an 8 GB Intel Mac kept 83% of the meeting times and pull request
+/// numbers in the prompt with no penalty, 86% at 1.05, 64% at 1.10 and 53% at
+/// 1.15, where it also dropped meetings and invented some. Qwen3 1.7B never
+/// looped in 40 runs. `break_loop` is the real guard; this is only the nudge.
+const BRIEF_REPEAT_PENALTY: f32 = 1.05;
+
+/// A line this long, written this many times, is a loop and not a list.
+const LOOP_MIN_CHARS: usize = 12;
+const LOOP_REPEATS: usize = 3;
+
 /// How many of anything is gathered for one brief.
 pub(crate) const PER_SOURCE: u8 = 10;
+
+/// How many meetings are gathered for one day.
+///
+/// **Higher than [`PER_SOURCE`] because a calendar is the one source that is
+/// not a queue.** A review request or an unread message can wait and the
+/// newest ten are the ones worth having; a meeting happens at its time, and a
+/// manager's day of back-to-back calls is routinely more than ten. Graph
+/// returns them in start order, so the cap used to cut off the whole afternoon
+/// without a word. Twenty is about 280 prompt tokens at the most, which is the
+/// price of the brief not being blind to half the day.
+pub(crate) const CALENDAR_LIMIT: u8 = 20;
+
+/// How many meetings one brief is told about: the next three that have not
+/// finished, plus anything lasting the day.
+///
+/// **A brief is a window onto the day, not the whole of it.** Handed fourteen
+/// meetings, Qwen3 1.7B wrote fourteen bullets and dropped every review and
+/// pull request, and on real data thirteen pull-request bullets; it ignores
+/// "at most five" (EM-12). Prompt reading is the slow part on a small machine
+/// — 15 tokens a second for it on the 8 GB Intel Mac — so a shorter prompt is
+/// also a faster brief. What was held back is said in words by the code, never
+/// by the model, and the brief is written again as the window moves (see
+/// [`Window::refresh_at`]).
+pub(crate) const AGENDA_WINDOW: usize = 3;
+
+/// How many of each queue — reviews waiting, own pull requests, assigned
+/// work, mail — one brief is told about. Queues do not move with the clock, so
+/// what is held back is counted in the brief and left to a question.
+pub(crate) const QUEUE_WINDOW: usize = 3;
+
+/// A meeting that began this recently is still the one being sat in, and stays
+/// in the window. Events carry no end time here, so this stands in for one.
+const MEETING_RUNS: chrono::Duration = chrono::Duration::minutes(30);
+
+/// The least time between two rewrites of the same day's brief. A model call
+/// costs a slow machine up to a minute, so a day of back-to-back meetings must
+/// not become a rewrite at each one.
+const REFRESH_FLOOR: chrono::Duration = chrono::Duration::minutes(30);
 
 /// Where the corpus keeps files that are loaded whatever the question.
 ///
@@ -71,6 +122,16 @@ pub struct Context {
 pub enum Error {
     #[error("nothing is connected yet, so there is nothing to brief you on")]
     NothingToSay,
+    /// Accounts are connected and not one of them could be read. Said apart
+    /// from [`Error::NothingToSay`], which would send somebody who is on a
+    /// train to set up what they already have.
+    #[error(
+        "Chief could not reach anything it is connected to, so there is nothing to brief you \
+         on yet. Check the network connection; it will try again."
+    )]
+    NothingReachable,
+    #[error("the model gave no answer, so no brief was written")]
+    EmptyAnswer,
     #[error(
         "today's brief has been edited since Chief wrote it, so it has been left alone. \
          Delete or rename {path} to have a fresh one written."
@@ -117,6 +178,10 @@ struct Gathered {
     waiting: Vec<String>,
     /// The user's own open pull requests. Their work in flight, not a request.
     mine: Vec<String>,
+    /// Issues assigned to the user on GitHub. Their own queue, like Linear's
+    /// and Jira's, and rendered under the same heading — but its own field, so
+    /// a brief built from GitHub alone does not report its source as Linear.
+    issues: Vec<String>,
     shipped: Vec<String>,
     inbox: Vec<String>,
     /// What Linear says is assigned and unfinished — the one question the
@@ -152,6 +217,7 @@ impl Gathered {
             ("pull requests", self.mine.is_empty()),
             ("work log", self.shipped.is_empty()),
             ("inbox", self.inbox.is_empty()),
+            ("GitHub issues", self.issues.is_empty()),
             ("Linear", self.assigned.is_empty()),
             ("Jira", self.jira.is_empty()),
             ("Confluence", self.pages.is_empty()),
@@ -175,22 +241,25 @@ impl Gathered {
 /// Every source is optional and a source that fails is skipped rather than
 /// fatal — a brief with a calendar and no mail is worth having, and an Outlook
 /// token that expired overnight should not cost the user their morning.
-async fn gather(context: &Context) -> Gathered {
+async fn gather(context: &Context, now: chrono::DateTime<chrono::Local>) -> Gathered {
     let mut found = Gathered::default();
 
-    let (from, to) = today();
+    let (from, to) = today_at(&now);
 
     // Subscriptions first: they need no sign-in, so on most machines this is
     // the only calendar there is. Merged into the same agenda as Outlook, so
     // the brief never has to know which kind an entry came from.
-    found
-        .agenda
-        .extend(subscribed_events(context).await.iter().map(describe_event));
+    found.agenda.extend(
+        subscribed_events_at(context, now)
+            .await
+            .iter()
+            .map(describe_event),
+    );
 
     for account in outlook_accounts(context).await {
         let session = OutlookSession::new(&context.pool, &context.microsoft, account);
 
-        if let Ok(events) = session.events(&from, &to, PER_SOURCE).await {
+        if let Ok(events) = session.events(&from, &to, CALENDAR_LIMIT).await {
             found.agenda.extend(events.iter().map(describe_event));
         }
 
@@ -235,9 +304,17 @@ async fn gather(context: &Context) -> Gathered {
         }
 
         if let Ok(issues) = session.assigned_issues(PER_SOURCE).await {
-            found.assigned.extend(issues.iter().map(describe_issue));
+            found.issues.extend(issues.iter().map(describe_issue));
         }
     }
+
+    // One agenda, in the order the day happens. Each calendar is in order
+    // already, but they are read one after another, so a family calendar read
+    // before an Outlook one would put the 17:30 parents' evening above the
+    // 09:00 stand-up. The same meeting on two calendars is one line, and the
+    // list is held to a day's worth so that one very full calendar cannot push
+    // the whole block over the prompt budget, which would drop it entirely.
+    tidy_agenda(&mut found.agenda);
 
     // **Through `retrieval`, which knows what a row says.** This read
     // `work_log::fetch` and took `summary`, which was a model-written sentence
@@ -267,36 +344,178 @@ async fn gather(context: &Context) -> Gathered {
     found
 }
 
+/// What a brief was told about, and what it was not.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Window {
+    /// Meetings that have already finished, left out as no longer news.
+    passed: usize,
+    /// Meetings still to come that did not fit, in the order they happen.
+    later: usize,
+    /// How many were in the window, for "the next 3 of 14".
+    shown: usize,
+    /// Queues cut to [`QUEUE_WINDOW`], as a heading and how many were left out.
+    held: Vec<(&'static str, usize)>,
+    /// When the window will have moved far enough to be worth writing again.
+    /// `None` when nothing was held back that the clock will bring in.
+    refresh_at: Option<chrono::DateTime<chrono::Local>>,
+}
+
+/// The time an agenda line starts, as minutes after midnight. `None` for an
+/// all-day line or one with no time on it.
+fn starts_at(line: &str) -> Option<chrono::NaiveTime> {
+    chrono::NaiveTime::parse_from_str(line.get(0..5)?, "%H:%M").ok()
+}
+
+/// Cut what a brief is told down to what is worth a bullet *now*.
+///
+/// Pure, and given the clock, so "at 14:10 the morning has gone" is tested
+/// without waiting for it. `agenda` must already be in the order the day
+/// happens, as [`tidy_agenda`] leaves it.
+fn window_found(found: &mut Gathered, now: &chrono::DateTime<chrono::Local>) -> Window {
+    let mut window = Window::default();
+    // Subtracting from a time wraps past midnight, which would put 09:00 in the
+    // past at 00:01. The day starts at midnight, so the cutoff cannot go before it.
+    let cutoff = now
+        .time()
+        .signed_duration_since(chrono::NaiveTime::MIN)
+        .checked_sub(&MEETING_RUNS)
+        .map_or(chrono::NaiveTime::MIN, |since_midnight| {
+            chrono::NaiveTime::MIN + since_midnight.max(chrono::Duration::zero())
+        });
+
+    // An event with no time lasts the day and is always in, outside the count.
+    let (all_day, timed): (Vec<_>, Vec<_>) = std::mem::take(&mut found.agenda)
+        .into_iter()
+        .partition(|line| starts_at(line).is_none());
+
+    let (upcoming, passed): (Vec<_>, Vec<_>) = timed
+        .into_iter()
+        .partition(|line| starts_at(line).is_some_and(|start| start >= cutoff));
+
+    window.passed = passed.len();
+    window.shown = upcoming.len().min(AGENDA_WINDOW);
+    window.later = upcoming.len() - window.shown;
+
+    // Written again when the last meeting in the window starts — by then the
+    // first have gone — but never sooner than the floor after this write.
+    if window.later > 0 {
+        window.refresh_at = upcoming
+            .get(window.shown - 1)
+            .and_then(|line| starts_at(line))
+            .and_then(|start| {
+                now.date_naive()
+                    .and_time(start)
+                    .and_local_timezone(chrono::Local)
+                    .single()
+            })
+            .map(|start| start.max(*now + REFRESH_FLOOR));
+    }
+
+    found.agenda = all_day
+        .into_iter()
+        .chain(upcoming.into_iter().take(AGENDA_WINDOW))
+        .collect();
+
+    for (label, queue) in [
+        ("waiting on your review", &mut found.waiting),
+        ("of your open pull requests", &mut found.mine),
+        ("unread messages", &mut found.inbox),
+        ("assigned to you", &mut found.assigned),
+        ("assigned to you in Jira", &mut found.jira),
+        ("GitHub issues assigned to you", &mut found.issues),
+    ] {
+        if queue.len() > QUEUE_WINDOW {
+            window.held.push((label, queue.len() - QUEUE_WINDOW));
+            queue.truncate(QUEUE_WINDOW);
+        }
+    }
+
+    // Recent work is background for the bullets above, not a queue to clear.
+    found.shipped.truncate(QUEUE_WINDOW);
+
+    window
+}
+
+impl Window {
+    /// The line appended under a brief that left something out, or `None` when
+    /// it left nothing out. **Written here, not by the model**: a model asked
+    /// to say what it was not shown invents the number.
+    fn note(&self) -> Option<String> {
+        let mut sentences = Vec::new();
+
+        if self.later > 0 {
+            sentences.push(format!(
+                "Showing the next {} of {} meetings still to come.",
+                self.shown,
+                self.shown + self.later
+            ));
+        }
+
+        if !self.held.is_empty() {
+            let left_out = self
+                .held
+                .iter()
+                .map(|(label, count)| format!("{count} more {label}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            sentences.push(format!("Not listed: {left_out}."));
+        }
+
+        if sentences.is_empty() {
+            return None;
+        }
+
+        if self.refresh_at.is_some() {
+            sentences.push("Chief adds the rest of the meetings as the day goes.".to_string());
+        }
+
+        Some(format!("_{}_", sentences.join(" ")))
+    }
+}
+
+/// Put an agenda in the order the day happens, without repeats, and no longer
+/// than [`CALENDAR_LIMIT`]. Lines start with the time, so text order is time
+/// order; a day-long event has no time and goes first.
+fn tidy_agenda(agenda: &mut Vec<String>) {
+    agenda.sort_by_key(|line| (!line.starts_with(ALL_DAY), line.clone()));
+    agenda.dedup();
+    agenda.truncate(usize::from(CALENDAR_LIMIT));
+}
+
+/// What stands in for a time on an event that lasts the day.
+const ALL_DAY: &str = "all day";
+
 /// Today's events from every calendar the user subscribed to.
 ///
 /// A subscription that will not load fails that one calendar and nothing else,
 /// the same rule every other source in `gather` follows: a brief with the
 /// calendar and no mail is worth having.
-pub(crate) async fn subscribed_events(context: &Context) -> Vec<microsoft::Event> {
-    subscribed_events_by_account(context)
+pub(crate) async fn subscribed_events_at(
+    context: &Context,
+    now: chrono::DateTime<chrono::Local>,
+) -> Vec<microsoft::Event> {
+    read_subscriptions_at(context, now)
         .await
         .into_iter()
-        .map(|(_, event)| event)
+        .flat_map(|(_, read)| read.unwrap_or_default())
         .collect()
 }
 
-/// The same, keeping the account each event was read from.
+/// Each subscribed calendar's day, with `None` for one that would not load.
 ///
-/// The brief does not care — a reader must never have to know which calendar a
-/// meeting came from — but ingestion does: the work log's dedupe index is
-/// `(source, account_id, external_id)`, so a person with a work and a personal
-/// calendar holding the same meeting keeps both rows rather than having one
-/// overwrite the other.
-pub(crate) async fn subscribed_events_by_account(
+/// The difference between "nothing today" and "could not be read" is what lets
+/// a caller that keeps a copy decide whether to trust an empty list.
+pub(crate) async fn read_subscriptions_at(
     context: &Context,
-) -> Vec<(i64, microsoft::Event)> {
+    now: chrono::DateTime<chrono::Local>,
+) -> Vec<(i64, Option<Vec<microsoft::Event>>)> {
     let Ok(accounts) =
         crate::integrations::accounts(&context.pool, crate::integrations::CALENDAR).await
     else {
         return Vec::new();
     };
 
-    let now = chrono::Local::now();
     let offset = now.offset().local_minus_utc();
     let midnight = now.date_naive().and_time(chrono::NaiveTime::MIN);
     let end = midnight + chrono::Duration::days(1);
@@ -315,9 +534,12 @@ pub(crate) async fn subscribed_events_by_account(
             .events(&credentials.access_token, midnight, end, offset)
             .await
         {
-            Ok(events) => found.extend(events.into_iter().map(|event| (account.id, event))),
+            Ok(events) => found.push((account.id, Some(events))),
             // Reported without the address, which is a credential.
-            Err(error) => eprintln!("a calendar subscription could not be read: {error}"),
+            Err(error) => {
+                eprintln!("a calendar subscription could not be read: {error}");
+                found.push((account.id, None));
+            }
         }
     }
 
@@ -518,7 +740,12 @@ fn assemble(found: &Gathered, present: &str) -> Result<String, Error> {
 
     // The two trackers, under the heading they share. Built here rather than
     // in `gather` so `Gathered::sources` can still say which of them answered.
-    let tracked = [found.assigned.as_slice(), found.jira.as_slice()].concat();
+    let tracked = [
+        found.issues.as_slice(),
+        found.assigned.as_slice(),
+        found.jira.as_slice(),
+    ]
+    .concat();
 
     for (heading, items) in [
         ("Today's meetings", &found.agenda),
@@ -584,11 +811,74 @@ Rules:
 /// timed correctly rather than to show progress. See REC-65.
 async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
     let request = ChatRequest::new(crate::agent::DEFAULT_MODEL, vec![Message::user(prompt)])
-        .with_options(Options::new().with_answer_length(BRIEF_TOKENS));
+        .with_options(
+            Options::new()
+                .with_answer_length(BRIEF_TOKENS)
+                .with_repeat_penalty(BRIEF_REPEAT_PENALTY),
+        );
 
     let reply = engine.chat_stream(&request, |_| {}).await?;
 
-    Ok(reply.content.trim().to_string())
+    // **Whatever arrived is not necessarily a brief.** A stream that stopped
+    // part-way comes back as the words received with an apology stapled on,
+    // which is right for somebody reading along and wrong for a file standing
+    // in for the whole day: written, and recorded, the day counts as briefed
+    // and nothing tries again. The same goes for an answer of nothing.
+    if reply.content.ends_with(llama::ANSWER_INTERRUPTED) {
+        return Err(Error::Engine(llama::Error::Interrupted));
+    }
+
+    let written = break_loop(reply.content.trim());
+
+    if written.is_empty() {
+        return Err(Error::EmptyAnswer);
+    }
+
+    Ok(written)
+}
+
+/// The line as compared for repeats: no list marker, no case, no padding.
+fn loop_key(line: &str) -> String {
+    line.trim()
+        .trim_start_matches(['-', '*', '•', ' '])
+        .to_lowercase()
+}
+
+/// Whether the model circled: one substantial line written three or more times.
+fn is_looping(text: &str) -> bool {
+    let mut counts = std::collections::HashMap::new();
+    text.lines().map(loop_key).any(|key| {
+        if key.chars().count() < LOOP_MIN_CHARS {
+            return false;
+        }
+        let seen = counts.entry(key).or_insert(0usize);
+        *seen += 1;
+        *seen >= LOOP_REPEATS
+    })
+}
+
+/// A brief with its loop taken out.
+///
+/// A small model that cannot stop listing the same items runs to the length
+/// limit and leaves one good copy of each, then the same lines again, then an
+/// apology. Rejecting that would retry on every pass and loop again on a slow
+/// machine, so instead each line is kept once, in order, and the length-limit
+/// marker is dropped: the model did not run out of things to say, it ran out of
+/// new ones. A brief that never loops is returned exactly as written.
+fn break_loop(text: &str) -> String {
+    if !is_looping(text) {
+        return text.to_string();
+    }
+    let body = text.strip_suffix(llama::ANSWER_CUT).unwrap_or(text);
+    let mut seen = std::collections::HashSet::new();
+    let kept: Vec<&str> = body
+        .lines()
+        .filter(|line| {
+            let key = loop_key(line);
+            key.chars().count() < LOOP_MIN_CHARS || seen.insert(key)
+        })
+        .collect();
+    kept.join("\n").trim().to_string()
 }
 
 /// Make today's brief and write it into the corpus.
@@ -596,23 +886,72 @@ async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
 /// Regenerating replaces: a brief is what today looks like now, not a history
 /// of what it looked like at each point during it.
 pub async fn daily_brief(context: &Context) -> Result<Brief, Error> {
-    let found = gather(context).await;
+    daily_brief_at(context, chrono::Local::now()).await
+}
+
+/// The brief for the day `now` falls in.
+///
+/// **The clock is read once, here, and everything below is worked out from it.**
+/// A brief used to ask the clock four separate times — for the window it
+/// gathered, for the date in the prompt, and for the file it was filed under,
+/// which was read *after* the model had finished. A small model on a slow
+/// machine takes minutes, so a brief started at 23:59 was written under
+/// tomorrow's name, with yesterday's meetings in it, and the day it had been
+/// filed under then counted as already briefed.
+pub(crate) async fn daily_brief_at(
+    context: &Context,
+    now: chrono::DateTime<chrono::Local>,
+) -> Result<Brief, Error> {
+    let date = today_date_at(&now);
+    let path = format!("briefs/{date}.md");
+
+    // A brief the user has touched is theirs, and finding out costs nothing —
+    // where finding out *after* the model has written one costs a minute on a
+    // slow machine, every time the daemon comes round to refresh it.
+    if edited_by_hand(context, &date, &path).await {
+        return Err(Error::EditedByHand { path });
+    }
+
+    let mut found = gather(context, now).await;
 
     // Nothing connected and nothing logged is not a brief with no bullets, it
     // is a machine that has not been set up. Saying so beats asking a model to
     // write about an empty page.
     if found.is_empty() {
-        return Err(Error::NothingToSay);
+        // Nothing found is two different situations. Never set up, and set up
+        // but unreachable — a laptop on a train — read the same here and need
+        // opposite advice.
+        let connected = integrations::all_accounts(&context.pool)
+            .await
+            .is_ok_and(|accounts| !accounts.is_empty());
+
+        return Err(if connected {
+            Error::NothingReachable
+        } else {
+            Error::NothingToSay
+        });
     }
 
     // `today`, not `present`: the brief gets the clock and not the ranges.
-    // See `clock::today` — a 1B model handed that date list returned it as the
+    // See `clock::stamp_at` — a 1B model handed that date list returned it as the
     // bullets it had been asked for.
-    let prompt = assemble(&found, &clock::today())?;
-    let markdown = render(&context.engine, &prompt).await?;
+    //
+    // **The sources are named before anything is cut**, so a calendar whose
+    // meetings have all finished still counts as having answered.
+    let sources = found.sources();
+    let window = window_found(&mut found, &now);
 
-    let date = today_date();
-    let path = format!("briefs/{date}.md");
+    let mut markdown = if found.is_empty() {
+        // Everything on the day has been and gone. Nothing to ask a model.
+        "- Nothing else is scheduled for today.".to_string()
+    } else {
+        let prompt = assemble(&found, &clock::stamp_at(&now))?;
+        render(&context.engine, &prompt).await?
+    };
+
+    if let Some(note) = window.note() {
+        markdown = format!("{markdown}\n\n{note}");
+    }
 
     // A brief the user has touched is theirs. The corpus is offered as a folder
     // they can edit, and regenerating used to overwrite it without a word —
@@ -623,13 +962,13 @@ pub async fn daily_brief(context: &Context) -> Result<Brief, Error> {
     }
 
     context.corpus.write(&path, &markdown).await?;
-    record(&context.pool, &date, &found.sources()).await?;
+    record(&context.pool, &date, &sources, window.refresh_at).await?;
 
     Ok(Brief {
         date,
         path,
         markdown,
-        sources: found.sources(),
+        sources,
     })
 }
 
@@ -661,15 +1000,23 @@ async fn edited_by_hand(context: &Context, date: &str, path: &str) -> bool {
 }
 
 /// Note that a brief was written, and from what.
-async fn record(pool: &SqlitePool, date: &str, sources: &[String]) -> Result<(), Error> {
+async fn record(
+    pool: &SqlitePool,
+    date: &str,
+    sources: &[String],
+    refresh_at: Option<chrono::DateTime<chrono::Local>>,
+) -> Result<(), Error> {
     sqlx::query(
-        "INSERT INTO briefs (date, generated_at, sources)
-         VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?2)
+        "INSERT INTO briefs (date, generated_at, sources, refresh_after)
+         VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?2, ?3)
          ON CONFLICT (date) DO UPDATE
-            SET generated_at = excluded.generated_at, sources = excluded.sources",
+            SET generated_at = excluded.generated_at,
+                sources = excluded.sources,
+                refresh_after = excluded.refresh_after",
     )
     .bind(date)
     .bind(sources.join(", "))
+    .bind(refresh_at.map(|at| at.to_rfc3339()))
     .execute(pool)
     .await
     .map_err(|error| Error::Storage(crate::db::Error::Sqlx(error)))?;
@@ -686,17 +1033,42 @@ pub async fn written_at(pool: &SqlitePool, date: &str) -> Result<Option<String>,
         .map_err(crate::db::Error::Sqlx)
 }
 
+/// Whether the day's brief has left meetings out that the clock has since
+/// brought into the window.
+///
+/// `false` for a day with no brief, and for one that left nothing the clock
+/// would bring in — the daemon asks [`written_at`] about the first, and a
+/// brief that said everything has nothing to be refreshed for.
+pub async fn refresh_due(
+    pool: &SqlitePool,
+    date: &str,
+    now: &chrono::DateTime<chrono::Local>,
+) -> Result<bool, crate::db::Error> {
+    let due: Option<Option<String>> =
+        sqlx::query_scalar("SELECT refresh_after FROM briefs WHERE date = ?1")
+            .bind(date)
+            .fetch_optional(pool)
+            .await
+            .map_err(crate::db::Error::Sqlx)?;
+
+    Ok(due
+        .flatten()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok())
+        .is_some_and(|at| at <= *now))
+}
+
 /// Today, as the date a brief is filed under.
 pub(crate) fn today_date() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
+    today_date_at(&chrono::Local::now())
+}
+
+pub(crate) fn today_date_at(now: &chrono::DateTime<chrono::Local>) -> String {
+    now.format("%Y-%m-%d").to_string()
 }
 
 /// Midnight to midnight, in this machine's own time zone.
-pub(crate) fn today() -> (String, String) {
-    let midnight = chrono::Local::now()
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .unwrap_or_default();
+pub(crate) fn today_at(now: &chrono::DateTime<chrono::Local>) -> (String, String) {
+    let midnight = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default();
 
     (
         midnight.format("%Y-%m-%dT%H:%M:%S").to_string(),
@@ -721,13 +1093,17 @@ pub(crate) async fn outlook_accounts(context: &Context) -> Vec<i64> {
 }
 
 pub(crate) fn describe_event(event: &microsoft::Event) -> String {
-    let when = event
-        .start
-        .split('T')
-        .nth(1)
-        .unwrap_or("")
-        .get(0..5)
-        .unwrap_or("");
+    let when = if event.all_day {
+        ALL_DAY
+    } else {
+        event
+            .start
+            .split('T')
+            .nth(1)
+            .unwrap_or("")
+            .get(0..5)
+            .unwrap_or("")
+    };
     let who = if event.attendees.is_empty() {
         String::new()
     } else {
@@ -827,6 +1203,117 @@ pub async fn todays_brief<R: tauri::Runtime>(
 
 #[cfg(test)]
 mod tests {
+    fn at_local(stamp: &str) -> chrono::DateTime<chrono::Local> {
+        use chrono::TimeZone;
+
+        let naive =
+            chrono::NaiveDateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M:%S").expect("stamp");
+
+        chrono::Local
+            .from_local_datetime(&naive)
+            .single()
+            .expect("an unambiguous local time")
+    }
+
+    /// **The queues are cut and the cut is counted.** A brief handed thirteen
+    /// pull requests wrote thirteen bullets; a count the model is asked to
+    /// state is a count it invents, so the code states it.
+    ///
+    /// Proved by setting `QUEUE_WINDOW` to 20:
+    ///
+    /// ```text
+    /// reviews waiting are cut to the window
+    /// ```
+    #[test]
+    fn a_long_queue_is_cut_to_the_window_and_the_cut_is_counted() {
+        let mut found = Gathered {
+            waiting: (0..7).map(|n| format!("repo #{n} — review")).collect(),
+            mine: (0..4).map(|n| format!("repo #{n} — mine")).collect(),
+            ..Gathered::default()
+        };
+
+        let window = window_found(&mut found, &at_local("2026-10-06T09:00:00"));
+
+        assert_eq!(
+            found.waiting.len(),
+            QUEUE_WINDOW,
+            "reviews waiting are cut to the window"
+        );
+        assert_eq!(found.mine.len(), QUEUE_WINDOW);
+        assert_eq!(
+            window.note().as_deref(),
+            Some("_Not listed: 4 more waiting on your review, 1 more of your open pull requests._")
+        );
+        assert_eq!(window.refresh_at, None, "queues do not move with the clock");
+    }
+
+    #[test]
+    fn a_brief_that_left_nothing_out_says_nothing_about_it() {
+        let mut found = gathered();
+        let window = window_found(&mut found, &at_local("2026-10-06T08:00:00"));
+
+        assert_eq!(window.note(), None);
+        assert_eq!(window.refresh_at, None);
+    }
+
+    /// Subtracting half an hour from 00:01 wraps to 23:31, which put the whole
+    /// day in the past. ANY-02 caught it; this keeps it caught at the source.
+    #[test]
+    fn the_start_of_the_day_does_not_wrap_into_the_night_before() {
+        let mut found = Gathered {
+            agenda: vec!["09:00 Planning".to_string()],
+            ..Gathered::default()
+        };
+
+        let window = window_found(&mut found, &at_local("2026-10-06T00:01:00"));
+
+        assert_eq!(window.passed, 0);
+        assert_eq!(found.agenda, vec!["09:00 Planning".to_string()]);
+    }
+
+    /// A rewrite is never due sooner than the floor, however close the next
+    /// meeting: a slow machine must not rewrite at every one.
+    #[test]
+    fn a_rewrite_is_never_scheduled_inside_the_floor() {
+        let mut found = Gathered {
+            agenda: ["10:00 A", "10:05 B", "10:10 C", "11:00 D"]
+                .map(String::from)
+                .to_vec(),
+            ..Gathered::default()
+        };
+        let now = at_local("2026-10-06T09:55:00");
+
+        let window = window_found(&mut found, &now);
+
+        assert_eq!(window.later, 1);
+        assert_eq!(window.refresh_at, Some(now + REFRESH_FLOOR));
+    }
+
+    #[test]
+    fn a_brief_that_does_not_loop_is_returned_exactly_as_written() {
+        let text = "- Review the billing pull request\n- Review the billing pull request\n- ok";
+        assert_eq!(super::break_loop(text), text);
+    }
+
+    #[test]
+    fn a_loop_is_cut_to_one_copy_of_each_line_and_loses_its_apology() {
+        let looped = format!(
+            "- Fix the login bug today\n- Ship the release notes\n- Fix the login bug today\n\
+             - Ship the release notes\n- Fix the login bug today{}",
+            crate::llama::ANSWER_CUT
+        );
+        assert_eq!(
+            super::break_loop(&looped),
+            "- Fix the login bug today\n- Ship the release notes"
+        );
+    }
+
+    #[test]
+    fn short_lines_and_headings_are_never_treated_as_a_loop() {
+        let text = "## Today\n- ok\n- ok\n- ok\n- ok";
+        assert_eq!(super::break_loop(text), text);
+    }
+
     use super::*;
     use crate::work_log;
 
@@ -839,6 +1326,7 @@ mod tests {
             mine: vec!["scottmallinson/chief.ai #12 — Add the corpus".to_string()],
             shipped: vec!["Shipped the loopback listener".to_string()],
             inbox: vec!["Dana Reid: Re: the migration".to_string()],
+            issues: vec!["scottmallinson/chief.ai #3 — Slow start on Windows".to_string()],
             assigned: vec!["REC-42 Read Linear [In Progress]".to_string()],
             jira: vec!["PROJ-7 Migrate the tenant [In Review]".to_string()],
             pages: vec!["Tenant migration runbook [ENG]".to_string()],
@@ -927,6 +1415,7 @@ mod tests {
                 "pull requests",
                 "work log",
                 "inbox",
+                "GitHub issues",
                 "Linear",
                 "Jira",
                 "Confluence",
@@ -978,6 +1467,7 @@ mod tests {
             organiser: Some("Sam Patel".to_string()),
             attendees: vec!["Sam Patel".to_string()],
             online: true,
+            all_day: false,
         };
 
         assert_eq!(describe_event(&event), "10:00 1:1 with Sam with Sam Patel");
@@ -1070,7 +1560,7 @@ mod tests {
             corpus,
         };
 
-        let found = gather(&context).await;
+        let found = gather(&context, chrono::Local::now()).await;
 
         assert!(
             found
@@ -1202,7 +1692,7 @@ mod tests {
 
     /// The defect REC-64 is about, guarded where it actually happened.
     ///
-    /// `clock::today` is asserted in its own module, but nothing there stops
+    /// `clock::stamp_at` is asserted in its own module, but nothing there stops
     /// this call site being pointed back at `clock::present`. This reads the
     /// prompt the engine was really sent.
     ///
@@ -1414,7 +1904,7 @@ mod tests {
 
     #[test]
     fn today_runs_midnight_to_midnight() {
-        let (from, to) = today();
+        let (from, to) = today_at(&chrono::Local::now());
 
         assert!(from.contains("T00:00:00"), "{from}");
         assert!(to > from);
