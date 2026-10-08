@@ -27,8 +27,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BINARIES = path.join(ROOT, 'src-tauri', 'binaries');
 const LIBRARIES = path.join(BINARIES, 'lib');
 
-/** Chief's models, largest first, as `weights.rs` names them. */
-const MODELS = ['Llama-3.2-3B-Instruct-Q4_K_M.gguf', 'Llama-3.2-1B-Instruct-Q4_K_M.gguf'];
+/**
+ * The file names of Chief's models, in the order `weights.rs` declares them —
+ * the standard tier first. Read from the source rather than restated, so a
+ * model changing does not leave this looking for one nobody downloads any more.
+ */
+export function modelFiles(source) {
+  return [...source.matchAll(/file_name:\s*"([^"]+\.gguf)"/g)].map((match) => match[1]);
+}
 
 /** The configurations compared. `args` are added to the flags Chief uses. */
 export const MODES = [
@@ -91,9 +97,10 @@ function appDataDir() {
 function findModel(configured) {
   if (configured) return configured;
 
-  const found = MODELS.map((name) => path.join(appDataDir(), 'models', name)).find((candidate) =>
-    fs.existsSync(candidate),
-  );
+  const weights = fs.readFileSync(path.join(ROOT, 'src-tauri', 'src', 'weights.rs'), 'utf8');
+  const found = modelFiles(weights)
+    .map((name) => path.join(appDataDir(), 'models', name))
+    .find((candidate) => fs.existsSync(candidate));
 
   if (found === undefined) {
     throw new Error('no model found. Download one in Chief, or pass --model <path to a .gguf>.');
