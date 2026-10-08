@@ -243,20 +243,47 @@ migrate at startup, so the pool is ready before the first command runs.
 `src-tauri/src/engine.rs` owns the `llama-server` process. Chief ships llama.cpp rather than asking
 the user to install a runtime, which is the whole reason the engine is a module rather than a URL.
 
-- `scripts/fetch-llama-server.mjs` puts a pinned CPU build in `src-tauri/binaries/`:
+- `scripts/fetch-llama-server.mjs` puts a pinned build in `src-tauri/binaries/`:
   `llama-server-<target triple>` for `externalBin`, and its shared libraries in `lib/` for
   `bundle.resources`. The target is this machine's unless `CHIEF_ENGINE_TARGET` names another —
   which the release needs, because both macOS architectures are built on one arm64 runner and the
   Intel bundle has to link an Intel server. Getting this wrong does not degrade anything: Tauri
-  stops with `resource path binaries/llama-server-x86_64-apple-darwin doesn't exist`. Only CPU builds — a binary that runs on a machine with no GPU and no AVX-512,
-  picking the best instruction set it finds at run time, is the point.
+  stops with `resource path binaries/llama-server-x86_64-apple-darwin doesn't exist`.
+- **Chief ships GPU builds, and every one of them still runs with no GPU.** Apple silicon gets
+  Metal, which upstream compiles into the macOS arm64 build with its shaders embedded; Windows x64
+  and Linux get upstream's **Vulkan** build, which is the CPU build plus one dynamically loaded
+  `ggml-vulkan` library. A machine with no Vulkan driver fails to load that one library —
+  silently, error dialogs included — and runs on the CPU backend exactly as before; Mesa's
+  software rasteriser (llvmpipe) is a CPU pretending to be a GPU, and ggml skips it. Intel Macs
+  and Windows on Arm have no GPU build worth shipping and keep the CPU one. **Vulkan rather than
+  CUDA** because it reaches NVIDIA, AMD and Intel alike for about fifty megabytes, where CUDA
+  reaches NVIDIA only and brings several hundred megabytes of runtime; `CHIEF_ENGINE_BACKEND=cuda`
+  fetches it for a local Windows build, and `=cpu` fetches the build Chief shipped before. The
+  choice is in `assetsFor`, which is tested.
+- **Chief does not choose a layer count.** The engine's own defaults — `-ngl auto` with
+  `--fit on` — put every layer on the GPU and trim that to the memory the device has free, which
+  is the only setting that is right for a card nobody here has seen, so `device_arguments` adds
+  nothing. **If a GPU start dies, the engine is started again with `--device none`** and stays on
+  the CPU for the rest of the run: a machine that ran Chief on its CPU before there was a GPU build
+  must go on doing so, whatever its driver does. `CHIEF_ENGINE_GPU=off` does the same from the
+  start, for a driver that answers wrongly rather than failing, which nothing can detect.
+- **ggml loads its backends from the server's own directory and the current directory — not the
+  loader path.** That includes the CPU backend, which the Windows and Linux builds pick per
+  instruction set at run time. So the server is started in the library directory
+  (`backend_dir`). Before that existed, an installed Linux build — sidecar in `usr/bin`,
+  libraries in `usr/lib/Chief` — stopped with `no backends are loaded` before reading the model,
+  which nothing caught because every test and every `tauri dev` runs with the two side by side.
+- `pnpm engine:bench` measures what the GPU buys on the machine it runs on: the fetched server,
+  started with Chief's flags, once as Chief starts it and once with `--device none`, reading the
+  engine's own timings. **Record the prompt length beside any number it prints**, for the reason
+  the on-device validation skill gives.
 - `Engine::discover` finds that binary next to the app executable (where Tauri puts a sidecar, in
   both a release install and `tauri dev`), then a `llama-server` on `PATH`, then gives up and says
   so through the setup screen.
 - `llama-server` finds its libraries by `$ORIGIN`, which works only where the sidecar and the
   resources land in the same directory — Windows, and nowhere else. macOS splits `Contents/MacOS`
   from `Contents/Resources`; a Linux `.deb`, `.rpm` or AppImage puts the sidecar in `usr/bin` and
-  its 38 llama.cpp libraries in `usr/lib/Chief`. `library_dirs` therefore sets the platform's
+  its 39 llama.cpp libraries in `usr/lib/Chief`. `library_dirs` therefore sets the platform's
   loader path explicitly, and the installed app is correct on all three. **What that does not
   cover is bundling.** linuxdeploy walks every ELF in the AppDir and refuses to build an AppImage
   whose dependencies it cannot resolve; it has no way to know Chief sets the loader path at spawn

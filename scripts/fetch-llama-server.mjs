@@ -7,9 +7,18 @@
 //
 // It is idempotent: a second run with the same pinned build does nothing.
 //
-// Only CPU builds are fetched. That is the point of the move to llama.cpp — one
-// binary that runs on a machine with no GPU and no AVX-512, picking the best
-// instruction set it finds at run time.
+// The default is the GPU build for each platform, and every one of them still
+// runs on a machine with no GPU at all. Apple silicon's build has Metal
+// compiled in and Intel's has none to offer. Windows and Linux get upstream's
+// Vulkan build, which is the CPU build plus one dynamically loaded backend: a
+// machine without a Vulkan driver fails to load that one library, silently, and
+// runs on the CPU exactly as it did before. Vulkan rather than CUDA because it
+// reaches NVIDIA, AMD and Intel alike for about fifty megabytes; CUDA reaches
+// NVIDIA only and brings several hundred megabytes of runtime with it, so it
+// is available here for a local build and not shipped.
+//
+// `CHIEF_ENGINE_BACKEND` chooses: `gpu` (the default), `cpu` for the build
+// Chief shipped before, or `cuda` for Windows x64.
 
 import { createWriteStream } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -32,15 +41,90 @@ const LIBRARIES = path.join(BINARIES, 'lib');
 /** Records which build is already unpacked, so a rerun can do nothing. */
 const STAMP = path.join(BINARIES, '.build');
 
-/** The CPU-only asset for each platform we build for. */
+/** The backends this script can fetch, and the one it fetches unasked. */
+export const BACKENDS = ['gpu', 'cpu', 'cuda'];
+export const DEFAULT_BACKEND = 'gpu';
+
+/**
+ * The CUDA runtime a `cuda` engine is built against. 12.x rather than 13.x
+ * because 13 dropped the Maxwell, Pascal and Volta cards 12 still runs on, and
+ * a local CUDA build is most likely wanted on exactly the older machine whose
+ * GPU is worth using and whose Vulkan driver is not.
+ */
+const CUDA = '12.4';
+
+/**
+ * What each backend fetches for each platform, as the archives to unpack into
+ * one directory. `null` means upstream publishes no such build.
+ *
+ * Where a platform has no GPU build worth shipping, `gpu` takes the CPU one
+ * rather than failing: Intel Macs have no Metal build upstream, and Windows on
+ * Arm's only GPU build targets one family of Qualcomm GPU through OpenCL. The
+ * default has to produce an engine everywhere Chief builds.
+ */
 const ASSETS = {
-  'linux-x64': `llama-${BUILD}-bin-ubuntu-x64.tar.gz`,
-  'linux-arm64': `llama-${BUILD}-bin-ubuntu-arm64.tar.gz`,
-  'darwin-x64': `llama-${BUILD}-bin-macos-x64.tar.gz`,
-  'darwin-arm64': `llama-${BUILD}-bin-macos-arm64.tar.gz`,
-  'win32-x64': `llama-${BUILD}-bin-win-cpu-x64.zip`,
-  'win32-arm64': `llama-${BUILD}-bin-win-cpu-arm64.zip`,
+  cpu: {
+    'linux-x64': ['ubuntu-x64.tar.gz'],
+    'linux-arm64': ['ubuntu-arm64.tar.gz'],
+    'darwin-x64': ['macos-x64.tar.gz'],
+    'darwin-arm64': ['macos-arm64.tar.gz'],
+    'win32-x64': ['win-cpu-x64.zip'],
+    'win32-arm64': ['win-cpu-arm64.zip'],
+  },
+  gpu: {
+    'linux-x64': ['ubuntu-vulkan-x64.tar.gz'],
+    'linux-arm64': ['ubuntu-vulkan-arm64.tar.gz'],
+    'darwin-x64': ['macos-x64.tar.gz'],
+    // The same archive as `cpu`: upstream builds Apple silicon with Metal on,
+    // and the shader library embedded in the binary.
+    'darwin-arm64': ['macos-arm64.tar.gz'],
+    'win32-x64': ['win-vulkan-x64.zip'],
+    'win32-arm64': ['win-cpu-arm64.zip'],
+  },
+  cuda: {
+    'linux-x64': null,
+    'linux-arm64': null,
+    'darwin-x64': null,
+    'darwin-arm64': null,
+    // The runtime is a second archive, named without the build: upstream
+    // publishes it once per CUDA version rather than once per release.
+    'win32-x64': [`win-cuda-${CUDA}-x64.zip`, `!cudart-llama-bin-win-cuda-${CUDA}-x64.zip`],
+    'win32-arm64': null,
+  },
 };
+
+/**
+ * The file names to download for a platform and backend.
+ *
+ * Pure, so the choice that decides what every installer carries is tested
+ * rather than read. A name marked `!` is used as it stands; every other one is
+ * prefixed with the pinned build, which is how upstream names them.
+ */
+export function assetsFor(platform, backend = DEFAULT_BACKEND, build = BUILD) {
+  if (!BACKENDS.includes(backend)) {
+    throw new Error(
+      `CHIEF_ENGINE_BACKEND must be one of ${BACKENDS.join(', ')}, not \`${backend}\`.`,
+    );
+  }
+
+  const assets = ASSETS[backend][platform];
+
+  if (assets === undefined) {
+    throw new Error(`Chief has no llama.cpp build for ${platform}.`);
+  }
+
+  if (assets === null) {
+    const offered = Object.keys(ASSETS[backend]).filter((key) => ASSETS[backend][key] !== null);
+    throw new Error(
+      `llama.cpp publishes no ${backend} build for ${platform}; it has one for ${offered.join(', ')}. ` +
+        `The default, ${DEFAULT_BACKEND}, uses the GPU through Vulkan or Metal where there is one.`,
+    );
+  }
+
+  return assets.map((asset) =>
+    asset.startsWith('!') ? asset.slice(1) : `llama-${build}-bin-${asset}`,
+  );
+}
 
 /**
  * The Rust triples we can fetch an engine for, and the asset key each one
@@ -201,19 +285,23 @@ async function main() {
 
   if (platform === undefined) {
     throw new Error(
-      `Chief has no llama.cpp CPU build for ${target}. It bundles: ${Object.keys(TRIPLES).join(', ')}.`,
+      `Chief has no llama.cpp build for ${target}. It bundles: ${Object.keys(TRIPLES).join(', ')}.`,
     );
   }
 
+  const backend = process.env.CHIEF_ENGINE_BACKEND?.trim() || DEFAULT_BACKEND;
+  const assets = assetsFor(platform, backend);
+
   const serverName = target.includes('windows') ? 'llama-server.exe' : 'llama-server';
   const fallback = needsMacos12Fallback(target, host);
-  const stamp = fallback ? `${BUILD}-macos12-no-blas-${target}` : `${BUILD}-${target}`;
-  const asset = ASSETS[platform];
+  // The backend is part of the stamp, so switching it fetches again rather
+  // than finding the other build already here and keeping it.
+  const stamp = fallback ? `${BUILD}-macos12-no-blas-${target}` : `${BUILD}-${backend}-${target}`;
 
   const sidecar = path.join(BINARIES, `llama-server-${target}${path.extname(serverName)}`);
 
   if (await alreadyHere(sidecar, stamp)) {
-    console.log(`llama.cpp ${BUILD} is already here.`);
+    console.log(`llama.cpp ${BUILD} (${backend}) is already here.`);
     return;
   }
 
@@ -225,19 +313,25 @@ async function main() {
       console.log(`Building llama.cpp ${BUILD} without BLAS for macOS 12 or older…`);
       files = await walk(await buildMacos12Server(scratch));
     } else {
-      const archive = path.join(scratch, asset);
-      console.log(`Fetching llama.cpp ${BUILD} for ${platform}…`);
-      await download(`${RELEASE}/${asset}`, archive);
+      console.log(`Fetching llama.cpp ${BUILD} (${backend}) for ${platform}…`);
 
+      // Every archive lands in one directory, because a CUDA engine is two of
+      // them and the server needs the runtime's libraries beside its own.
       const unpacked = path.join(scratch, 'unpacked');
       await fs.mkdir(unpacked, { recursive: true });
-      unpack(archive, unpacked);
+
+      for (const asset of assets) {
+        const archive = path.join(scratch, asset);
+        await download(`${RELEASE}/${asset}`, archive);
+        unpack(archive, unpacked);
+      }
+
       files = await walk(unpacked);
     }
     const server = files.find((file) => path.basename(file) === serverName);
 
     if (server === undefined) {
-      throw new Error(`${asset} does not contain ${serverName}`);
+      throw new Error(`${assets.join(' + ')} does not contain ${serverName}`);
     }
 
     // Start clean: a stale library from an older build would be found first and
@@ -268,7 +362,10 @@ async function main() {
   }
 }
 
-main().catch((cause) => {
-  console.error(`\nCould not fetch the llama.cpp server: ${cause.message}`);
-  process.exit(1);
-});
+// Imported by the tests for `assetsFor`, which must not start a download.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((cause) => {
+    console.error(`\nCould not fetch the llama.cpp server: ${cause.message}`);
+    process.exit(1);
+  });
+}

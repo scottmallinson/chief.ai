@@ -23,6 +23,7 @@
     "tauri:dev": "pnpm engine:fetch && tauri dev",
     "tauri:build": "pnpm engine:fetch && tauri build --bundles app",
     "engine:fetch": "node scripts/fetch-llama-server.mjs",
+    "engine:bench": "node scripts/bench-engine.mjs",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
