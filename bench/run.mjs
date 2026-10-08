@@ -92,9 +92,22 @@ function machine(label) {
   };
 }
 
+/** Streamed: readFileSync refuses a file over 2 GiB, and the larger models are. */
 function sha256(file) {
   const hash = crypto.createHash('sha256');
-  hash.update(fs.readFileSync(file));
+  const fd = fs.openSync(file, 'r');
+  const chunk = Buffer.alloc(8 * 1024 * 1024);
+  try {
+    for (
+      let n = fs.readSync(fd, chunk, 0, chunk.length, null);
+      n > 0;
+      n = fs.readSync(fd, chunk, 0, chunk.length, null)
+    ) {
+      hash.update(chunk.subarray(0, n));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
   return hash.digest('hex');
 }
 
