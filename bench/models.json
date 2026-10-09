@@ -36,6 +36,24 @@
       "tier": "standard",
       "enabled": true,
       "notes": "Best tool calls and stand-up content in the 2 Oct run, but looped on repeated pull requests. Not pinned to a revision yet."
+    },
+    {
+      "id": "qwen3.5-4b",
+      "name": "Qwen3.5 4B",
+      "file": "Qwen_Qwen3.5-4B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/4168f45a16a1290d65a4ec0fa312ae917a4c15d6/Qwen_Qwen3.5-4B-Q4_K_M.gguf",
+      "tier": "standard",
+      "enabled": true,
+      "notes": "Candidate (3.01 GB, Apache-2.0). Watch the loop and tool-call fixtures: Qwen3 4B looped before. Whether Chief's thinking-off switch applies to this template is unchecked."
+    },
+    {
+      "id": "minicpm5-2b",
+      "name": "MiniCPM5 2B",
+      "file": "MiniCPM5-2B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/resolve/2079a22f3beaa4e306449978533478fe0522f4b3/MiniCPM5-2B-Q4_K_M.gguf",
+      "tier": "light",
+      "enabled": true,
+      "notes": "Candidate (1.56 GB, Apache-2.0, official openbmb file). Needs a llama.cpp build that supports its architecture; a failed start is recorded as its result."
     }
   ]
 }
