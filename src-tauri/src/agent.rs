@@ -668,6 +668,31 @@ pub async fn ask_agent<R: Runtime>(
     })
 }
 
+/// Answer one question the way `ask_agent` does once the engine is up, for the
+/// model benchmark: the same grounding, the same adapter and the same tool
+/// loop, without the Tauri app around them. Routing is left to the caller,
+/// because a routed question never reaches a model and so has nothing to rank.
+#[cfg(test)]
+pub(crate) async fn answer_for_bench(
+    client: &Client,
+    context: &tools::Context,
+    tier: crate::probe::Tier,
+    question: &str,
+) -> Result<String, Error> {
+    let (messages, has_material) = grounded(vec![turn(Role::User, question)], &context.pool).await;
+    let conversation = adapter::Adapter::for_tier(tier).assemble(messages, &clock::present());
+
+    respond_offering(
+        client,
+        context,
+        DEFAULT_MODEL,
+        conversation,
+        !has_material,
+        |_| {},
+    )
+    .await
+}
+
 /// Build a transcript turn, shared by the test modules below.
 #[cfg(test)]
 fn turn(role: Role, content: &str) -> Turn {

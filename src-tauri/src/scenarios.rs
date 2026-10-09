@@ -37,6 +37,8 @@ use crate::db::test_support::migrated_pool;
 use crate::intent::{self, Intent, Window};
 use crate::{daemon, github, integrations, llama, recipe, sync_state, work_log};
 
+mod bench;
+
 // ---------------------------------------------------------------------------
 // The mock services
 // ---------------------------------------------------------------------------
@@ -499,10 +501,10 @@ fn local(stamp: &str) -> DateTime<Local> {
 mod em {
     use super::*;
 
-    type Subjects = [(&'static str, &'static str, &'static [&'static str]); 14];
+    pub(super) type Subjects = [(&'static str, &'static str, &'static [&'static str]); 14];
 
     /// Fourteen meetings, 08:30 to 16:30, on a graph the brief reads.
-    async fn full_day() -> (Subjects, World, Mock) {
+    pub(super) async fn full_day() -> (Subjects, World, Mock) {
         let day = today();
         let subjects: Subjects = [
             ("08:30", "Team standup", &["Priya", "Tom", "Ana"]),

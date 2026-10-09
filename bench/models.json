@@ -1,0 +1,59 @@
+{
+  "comment": "The models the benchmark runs. Add or remove a block, or set enabled to false to keep a model's history without running it. `tier` is which Chief tier the model competes in (it decides the context window and cache ceiling the engine starts with). Weights are downloaded once into bench/.models (gitignored) and their SHA-256 is written into every run's env.json, so a changed file is visible. `revision` should be a commit hash once a model is chosen; `main` is for trying one out.",
+  "models": [
+    {
+      "id": "qwen3-1.7b",
+      "name": "Qwen3 1.7B (thinking off)",
+      "file": "Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/dcb19155b962dbb6389f4691a982043a8e651022/Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+      "tier": "light",
+      "enabled": true,
+      "notes": "Chief's current light-tier model (weights.rs LIGHT)."
+    },
+    {
+      "id": "llama-3.2-3b",
+      "name": "Llama 3.2 3B Instruct",
+      "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/5ab33fa94d1d04e903623ae72c95d1696f09f9e8/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "tier": "light",
+      "enabled": true,
+      "notes": "Chief's current standard-tier model (weights.rs STANDARD), run on the light profile to compare on the 8 GB machine."
+    },
+    {
+      "id": "llama-3.2-1b",
+      "name": "Llama 3.2 1B Instruct",
+      "file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "tier": "light",
+      "enabled": true,
+      "notes": "Fast fallback. Not pinned to a revision yet."
+    },
+    {
+      "id": "qwen3-4b-instruct-2507",
+      "name": "Qwen3 4B Instruct 2507",
+      "file": "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+      "tier": "standard",
+      "enabled": true,
+      "notes": "Best tool calls and stand-up content in the 2 Oct run, but looped on repeated pull requests. Not pinned to a revision yet."
+    },
+    {
+      "id": "qwen3.5-4b",
+      "name": "Qwen3.5 4B",
+      "file": "Qwen_Qwen3.5-4B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Qwen_Qwen3.5-4B-GGUF/resolve/4168f45a16a1290d65a4ec0fa312ae917a4c15d6/Qwen_Qwen3.5-4B-Q4_K_M.gguf",
+      "tier": "standard",
+      "enabled": true,
+      "notes": "Candidate (3.01 GB, Apache-2.0). Watch the loop and tool-call fixtures: Qwen3 4B looped before. Whether Chief's thinking-off switch applies to this template is unchecked."
+    },
+    {
+      "id": "minicpm5-2b",
+      "name": "MiniCPM5 2B",
+      "file": "MiniCPM5-2B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/resolve/2079a22f3beaa4e306449978533478fe0522f4b3/MiniCPM5-2B-Q4_K_M.gguf",
+      "tier": "light",
+      "enabled": true,
+      "notes": "Candidate (1.56 GB, Apache-2.0, official openbmb file). Needs a llama.cpp build that supports its architecture; a failed start is recorded as its result."
+    }
+  ]
+}
