@@ -55,7 +55,7 @@ export function summarise(env, scored, judged) {
       name: env.models.find((m) => m.id === id)?.name ?? id,
       tier: tierOf[id],
       gates: s.gates,
-      eligible: Object.values(s.gates).every((g) => g.pass),
+      eligible: Object.values(s.gates).every((g) => g.pass || g.informational),
       parts: { ...s.parts, usefulness: usefulScore },
       composite: comp.score,
       left_out: comp.left_out,
@@ -181,11 +181,11 @@ export function renderMarkdown(dir, env, scored, judged, summary) {
   L.push('## 1. Headline');
   L.push('');
   L.push(
-    'A model that fails any gate is not ranked, however fast it is. Gates: G1 starts and answers · G2 fits in 8 GB · G3 invents nothing on quiet days · G4 finishes without circling · G5 tool calls valid.',
+    'A model that fails any gate is not ranked, however fast it is. Gates: G1 starts and answers · G2 fits in 8 GB · G4 finishes without circling · G5 tool calls valid. G3 is not a gate: it shows the share of quiet-day runs where the model invented something, and lower is better.',
   );
   L.push('');
   L.push(
-    '| # | Model | Tier | G1 | G2 | G3 | G4 | G5 | Score | Quality | Tools | Usefulness | Speed | Memory |',
+    '| # | Model | Tier | G1 | G2 | Invents | G4 | G5 | Score | Quality | Tools | Usefulness | Speed | Memory |',
   );
   L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   const order = [...summary.ranked, ...summary.unranked];
@@ -197,7 +197,7 @@ export function renderMarkdown(dir, env, scored, judged, summary) {
       : 'n/r';
     const g = m.gates;
     L.push(
-      `| ${place} | ${m.name} | ${m.tier} | ${mark(g.G1.pass)} | ${mark(g.G2.pass)} | ${mark(g.G3.pass)} | ${mark(g.G4.pass)} | ${mark(g.G5.pass)} | ${num(m.composite)} | ${num(m.parts.quality)} | ${num(m.parts.tools)} | ${num(m.parts.usefulness)} | ${env.machine.target ? num(m.parts.speed) : 'n/a'} | ${num(m.parts.memory)} |`,
+      `| ${place} | ${m.name} | ${m.tier} | ${mark(g.G1.pass)} | ${mark(g.G2.pass)} | ${pct(g.G3.rate)} | ${mark(g.G4.pass)} | ${mark(g.G5.pass)} | ${num(m.composite)} | ${num(m.parts.quality)} | ${num(m.parts.tools)} | ${num(m.parts.usefulness)} | ${env.machine.target ? num(m.parts.speed) : 'n/a'} | ${num(m.parts.memory)} |`,
     );
   });
   L.push('');
