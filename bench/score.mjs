@@ -458,10 +458,9 @@ export function gatesFor(runs) {
   };
   const invented = quiet.filter((run) => !run.m.clean);
   g.G3 = {
-    name: 'Invention rate on the quiet days',
-    // Reported, not gated: nobody could be ranked under a zero-tolerance rule
-    // (decided with the maintainer 2026-10-09). `pass` only says the rate is zero.
-    informational: true,
+    name: 'Invents nothing on the quiet days',
+    // A gate again (maintainer, 2026-10-12): Chief is only useful if what it says
+    // can be relied on. The rate is still kept so the report can show how close a model came.
     rate: quiet.length ? invented.length / quiet.length : null,
     pass: quiet.length > 0 && invented.length === 0,
     detail: `${invented.length} of ${quiet.length} quiet-day runs invented something`,
