@@ -980,18 +980,19 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
                 merged_at: None,
                 body: Some("Failed webhooks are retried three times with backoff.".into()),
             };
-            let answer = propose::draft_for_bench(&world.ctx, &item)
-                .await
-                .map_err(|error| error.to_string());
+            let (answer, blocked) = match propose::draft_for_bench(&world.ctx, &item).await {
+                Ok((text, blocked)) => (Ok(text), blocked),
+                Err(error) => (Err(error.to_string()), false),
+            };
 
             let key = if known {
                 json!({
-                    "draft": true, "max_words": 80, "forbid_times": true,
+                    "draft": true, "blocked": blocked, "max_words": 80, "forbid_times": true,
                     "forbid": ["Tomasz Wrona", "Imogen Clarke", "Dev Patel"],
                 })
             } else {
                 json!({
-                    "draft": true, "max_words": 80, "forbid_times": true,
+                    "draft": true, "blocked": blocked, "max_words": 80, "forbid_times": true,
                     "forbid": ["Priya Nair", "Tomasz Wrona", "Imogen Clarke", "Dev Patel"],
                 })
             };
