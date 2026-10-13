@@ -33,7 +33,7 @@ use futures_util::StreamExt;
 use tokio::process::{Child, Command};
 
 use crate::probe::Tier;
-use crate::{agent, engine, tools};
+use crate::{agent, engine, profile, propose, tools};
 
 // ---------------------------------------------------------------------------
 // The recording proxy
@@ -491,7 +491,21 @@ const FIXTURES: &[(&str, &str, &str)] = &[
         "tomorrow's meetings: fetch_calendar, tomorrow",
     ),
     ("chat-no-tool", "chat", "a question no tool fits"),
+    (
+        "draft-review-known",
+        "draft",
+        "a review request on a repo whose reviewer the team file names",
+    ),
+    (
+        "draft-review-unknown",
+        "draft",
+        "a review request on a repo nobody in the team file is tied to",
+    ),
 ];
+
+const DRAFT_TEAM: &str = "# Team\n\n## acme/api\n- Priya Nair reviews acme/api\n\n## acme/web\n- Tomasz Wrona reviews acme/web\n- Imogen Clarke reviews acme/web\n\n## Platform\n- Dev Patel runs the platform team\n";
+
+const DRAFT_STYLE: &str = "# Writing style\n\n- Greets with \"Hi\" and a first name.\n- Signs off with \"Thanks\".\n- Short: two or three sentences.\n- No emoji.\n- British spelling.\n";
 
 async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
     let day = today();
@@ -934,6 +948,56 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             Played {
                 answer,
                 key: json!({ "no_tool": true, "must": ["thank"], "forbid_numbers": true, "max_words": 120 }),
+                routed: false,
+            }
+        }
+
+        "draft-review-known" | "draft-review-unknown" => {
+            let known = id == "draft-review-known";
+            let world = world(None, None, engine_url).await;
+            world
+                .ctx
+                .corpus
+                .write(profile::TEAM_STRUCTURE, DRAFT_TEAM)
+                .await
+                .expect("team file");
+            world
+                .ctx
+                .corpus
+                .write(profile::WRITING_STYLE, DRAFT_STYLE)
+                .await
+                .expect("style file");
+
+            let repository = if known { "acme/api" } else { "acme/billing" };
+            let item = github::PullRequest {
+                number: 57,
+                title: "Retry payment webhooks".into(),
+                repository: repository.into(),
+                state: "open".into(),
+                draft: false,
+                url: format!("https://github.com/{repository}/pull/57"),
+                updated_at: "2026-10-02T07:00:00Z".into(),
+                merged_at: None,
+                body: Some("Failed webhooks are retried three times with backoff.".into()),
+            };
+            let answer = propose::draft_for_bench(&world.ctx, &item)
+                .await
+                .map_err(|error| error.to_string());
+
+            let key = if known {
+                json!({
+                    "draft": true, "max_words": 80, "forbid_times": true,
+                    "forbid": ["Tomasz Wrona", "Imogen Clarke", "Dev Patel"],
+                })
+            } else {
+                json!({
+                    "draft": true, "max_words": 80, "forbid_times": true,
+                    "forbid": ["Priya Nair", "Tomasz Wrona", "Imogen Clarke", "Dev Patel"],
+                })
+            };
+            Played {
+                answer,
+                key,
                 routed: false,
             }
         }

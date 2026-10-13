@@ -254,6 +254,19 @@ describe('gatesFor', () => {
     expect(gatesFor([scored({ peak_resident_mb: MEMORY_BUDGET_MB + 1 })]).G2.pass).toBe(false);
     expect(gatesFor([scored({ swap_in_mb: 50 })]).G2.pass).toBe(false);
   });
+  it('fails G6 when a shipped draft names someone the prompt never did', () => {
+    const draft = (overrides) => ({ ...scored(overrides), fixtureGroup: 'draft' });
+    expect(gatesFor([draft({ invented: ['Maria'], shipped_invented: ['Maria'] })]).G6.pass).toBe(
+      false,
+    );
+    expect(gatesFor([draft({ invented: [], shipped_invented: [] })]).G6.pass).toBe(true);
+    expect(
+      gatesFor([draft({ invented: ['Maria'], shipped_invented: [], blocked: true })]).G6.pass,
+    ).toBe(true);
+  });
+  it('reports no G6 on a run with no drafts', () => {
+    expect(gatesFor([scored({})]).G6).toBeUndefined();
+  });
   it('fails a model that never calls a tool', () => {
     expect(gatesFor([scored({})]).G5.pass).toBe(false);
   });

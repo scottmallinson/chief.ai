@@ -238,6 +238,24 @@ async fn compose(
     context: &recipe::Context,
     pull_request: &github::PullRequest,
 ) -> Result<String, Error> {
+    let drafted = ask_model(context, pull_request).await?;
+
+    Ok(format!("{}\n\n{drafted}\n", heading(pull_request)))
+}
+
+/// The benchmark's entry: what the model wrote, with no heading and no file.
+#[cfg(test)]
+pub(crate) async fn draft_for_bench(
+    context: &recipe::Context,
+    pull_request: &github::PullRequest,
+) -> Result<String, Error> {
+    ask_model(context, pull_request).await
+}
+
+async fn ask_model(
+    context: &recipe::Context,
+    pull_request: &github::PullRequest,
+) -> Result<String, Error> {
     let mut budget = Budget::with_ceiling(PROMPT_TOKENS);
     let mut prompt = String::new();
 
@@ -275,15 +293,15 @@ async fn compose(
         .with_options(Options::new().with_answer_length(DRAFT_TOKENS));
 
     let reply = context.engine.chat(&request).await?;
-    let drafted = reply.content.trim();
+    let text = reply.content.trim().to_string();
 
-    if drafted.is_empty() {
+    if text.is_empty() {
         return Err(Error::Engine(llama::Error::Transport(
             "the model returned an empty draft".to_string(),
         )));
     }
 
-    Ok(format!("{}\n\n{drafted}\n", heading(pull_request)))
+    Ok(text)
 }
 
 /// What the file says about itself, before the draft.

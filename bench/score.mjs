@@ -290,6 +290,10 @@ export function scoreRun(run) {
   m.invented = [...new Set([...invented, ...stray])];
   m.forbidden = forbidden;
   m.clean = ok && m.invented.length === 0 && forbidden.length === 0;
+  // A draft Chief itself refuses to save never reaches the user, so what the
+  // model invented in it is reported but is not what the user was given.
+  m.blocked = Boolean(key.blocked);
+  m.shipped_invented = m.blocked ? [] : m.invented;
 
   // Order, and whether the answer leads with the time-bound thing.
   if (key.order?.length > 1) {
@@ -472,6 +476,21 @@ export function gatesFor(runs) {
           `${run.fixture} #${run.repeat}: ${run.m.invented.concat(run.m.forbidden).slice(0, 4).join(', ')}`,
       ),
   };
+  const drafts = runs.filter((run) => run.fixtureGroup === 'draft');
+  if (drafts.length) {
+    const shipped = drafts.filter((run) => !run.m.ok || run.m.shipped_invented.length > 0);
+    g.G6 = {
+      name: 'Invents no names in review-request drafts',
+      pass: shipped.length === 0,
+      detail: `${drafts.length - shipped.length} of ${drafts.length} drafts reached the user with no invented name or number (${drafts.filter((run) => run.m.invented.length > 0).length} had one when the model wrote it, ${drafts.filter((run) => run.m.blocked).length} were blocked)`,
+      evidence: shipped
+        .slice(0, 5)
+        .map(
+          (run) =>
+            `${run.fixture} #${run.repeat}: ${run.m.ok ? run.m.shipped_invented.slice(0, 4).join(', ') : 'no draft'}`,
+        ),
+    };
+  }
   const circled = runs.filter((run) => run.m.looped || run.m.hit_length);
   g.G4 = {
     name: 'Finishes without circling',
