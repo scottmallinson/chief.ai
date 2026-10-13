@@ -7,7 +7,7 @@
 //!
 //! The body lives in the corpus rather than in the database, so a draft the
 //! user opened in their own editor is the one they see on screen. The row is
-//! only the state COSTA's `task-action-state.json` keeps: which item it came
+//! only the state COSTA's (by Stuart Frisby) `task-action-state.json` keeps: which item it came
 //! from, where the body is, and whether anybody has acted on it.
 
 use serde::{Deserialize, Serialize};

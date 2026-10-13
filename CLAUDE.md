@@ -479,7 +479,7 @@ a short message asking for a review.
   `never_reaches_the_network_to_draft` asserts every request the pass makes to GitHub is a `GET`,
   having first asserted the request list is not empty — a loop over nothing passes without checking
   anything, which would be a broken stub dressed up as proof.
-- **The prompt is assembled in COSTA's order, literally**: org structure, then writing style, then
+- **The prompt is assembled in COSTA's order, literally** (COSTA is Stuart Frisby's; see the README's Acknowledgements): org structure, then writing style, then
   the item. Who these people are frames how to address them, how the user writes frames the words,
   and the thing being written about arrives last. `reads_the_team_and_the_style_before_the_item`
   asserts the three appear in that order in what was actually sent.

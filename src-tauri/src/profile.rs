@@ -2,7 +2,7 @@
 //!
 //! `ensure_shape` creates seven files with a heading each and nothing in them,
 //! and a draft written against an empty `writing_style.md` sounds like a model.
-//! COSTA's finding, and the reason this step exists: stale or absent context
+//! COSTA's finding (COSTA is by Stuart Frisby), and the reason this step exists: stale or absent context
 //! produces generic drafts, so the profile has to be seeded from something real
 //! before Proposed Actions is worth building.
 //!

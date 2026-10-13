@@ -214,7 +214,7 @@ ALTER TABLE briefs ADD COLUMN refresh_after TEXT;
 
 /// The drafts Chief prepared for things it noticed, and what became of them.
 ///
-/// COSTA's `task-action-state.json`, in the store Chief already has. The body
+/// COSTA's (by Stuart Frisby) `task-action-state.json`, in the store Chief already has. The body
 /// lives in the corpus as markdown the user can open; only its state is here,
 /// so a draft the user edited in their own editor is still the one on screen.
 ///

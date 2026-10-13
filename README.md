@@ -131,6 +131,11 @@ the single best thing to read before a substantial change. [SECURITY.md](SECURIT
 private route for reporting a vulnerability, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) applies
 to everyone taking part.
 
+## Acknowledgements
+
+The shape of Proposed Actions — load the org structure, then the writing style, then the item, and
+keep a small state file of what became of each draft — comes from COSTA, created by Stuart Frisby.
+
 ## Licence
 
 [MIT](LICENSE)

@@ -10,7 +10,7 @@
 //! one — the thing you would have written yourself on Friday afternoon, ready
 //! on Friday morning.
 //!
-//! The prompt is assembled in COSTA's order, literally: **org structure, then
+//! The prompt is assembled in COSTA's order (COSTA is by Stuart Frisby), literally: **org structure, then
 //! writing style, then the item**. Who these people are frames how to address
 //! them, how the user writes frames the words, and only then does the thing
 //! being written about arrive. Reversing it produces a draft about a pull
