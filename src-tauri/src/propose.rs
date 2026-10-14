@@ -271,12 +271,29 @@ async fn write(
     }
 
     let drafted = ask_model(context, pull_request).await?;
+
+    match vetted(&drafted) {
+        Ok(text) => Ok(Written::Model(text)),
+        Err(invented) => Err(Error::InventedName(invented)),
+    }
+}
+
+/// The draft as it may be kept: an invented name in the greeting is cut out,
+/// anything else invented refuses the draft and returns what was invented.
+fn vetted(drafted: &Drafted) -> Result<String, Vec<String>> {
     let invented = unsupported_names(&drafted.text, &drafted.prompt);
 
     if invented.is_empty() {
-        Ok(Written::Model(drafted.text))
+        return Ok(drafted.text.clone());
+    }
+
+    let stripped = strip_greeting_names(&drafted.text, &invented);
+    let remaining = unsupported_names(&stripped, &drafted.prompt);
+
+    if remaining.is_empty() {
+        Ok(stripped)
     } else {
-        Err(Error::InventedName(invented))
+        Err(remaining)
     }
 }
 
@@ -292,9 +309,11 @@ pub(crate) async fn draft_for_bench(
     }
 
     let drafted = ask_model(context, pull_request).await?;
-    let blocked = !unsupported_names(&drafted.text, &drafted.prompt).is_empty();
 
-    Ok((drafted.text, blocked))
+    Ok(match vetted(&drafted) {
+        Ok(text) => (text, false),
+        Err(_) => (drafted.text, true),
+    })
 }
 
 /// Neither profile file has been touched, so there is nothing of the user's to
@@ -428,6 +447,8 @@ async fn examples_for(context: &recipe::Context, repository: &str) -> Vec<String
     found
 }
 
+const GREETINGS: [&str; 5] = ["hi", "hey", "hello", "dear", "morning"];
+
 /// Names in a draft that nothing Chief was given contains.
 ///
 /// A person is a capitalised word in the middle of a sentence, the word after
@@ -436,7 +457,6 @@ async fn examples_for(context: &recipe::Context, repository: &str) -> Vec<String
 /// and errs towards refusing: a draft thrown away costs a model call, a
 /// message to somebody who does not exist costs the user's credibility.
 fn unsupported_names(draft: &str, prompt: &str) -> Vec<String> {
-    const GREETINGS: [&str; 5] = ["hi", "hey", "hello", "dear", "morning"];
     const NOT_NAMES: [&str; 12] = [
         "thanks", "thank", "cheers", "please", "also", "could", "would", "can", "this", "the",
         "it", "we",
@@ -484,6 +504,36 @@ fn unsupported_names(draft: &str, prompt: &str) -> Vec<String> {
     }
 
     invented
+}
+
+/// Cuts an invented name out of a greeting: "Hi Emily," becomes "Hi,".
+fn strip_greeting_names(draft: &str, invented: &[String]) -> String {
+    let lines: Vec<String> = draft
+        .lines()
+        .map(|line| {
+            let mut kept: Vec<String> = Vec::new();
+
+            for token in line.split_whitespace() {
+                let word = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+                let follows_greeting = kept.last().is_some_and(|last| {
+                    GREETINGS.contains(&last.trim_end_matches(',').to_lowercase().as_str())
+                });
+
+                if follows_greeting && invented.iter().any(|name| name == word) {
+                    let tail = token.trim_start_matches(|c: char| c.is_alphanumeric() || c == '\'');
+                    if let Some(last) = kept.last_mut() {
+                        last.push_str(tail);
+                    }
+                } else {
+                    kept.push(token.to_string());
+                }
+            }
+
+            kept.join(" ")
+        })
+        .collect();
+
+    lines.join("\n")
 }
 
 async fn ask_model(
@@ -1126,9 +1176,46 @@ mod passes {
         );
     }
 
+    #[test]
+    fn cuts_an_invented_name_out_of_the_greeting() {
+        let invented = vec!["Emily".to_string()];
+
+        assert_eq!(
+            strip_greeting_names("Hi Emily,\n\nCould you review #57?\n\nThanks", &invented),
+            "Hi,\n\nCould you review #57?\n\nThanks"
+        );
+        assert_eq!(
+            strip_greeting_names("Hi Emily, could you review #57?", &invented),
+            "Hi, could you review #57?"
+        );
+        assert_eq!(
+            strip_greeting_names("Ask Emily to review #57.", &invented),
+            "Ask Emily to review #57."
+        );
+    }
+
+    #[test]
+    fn keeps_a_draft_whose_only_invented_name_was_the_greeting() {
+        let prompt = "## people on this repository\n## Priya Nair".to_string();
+        let greeting = Drafted {
+            prompt: prompt.clone(),
+            text: "Hi Emily, could you review #57?".to_string(),
+        };
+        let body = Drafted {
+            prompt,
+            text: "Hi Emily, could you ask Marcus to review #57?".to_string(),
+        };
+
+        assert_eq!(
+            vetted(&greeting),
+            Ok("Hi, could you review #57?".to_string())
+        );
+        assert_eq!(vetted(&body), Err(vec!["Marcus".to_string()]));
+    }
+
     #[tokio::test]
     async fn keeps_nothing_when_the_draft_names_somebody_it_was_not_given() {
-        const INVENTED: &str = r#"{"choices":[{"message":{"role":"assistant","content":"Hi Marcus, could you take a look at #44?"}}]}"#;
+        const INVENTED: &str = r#"{"choices":[{"message":{"role":"assistant","content":"Hi, could you ask Marcus to take a look at #44?"}}]}"#;
         let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", open_prs(11))]);
         let (engine_host, _engine) = serve(vec![("HTTP/1.1 200 OK", INVENTED.to_string())]);
         let (context, _scratch) = context_for(&github_host, &engine_host, "invented").await;
