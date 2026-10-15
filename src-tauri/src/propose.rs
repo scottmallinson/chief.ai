@@ -281,14 +281,14 @@ async fn write(
 /// The draft as it may be kept: an invented name in the greeting is cut out,
 /// anything else invented refuses the draft and returns what was invented.
 fn vetted(drafted: &Drafted) -> Result<String, Vec<String>> {
-    let invented = unsupported_names(&drafted.text, &drafted.prompt);
+    let invented = unsupported_names(&drafted.text, &drafted.known);
 
     if invented.is_empty() {
         return Ok(drafted.text.clone());
     }
 
     let stripped = strip_greeting_names(&drafted.text, &invented);
-    let remaining = unsupported_names(&stripped, &drafted.prompt);
+    let remaining = unsupported_names(&stripped, &drafted.known);
 
     if remaining.is_empty() {
         Ok(stripped)
@@ -333,7 +333,8 @@ fn neutral_template(pull_request: &github::PullRequest) -> String {
 }
 
 struct Drafted {
-    prompt: String,
+    /// What a name in the draft may be found in: the prompt without the examples.
+    known: String,
     text: String,
 }
 
@@ -506,6 +507,11 @@ fn unsupported_names(draft: &str, prompt: &str) -> Vec<String> {
     invented
 }
 
+/// A kept draft as an example: the name in its greeting is not the style.
+fn scrub_example(example: &str) -> String {
+    strip_greeting_names(example, &unsupported_names(example, ""))
+}
+
 /// Cuts an invented name out of a greeting: "Hi Emily," becomes "Hi,".
 fn strip_greeting_names(draft: &str, invented: &[String]) -> String {
     let lines: Vec<String> = draft
@@ -542,12 +548,18 @@ async fn ask_model(
 ) -> Result<Drafted, Error> {
     let mut budget = Budget::with_ceiling(PROMPT_TOKENS);
     let mut prompt = String::new();
+    let mut known = String::new();
     let today = chrono::Local::now().date_naive();
 
     let mut push = |budget: &mut Budget, name: &str, block: &str| {
         if budget.add(name, block).is_ok() {
             prompt.push_str(block);
             prompt.push_str("\n\n");
+
+            if name != "examples" {
+                known.push_str(block);
+                known.push_str("\n\n");
+            }
         }
     };
 
@@ -593,7 +605,7 @@ async fn ask_model(
                 "## messages you wrote before\n{}",
                 examples
                     .iter()
-                    .map(|one| format!("- {}", one.replace('\n', " ")))
+                    .map(|one| format!("- {}", scrub_example(one).replace('\n', " ")))
                     .collect::<Vec<_>>()
                     .join("\n")
             ),
@@ -618,7 +630,7 @@ async fn ask_model(
         )));
     }
 
-    Ok(Drafted { prompt, text })
+    Ok(Drafted { known, text })
 }
 
 /// What the file says about itself, before the draft.
@@ -1195,14 +1207,45 @@ mod passes {
     }
 
     #[test]
+    fn leaves_the_greeting_name_out_of_an_example() {
+        assert_eq!(
+            scrub_example("Hi Tomasz,\n\nCould you review #57?\n\nThanks"),
+            "Hi,\n\nCould you review #57?\n\nThanks"
+        );
+        assert_eq!(
+            scrub_example("Hi, quick one for you."),
+            "Hi, quick one for you."
+        );
+    }
+
+    #[test]
+    fn does_not_accept_a_name_only_an_example_contained() {
+        let known = "## people on this repository\n## Priya Nair".to_string();
+        let greeting = Drafted {
+            known: known.clone(),
+            text: "Hi Tomasz, could you review #57?".to_string(),
+        };
+        let body = Drafted {
+            known,
+            text: "Hi Priya, could you ask Tomasz to review #57?".to_string(),
+        };
+
+        assert_eq!(
+            vetted(&greeting),
+            Ok("Hi, could you review #57?".to_string())
+        );
+        assert_eq!(vetted(&body), Err(vec!["Tomasz".to_string()]));
+    }
+
+    #[test]
     fn keeps_a_draft_whose_only_invented_name_was_the_greeting() {
         let prompt = "## people on this repository\n## Priya Nair".to_string();
         let greeting = Drafted {
-            prompt: prompt.clone(),
+            known: prompt.clone(),
             text: "Hi Emily, could you review #57?".to_string(),
         };
         let body = Drafted {
-            prompt,
+            known: prompt.clone(),
             text: "Hi Emily, could you ask Marcus to review #57?".to_string(),
         };
 
@@ -1301,6 +1344,99 @@ mod passes {
         assert!(
             !sent.contains("Chief drafted this"),
             "the heading is not the voice: {sent}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_copied_from_a_kept_draft_does_not_reach_the_user() {
+        const COPIED: &str = r#"{"choices":[{"message":{"role":"assistant","content":"Hi Tomasz, could you take a look at #44?"}}]}"#;
+        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", open_prs(11))]);
+        let (engine_host, engine) = serve(vec![("HTTP/1.1 200 OK", COPIED.to_string())]);
+        let (context, _scratch) = context_for(&github_host, &engine_host, "copied").await;
+
+        context
+            .corpus
+            .write(
+                "proposed/a.md",
+                "# Ask\n\nChief drafted this.\n\nhttps://github.com/x/1\n\nHi Tomasz,\n\nQuick one for you, when free.",
+            )
+            .await
+            .expect("write");
+        proposed::insert_new(
+            &context.pool,
+            NewProposal {
+                source: "github".into(),
+                account_id: 1,
+                dedupe_key: "scottmallinson/chief.ai#1".into(),
+                title: "t".into(),
+                context: "c".into(),
+                path: "proposed/a.md".into(),
+            },
+        )
+        .await
+        .expect("insert")
+        .expect("new");
+
+        let proposal = run_once(&context, &Attention::default())
+            .await
+            .expect("run")
+            .expect("a draft");
+
+        let sent = engine.await.expect("engine").join("");
+        assert!(sent.contains("Quick one for you, when free."), "{sent}");
+        assert!(
+            !sent.contains("Tomasz"),
+            "an example leaks its greeting name: {sent}"
+        );
+
+        let body = context.corpus.read(&proposal.path).await.expect("read");
+        assert!(!body.contains("Tomasz"), "{body}");
+        assert!(body.contains("Hi, could you take a look at #44?"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn refuses_a_name_that_only_a_kept_draft_mentioned_in_passing() {
+        const COPIED: &str = r#"{"choices":[{"message":{"role":"assistant","content":"Hi, could you ask Tomasz to look at #44?"}}]}"#;
+        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", open_prs(11))]);
+        let (engine_host, engine) = serve(vec![("HTTP/1.1 200 OK", COPIED.to_string())]);
+        let (context, _scratch) = context_for(&github_host, &engine_host, "inpassing").await;
+
+        context
+            .corpus
+            .write(
+                "proposed/a.md",
+                "# Ask\n\nChief drafted this.\n\nhttps://github.com/x/1\n\nQuick one for you, ask Tomasz when free.",
+            )
+            .await
+            .expect("write");
+        proposed::insert_new(
+            &context.pool,
+            NewProposal {
+                source: "github".into(),
+                account_id: 1,
+                dedupe_key: "scottmallinson/chief.ai#1".into(),
+                title: "t".into(),
+                context: "c".into(),
+                path: "proposed/a.md".into(),
+            },
+        )
+        .await
+        .expect("insert")
+        .expect("new");
+
+        let error = run_once(&context, &Attention::default())
+            .await
+            .expect_err("a name found only in an example is not a grounded name");
+
+        let sent = engine.await.expect("engine").join("");
+        assert!(
+            sent.contains("ask Tomasz when free"),
+            "the example has to be in the prompt for this to prove anything: {sent}"
+        );
+
+        assert!(
+            matches!(error, Error::InventedName(ref names) if names == &["Tomasz"]),
+            "{error}"
         );
     }
 
