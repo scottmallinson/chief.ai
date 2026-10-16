@@ -131,7 +131,9 @@ const PR_LIMIT: u8 = 25;
 #[serde(default)]
 struct FetchGithubPrsArgs {
     state: PullRequestState,
-    whose: Whose,
+    /// Absent when the model did not say, which means both: see
+    /// [`fetch_github_prs`].
+    whose: Option<Whose>,
 }
 
 /// The most tools that may ever be offered, and the most characters their
@@ -170,7 +172,7 @@ pub fn catalog() -> Vec<Tool> {
                         "type": "string",
                         "enum": ["mine", "reviewing"],
                         "description": "'mine' for the user's own, 'reviewing' for ones \
-                         waiting on their review. Defaults to mine.",
+                         waiting on their review. Omit for both.",
                     },
                 },
                 "required": [],
@@ -340,12 +342,38 @@ fn describe(account: &integrations::Account) -> String {
 /// An account that will not answer is reported beside the ones that did, so a
 /// single revoked token does not cost the user the rest of the answer. Nothing
 /// readable at all is an error, which is how "Reconnect GitHub" reaches them.
+/// How many of each kind to read when the model did not say whose, so that
+/// reading both costs about what reading one used to.
+const PR_LIMIT_EACH: u8 = 12;
+
+/// `whose` of `None` reads both the user's own pull requests and the reviews
+/// requested of them, each entry saying which it is.
+///
+/// Measured on Llama 3.2 3B: "Prioritise what's next for me" and "Of the PRs
+/// waiting on me, prioritise them" both called this with nothing said, read only
+/// the user's own pull requests, found none open, and the answer was "No results
+/// were found" while seven reviews sat waiting. A question about what to focus
+/// on is about both, and a 3B model is not reliable at choosing.
 async fn fetch_github_prs(
     context: &Context,
     state: PullRequestState,
-    whose: Whose,
+    whose: Option<Whose>,
 ) -> Result<Value, github::Error> {
     let accounts = integrations::accounts(&context.pool, integrations::GITHUB).await?;
+
+    let reads: &[(Whose, &str)] = match whose {
+        Some(Whose::Mine) => &[(Whose::Mine, "")],
+        Some(Whose::Reviewing) => &[(Whose::Reviewing, "")],
+        None => &[
+            (Whose::Mine, "your own pull request"),
+            (Whose::Reviewing, "review requested of you"),
+        ],
+    };
+    let limit = if whose.is_none() {
+        PR_LIMIT_EACH
+    } else {
+        PR_LIMIT
+    };
 
     let mut pull_requests = Vec::new();
     let mut reports = Vec::new();
@@ -354,20 +382,34 @@ async fn fetch_github_prs(
 
     for account in &accounts {
         let name = describe(account);
+        let mut read_any = false;
 
-        match GithubSession::new(&context.pool, &context.github, account.id)
-            .pull_requests(whose.into(), state.into(), PR_LIMIT)
-            .await
-        {
-            Ok(found) => {
-                readable += 1;
-                reports.push(json!({ "account": name, "count": found.len() }));
-                pull_requests.extend(github::as_tool_entries(&name, &found));
+        for (kind, relation) in reads {
+            match GithubSession::new(&context.pool, &context.github, account.id)
+                .pull_requests((*kind).into(), state.into(), limit)
+                .await
+            {
+                Ok(found) => {
+                    read_any = true;
+                    reports.push(json!({ "account": name, "count": found.len() }));
+
+                    let mut entries = github::as_tool_entries(&name, &found);
+                    if !relation.is_empty() {
+                        for entry in &mut entries {
+                            entry["relation"] = json!(relation);
+                        }
+                    }
+                    pull_requests.extend(entries);
+                }
+                Err(error) => {
+                    reports.push(json!({ "account": name, "error": error.to_string() }));
+                    refused = Some(error);
+                }
             }
-            Err(error) => {
-                reports.push(json!({ "account": name, "error": error.to_string() }));
-                refused = Some(error);
-            }
+        }
+
+        if read_any {
+            readable += 1;
         }
     }
 
@@ -377,9 +419,16 @@ async fn fetch_github_prs(
         return Err(refused.unwrap_or(github::Error::NotConnected));
     }
 
+    let searched = match whose {
+        Some(Whose::Mine) => "the user's own pull requests",
+        Some(Whose::Reviewing) => "reviews requested of the user",
+        None => "the user's own pull requests and reviews requested of them",
+    };
+
     Ok(json!({
         "pull_requests": pull_requests,
         "count": pull_requests.len(),
+        "searched": searched,
         "accounts": reports,
     }))
 }
@@ -771,7 +820,11 @@ mod tests {
         let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
         let context = connected(&host).await;
 
-        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+        let result = dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "whose": "mine" })),
+        )
+        .await;
         let prs = result["pull_requests"]
             .as_array()
             .unwrap_or_else(|| panic!("expected a list, got {result}"));
@@ -799,6 +852,47 @@ mod tests {
                 .contains("authorization: bearer gho_token"),
             "the stored token should be sent"
         );
+    }
+
+    #[tokio::test]
+    async fn reads_both_kinds_when_the_model_does_not_say_whose() {
+        let (host, server) = serve(vec![
+            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+        ]);
+        let context = connected(&host).await;
+
+        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+        let prs = result["pull_requests"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected a list, got {result}"));
+
+        assert_eq!(prs.len(), 2, "one of each kind: {result}");
+        assert_eq!(prs[0]["relation"], json!("your own pull request"));
+        assert_eq!(prs[1]["relation"], json!("review requested of you"));
+        assert!(result["searched"]
+            .as_str()
+            .unwrap()
+            .contains("reviews requested"));
+
+        let requests = server.await.expect("both reads should have been made");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("author") && requests[1].contains("review-requested"));
+    }
+
+    #[tokio::test]
+    async fn an_explicit_whose_reads_one_kind_and_adds_no_relation() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = connected(&host).await;
+
+        let result = dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "whose": "reviewing" })),
+        )
+        .await;
+
+        assert!(result["pull_requests"][0].get("relation").is_none());
+        assert_eq!(server.await.expect("one read").len(), 1);
     }
 
     #[tokio::test]
@@ -832,7 +926,11 @@ mod tests {
         let context = connected(&host).await;
         connect(&context, "hubot").await;
 
-        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+        let result = dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "whose": "mine" })),
+        )
+        .await;
         let prs = result["pull_requests"]
             .as_array()
             .unwrap_or_else(|| panic!("expected a list, got {result}"));
@@ -873,7 +971,11 @@ mod tests {
         let context = connected(&host).await;
         connect(&context, "hubot").await;
 
-        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+        let result = dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "whose": "mine" })),
+        )
+        .await;
         let prs = result["pull_requests"]
             .as_array()
             .unwrap_or_else(|| panic!("expected a list, got {result}"));
@@ -908,7 +1010,11 @@ mod tests {
             .await
             .expect("should label");
 
-        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+        let result = dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "whose": "mine" })),
+        )
+        .await;
 
         assert_eq!(
             result["pull_requests"][0]["account"],
@@ -943,7 +1049,11 @@ mod tests {
     async fn tells_the_model_when_github_is_not_connected() {
         let context = context("http://127.0.0.1:1").await;
 
-        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+        let result = dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "whose": "mine" })),
+        )
+        .await;
 
         assert!(
             result["error"]
@@ -961,7 +1071,11 @@ mod tests {
         )]);
         let context = connected(&host).await;
 
-        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+        let result = dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "whose": "mine" })),
+        )
+        .await;
 
         assert!(
             result["error"]
