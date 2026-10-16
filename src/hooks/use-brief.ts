@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   briefDays,
@@ -49,10 +49,13 @@ interface UseBrief {
  * screen, and there was no way back to the button that writes one.
  */
 export function useBrief(): UseBrief {
-  // Read once per mount rather than per render: two renders either side of
-  // midnight would otherwise disagree about which day is selected.
-  const [today] = useState(todayDate);
+  // Read once per render pass rather than per render: two renders either side
+  // of midnight would otherwise disagree about which day is selected. It is
+  // moved on deliberately, below, by [`useNewDay`].
+  const [today, setToday] = useState(todayDate);
   const [selected, setSelected] = useState(today);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const [brief, setBrief] = useState<Brief | null>(null);
   const [days, setDays] = useState<BriefDay[]>([]);
   const [status, setStatus] = useState<Status>('loading');
@@ -75,7 +78,8 @@ export function useBrief(): UseBrief {
     Promise.all([todaysBrief(), refreshDays()])
       .then(([found]) => {
         if (cancelled) return;
-        setBrief(found);
+        // Not over an earlier day somebody is reading when the date turns.
+        if (selectedRef.current === today) setBrief(found);
         setStatus('ready');
       })
       .catch((cause: unknown) => {
@@ -87,7 +91,15 @@ export function useBrief(): UseBrief {
     return () => {
       cancelled = true;
     };
-  }, [refreshDays]);
+  }, [refreshDays, today]);
+
+  useNewDay(today, (now) => {
+    // Anybody looking at the old "today" is moved to the new one. Somebody
+    // reading an earlier day stays where they are: the date turning over is not
+    // a reason to take the page out from under them.
+    setSelected((current) => (current === today ? now : current));
+    setToday(now);
+  });
 
   const select = useCallback(
     (date: string) => {
@@ -151,6 +163,49 @@ export function useBrief(): UseBrief {
   }, [refreshDays]);
 
   return { brief, days, today, selected, status, error, select, write };
+}
+
+/**
+ * Say so when the date changes under a window that stays open.
+ *
+ * Chief lives in the tray, so the window is mounted for days and the date it
+ * read when it started is wrong every morning after the first. The brief the
+ * daemon wrote overnight is exactly what the person opens the window to read,
+ * and without this they were shown yesterday's under yesterday's heading.
+ *
+ * Three triggers, none of them a poll. A timer set for the next midnight,
+ * which covers a window left open and visible. And the window being focused or
+ * shown again, which covers everything a timer cannot: a hidden webview's
+ * timers are throttled, and a laptop that slept through midnight never ran
+ * them at all. Each only compares two strings, so none costs anything.
+ */
+function useNewDay(today: string, onNewDay: (now: string) => void) {
+  const callback = useRef(onNewDay);
+  callback.current = onNewDay;
+
+  useEffect(() => {
+    const check = () => {
+      const now = todayDate();
+      if (now !== today) callback.current(now);
+    };
+
+    const next = new Date();
+    next.setHours(24, 0, 1, 0);
+    const timer = setTimeout(check, Math.max(next.getTime() - Date.now(), 1000));
+
+    const shown = () => {
+      if (document.visibilityState === 'visible') check();
+    };
+
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', shown);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', shown);
+    };
+  }, [today]);
 }
 
 /** Tauri rejects with a string; anything else may be a real Error. */

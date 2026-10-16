@@ -177,6 +177,7 @@ export function renderPage(markdown) {
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
     <script src="support.js" defer></script>
+    <script src="/_vercel/insights/script.js" defer></script>
   </head>
   <body>
     <!--

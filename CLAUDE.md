@@ -76,7 +76,7 @@ that part:
 | ---------------------- | -------------------- | -------------------------- |
 | `pnpm verify:commits`  | Conventional Commits | instant                    |
 | `pnpm verify:frontend` | Frontend             | ~1 min                     |
-| `pnpm verify:layout`   | Layout               | ~35 s                      |
+| `pnpm verify:layout`   | Layout               | ~1.5 min                   |
 | `pnpm verify:rust`     | Rust                 | ~4 min                     |
 | `pnpm verify:app`      | App build            | ~7 min cold, far less warm |
 
@@ -122,7 +122,7 @@ they are going to fail — for the feedback loop rather than for the invoice.
   object, `null == false` is false, and gating on the flag alone would disable the manual trigger.
 - **Cancel superseded runs.** Pushing again to a pull request cancels the run it replaced.
 - **Cache anything downloaded twice** — the pnpm store, the cargo registry and target directory,
-  and Chromium for the layout tests.
+  and Chromium and WebKit for the layout tests.
 - **`main` is not built.** CI runs on pull requests only. A branch has to be up to date with
   `main` before it can merge, so the tree a pull request proves green is the tree the merge
   produces; running the same jobs again on the merge commit would pay twice for an answer already
@@ -243,20 +243,47 @@ migrate at startup, so the pool is ready before the first command runs.
 `src-tauri/src/engine.rs` owns the `llama-server` process. Chief ships llama.cpp rather than asking
 the user to install a runtime, which is the whole reason the engine is a module rather than a URL.
 
-- `scripts/fetch-llama-server.mjs` puts a pinned CPU build in `src-tauri/binaries/`:
+- `scripts/fetch-llama-server.mjs` puts a pinned build in `src-tauri/binaries/`:
   `llama-server-<target triple>` for `externalBin`, and its shared libraries in `lib/` for
   `bundle.resources`. The target is this machine's unless `CHIEF_ENGINE_TARGET` names another —
   which the release needs, because both macOS architectures are built on one arm64 runner and the
   Intel bundle has to link an Intel server. Getting this wrong does not degrade anything: Tauri
-  stops with `resource path binaries/llama-server-x86_64-apple-darwin doesn't exist`. Only CPU builds — a binary that runs on a machine with no GPU and no AVX-512,
-  picking the best instruction set it finds at run time, is the point.
+  stops with `resource path binaries/llama-server-x86_64-apple-darwin doesn't exist`.
+- **Chief ships GPU builds, and every one of them still runs with no GPU.** Apple silicon gets
+  Metal, which upstream compiles into the macOS arm64 build with its shaders embedded; Windows x64
+  and Linux get upstream's **Vulkan** build, which is the CPU build plus one dynamically loaded
+  `ggml-vulkan` library. A machine with no Vulkan driver fails to load that one library —
+  silently, error dialogs included — and runs on the CPU backend exactly as before; Mesa's
+  software rasteriser (llvmpipe) is a CPU pretending to be a GPU, and ggml skips it. Intel Macs
+  and Windows on Arm have no GPU build worth shipping and keep the CPU one. **Vulkan rather than
+  CUDA** because it reaches NVIDIA, AMD and Intel alike for about fifty megabytes, where CUDA
+  reaches NVIDIA only and brings several hundred megabytes of runtime; `CHIEF_ENGINE_BACKEND=cuda`
+  fetches it for a local Windows build, and `=cpu` fetches the build Chief shipped before. The
+  choice is in `assetsFor`, which is tested.
+- **Chief does not choose a layer count.** The engine's own defaults — `-ngl auto` with
+  `--fit on` — put every layer on the GPU and trim that to the memory the device has free, which
+  is the only setting that is right for a card nobody here has seen, so `device_arguments` adds
+  nothing. **If a GPU start dies, the engine is started again with `--device none`** and stays on
+  the CPU for the rest of the run: a machine that ran Chief on its CPU before there was a GPU build
+  must go on doing so, whatever its driver does. `CHIEF_ENGINE_GPU=off` does the same from the
+  start, for a driver that answers wrongly rather than failing, which nothing can detect.
+- **ggml loads its backends from the server's own directory and the current directory — not the
+  loader path.** That includes the CPU backend, which the Windows and Linux builds pick per
+  instruction set at run time. So the server is started in the library directory
+  (`backend_dir`). Before that existed, an installed Linux build — sidecar in `usr/bin`,
+  libraries in `usr/lib/Chief` — stopped with `no backends are loaded` before reading the model,
+  which nothing caught because every test and every `tauri dev` runs with the two side by side.
+- `pnpm engine:bench` measures what the GPU buys on the machine it runs on: the fetched server,
+  started with Chief's flags, once as Chief starts it and once with `--device none`, reading the
+  engine's own timings. **Record the prompt length beside any number it prints**, for the reason
+  the on-device validation skill gives.
 - `Engine::discover` finds that binary next to the app executable (where Tauri puts a sidecar, in
   both a release install and `tauri dev`), then a `llama-server` on `PATH`, then gives up and says
   so through the setup screen.
 - `llama-server` finds its libraries by `$ORIGIN`, which works only where the sidecar and the
   resources land in the same directory — Windows, and nowhere else. macOS splits `Contents/MacOS`
   from `Contents/Resources`; a Linux `.deb`, `.rpm` or AppImage puts the sidecar in `usr/bin` and
-  its 38 llama.cpp libraries in `usr/lib/Chief`. `library_dirs` therefore sets the platform's
+  its 39 llama.cpp libraries in `usr/lib/Chief`. `library_dirs` therefore sets the platform's
   loader path explicitly, and the installed app is correct on all three. **What that does not
   cover is bundling.** linuxdeploy walks every ELF in the AppDir and refuses to build an AppImage
   whose dependencies it cannot resolve; it has no way to know Chief sets the loader path at spawn
@@ -479,10 +506,15 @@ a short message asking for a review.
   `never_reaches_the_network_to_draft` asserts every request the pass makes to GitHub is a `GET`,
   having first asserted the request list is not empty — a loop over nothing passes without checking
   anything, which would be a broken stub dressed up as proof.
-- **The prompt is assembled in COSTA's order, literally**: org structure, then writing style, then
-  the item. Who these people are frames how to address them, how the user writes frames the words,
-  and the thing being written about arrives last. `reads_the_team_and_the_style_before_the_item`
-  asserts the three appear in that order in what was actually sent.
+- **The prompt runs people, then writing style, then examples, then the item**: COSTA's order, with
+  the user's own past messages added between style and item. Who these people are frames how to
+  address them, how the user writes frames the words, and the thing being written about arrives
+  last. `reads_the_team_and_the_style_before_the_item` asserts the three appear in that order in
+  what was actually sent. The order is kept because it was measured: four orders on six models
+  were within noise of each other, and the two rerun once names were checked against the people
+  the draft was given (this order and item-first) still were, so it is a convention and not a
+  requirement. What did matter was the check: it
+  accepts only names from the people block and never ones a kept example happened to contain.
 - **One item per pass.** A draft is a model call, and a machine that woke to nine stale pull
   requests would spend minutes of engine on work nobody asked for while the user waits behind it.
   The pass yields to `Attention` between accounts and between items, like the daemon's own.
@@ -813,6 +845,14 @@ to the system rather than to one screen.
   which is a CSS transition delay rather than the platform's own `title` timing. The header says
   where the data is on every screen. `e2e/shell.spec.ts` measures all of this in a real browser,
   because jsdom reports every height as zero.
+- **Scrollbars are drawn by the system, not the platform.** A 10px gutter, a transparent track
+  and a 6px grey thumb (`--scrollbar-thumb`) that darkens under the pointer, via the
+  `::-webkit-scrollbar` pseudo-elements that WKWebView, WebView2 and WebKitGTK all honour. Never
+  set `scrollbar-width` or `scrollbar-color` alongside them: in Chromium, and so WebView2, either
+  one silently switches the pseudo-elements off. A styled scrollbar is never an overlay, so on
+  macOS it takes its 10px out of the layout the way a Windows one always did. The `classic
+scrollbars` (Chromium) and `webkit` layout projects both assert the gutter is exactly 10px — the
+  engines' own are 15px or an overlay — so a rule one engine drops fails in CI.
 - **Four things may move, and only while work is in flight** (`src/components/ui/activity.tsx`).
   The mark turns half a revolution over 2.4s once a question is dispatched; a 3px slate hairline
   sweeps every 1.4s while a tool runs, captioned with the step actually running; a 1px caret sits at
@@ -844,6 +884,15 @@ guess fails in a way that looks like a pass. The README carries it for the same 
   `default-src 'none'` with `script-src`, `style-src` and `font-src` at `'self'`, which is why the
   fonts are in `website/fonts/` and why no page carries an inline `style` attribute. A site whose
   headline is that nothing about you is sent anywhere must not open with a request to a font CDN.
+- **Page views are counted by Vercel Web Analytics, and by nothing else.** Every page loads
+  `/_vercel/insights/script.js`, which Vercel serves from the site's own origin and whose beacon
+  goes back to that origin — so the CSP gains `connect-src 'self'` and nothing wider. It sets no
+  cookie and keeps no identifier past a day, and Vercel already sees every request to a site it
+  hosts, so it learns nothing it did not have. `Referrer-Policy: no-referrer` stays, which costs
+  the counts their referrers on purpose. This is the _site_ counting visits; the app still collects
+  nothing, and the "Usage analytics — none collected" row on the home page is about the app. The
+  counts are read back by data.scottmallinson.com, which shows them beside its own. Under
+  `vite preview` the script 404s, which is harmless and is why no test depends on it.
 - **The header is aligned on the baseline, not on the centre of each box.** Its three text runs are
   19px, 14px and 13px, and centring boxes of three different heights leaves their baselines a
   couple of pixels apart. Baseline alignment needs every item to expose a real one, which a flex
@@ -929,19 +978,21 @@ guess fails in a way that looks like a pass. The README carries it for the same 
 - Test behaviour through the accessible surface (roles, labels), not implementation details.
 - jsdom has no layout engine: it reports every height as zero, so it cannot see a scrollbar, a
   clipped composer or a window that scrolls when it should not. Anything that depends on layout
-  belongs in `e2e/`, which runs the built app in Chromium under Playwright and measures the result.
+  belongs in `e2e/`, which runs the built app in Chromium and WebKit under Playwright and measures the result.
   The same directory holds `website.spec.ts`, which runs under its own project against the static
   site rather than the app — `testIgnore`/`testMatch` keep the two apart, and Playwright starts a
   server for each.
 - `e2e/fixtures.ts` replaces `window.__TAURI_INTERNALS__` rather than the components, so the real
   views, the real CSS and the real event plumbing run against answers a test chooses. It can hold a
   question open and push `agent-stream` updates, which is how the streaming states are measured.
-- Projects cover a comfortable window, a small one, and one with scrollbars that take space out of
-  the layout the way Windows does — Playwright hides scrollbars in headless Chromium by default,
-  which no user ever sees, so that project turns them back on. A test asserts the two agree, so the
-  project cannot quietly become a duplicate of the default one.
-- What this cannot cover is the webview Chief ships in. Chromium is close to WebView2 and WKWebView
-  but is neither, so a rendering difference peculiar to one of those still gets through; catching
+- Projects cover a comfortable window, a small one, one with scrollbars shown, and the whole app
+  suite again in WebKit. Playwright hides scrollbars in headless Chromium by default, which no user
+  ever sees, so the scrollbar project turns them back on; WebKit always draws them. A test asserts
+  each project's scrollbar is what it claims, so none can quietly become a duplicate of another.
+  Chromium is WebView2's engine and WebKit is WKWebView's and WebKitGTK's, so the pair covers the
+  engine of every platform Chief ships on.
+- What this cannot cover is the webview Chief ships in. Playwright's Chromium and WebKit are close
+  to WebView2, WKWebView and WebKitGTK but are none of them, so a rendering difference peculiar to one of those still gets through; catching
   those means driving the packaged binary with `tauri-driver`.
 - **It is not only rendering.** On 2026-08-29 a regex lookbehind — `(?<!…)` — reached `main` past
   162 jsdom tests, 93 Chromium layout tests and a green CI, and opened as a white screen with

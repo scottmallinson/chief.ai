@@ -203,8 +203,11 @@ test.describe('the browser Chief is standing in for', () => {
 
     // Without this the "classic scrollbars" project would quietly be a second
     // copy of the default one, and the layout it is meant to cover untested.
+    // Exactly 10px, because that is Chief's own scrollbar rather than the
+    // platform's: Chromium's native one is 15px and WebKit's 15px or an
+    // overlay, so any other width means the engine ignored the styling.
     if (classicScrollbars) {
-      expect(scrollbarWidth, 'a classic scrollbar should take layout width').toBeGreaterThan(0);
+      expect(scrollbarWidth, "the scrollbar should be Chief's own 10px one").toBe(10);
     } else {
       expect(scrollbarWidth, 'an overlay scrollbar should take no layout width').toBe(0);
     }

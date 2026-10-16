@@ -17,14 +17,17 @@
 //! 2. **A file the user has touched is theirs.** A starter file is replaced only
 //!    while it is still byte-for-byte the starter Chief wrote. See
 //!    [`is_untouched`].
-//! 3. **One call over a sample**, not a call per artefact. Only the writing
-//!    style needs a model at all; the team is counted, not inferred.
+//! 3. **Counted, not inferred.** The writing style and the team are both
+//!    arithmetic over what the user wrote and who they met. A 3B model asked to
+//!    describe a voice made up habits the samples did not show, so no model is
+//!    called here at all. Each file says what it was counted from and when, so
+//!    a reader can tell a fact from a stale one: see [`counted_on`].
 
 use serde::Serialize;
 
 use crate::corpus;
 use crate::github;
-use crate::llama::{self, ChatRequest, Message, Options};
+use crate::llama;
 use crate::recipe;
 use crate::session::{GithubSession, OutlookSession};
 
@@ -49,12 +52,6 @@ const TEAM_SIZE: usize = 12;
 /// Two, not one. A single meeting is an interview, a vendor call, or somebody
 /// who was cc'd — a recurring one is a working relationship.
 const RECURRENCE: usize = 2;
-
-/// Roughly what the writing sample may cost, in tokens.
-const SAMPLE_TOKENS: u32 = 1_600;
-
-/// How long the style summary may run.
-const STYLE_TOKENS: u32 = 400;
 
 /// What can go wrong seeding the profile.
 #[derive(Debug, thiserror::Error)]
@@ -191,7 +188,7 @@ async fn sample(context: &recipe::Context) -> Vec<String> {
     written
 }
 
-/// One call, over a sample, producing a draft.
+/// The writing style, counted from the sample.
 async fn writing_style(context: &recipe::Context) -> Result<Option<String>, Error> {
     // Nothing to write about is not an empty style file, it is a machine with
     // no connected account or nobody who writes pull request descriptions.
@@ -204,34 +201,180 @@ async fn writing_style(context: &recipe::Context) -> Result<Option<String>, Erro
         return Err(Error::NothingToLearnFrom);
     }
 
-    let mut budget = crate::context::Budget::with_ceiling(SAMPLE_TOKENS);
-    let mut prompt = String::from(STYLE_INSTRUCTIONS);
-    prompt.push_str("\n\n");
+    Ok(Some(render_style(
+        &written,
+        chrono::Local::now().date_naive(),
+    )))
+}
 
-    for (index, body) in written.iter().enumerate() {
-        let block = format!("--- Sample {} ---\n{body}", index + 1);
+const GREETINGS: [&str; 6] = ["hi", "hey", "hello", "dear", "morning", "hiya"];
 
-        // The samples that fit, and no more. Running out mid-sample is normal
-        // and is why this stops rather than fails.
-        if budget.add("sample", &block).is_err() {
-            break;
+const SIGN_OFFS: [&str; 9] = [
+    "thanks",
+    "thank you",
+    "many thanks",
+    "cheers",
+    "regards",
+    "best",
+    "best regards",
+    "kind regards",
+    "ta",
+];
+
+const BRITISH: [&str; 10] = [
+    "colour",
+    "behaviour",
+    "organis",
+    "optimis",
+    "summaris",
+    "centre",
+    "licence",
+    "analyse",
+    "favour",
+    "initialis",
+];
+
+const AMERICAN: [&str; 10] = [
+    "color",
+    "behavior",
+    "organiz",
+    "optimiz",
+    "summariz",
+    "center",
+    "license",
+    "analyze",
+    "favor",
+    "initializ",
+];
+
+fn plain(word: &str) -> String {
+    word.trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
+}
+
+fn first_word(body: &str) -> Option<String> {
+    let line = body.lines().find(|line| !line.trim().is_empty())?;
+    let word = plain(line.split_whitespace().next()?);
+    GREETINGS.contains(&word.as_str()).then_some(word)
+}
+
+fn last_words(body: &str) -> Option<String> {
+    let line = body.lines().rev().find(|line| !line.trim().is_empty())?;
+    let said = plain(line);
+    SIGN_OFFS.contains(&said.as_str()).then_some(said)
+}
+
+fn is_emoji(c: char) -> bool {
+    matches!(c as u32, 0x1F300..=0x1FAFF | 0x2600..=0x27BF)
+}
+
+fn sentence_case(word: &str) -> String {
+    let mut letters = word.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + letters.as_str(),
+        None => String::new(),
+    }
+}
+
+/// The commonest of `found`, when most of `total` agree on it.
+fn habit(found: &[String], total: usize) -> Option<(String, usize)> {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+
+    for item in found {
+        match counts.iter_mut().find(|(seen, _)| seen == item) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((item.clone(), 1)),
         }
-
-        prompt.push_str(&block);
-        prompt.push_str("\n\n");
     }
 
-    let request = ChatRequest::new(crate::agent::DEFAULT_MODEL, vec![Message::user(&prompt)])
-        .with_options(Options::new().with_answer_length(STYLE_TOKENS));
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    let reply = context.engine.chat(&request).await?;
-    let drafted = reply.content.trim();
+    counts
+        .into_iter()
+        .next()
+        .filter(|(_, count)| *count >= 2 && count * 2 >= total)
+}
 
-    if drafted.is_empty() {
-        return Err(Error::NothingToLearnFrom);
+/// One line per habit, each a count and never an impression.
+///
+/// A habit the sample does not settle is left out rather than guessed at: a
+/// missing line costs a draft some personality, an invented one costs the user
+/// a message that does not sound like them.
+fn style_rules(bodies: &[String]) -> Vec<String> {
+    let total = bodies.len();
+    let mut rules = Vec::new();
+
+    let greetings: Vec<String> = bodies.iter().filter_map(|body| first_word(body)).collect();
+    if let Some((word, count)) = habit(&greetings, total) {
+        rules.push(format!(
+            "Greeting: opens with \"{}\" ({count} of {total}).",
+            sentence_case(&word)
+        ));
+    } else if greetings.is_empty() && total >= 3 {
+        rules.push(format!("Greeting: none (0 of {total})."));
     }
 
-    Ok(Some(format!("{STYLE_PREAMBLE}\n\n{drafted}\n")))
+    let sign_offs: Vec<String> = bodies.iter().filter_map(|body| last_words(body)).collect();
+    if let Some((words, count)) = habit(&sign_offs, total) {
+        rules.push(format!(
+            "Sign-off: ends with \"{}\" ({count} of {total}).",
+            sentence_case(&words)
+        ));
+    } else if sign_offs.is_empty() && total >= 3 {
+        rules.push(format!("Sign-off: none (0 of {total})."));
+    }
+
+    let mut lengths: Vec<usize> = bodies
+        .iter()
+        .map(|body| body.split_whitespace().count())
+        .collect();
+    lengths.sort_unstable();
+    rules.push(format!(
+        "Length: about {} words (median of {total}).",
+        lengths[lengths.len() / 2]
+    ));
+
+    let with_emoji = bodies
+        .iter()
+        .filter(|body| body.chars().any(is_emoji))
+        .count();
+    rules.push(if with_emoji == 0 {
+        format!("Emoji: none (0 of {total}).")
+    } else {
+        format!("Emoji: used in {with_emoji} of {total}.")
+    });
+
+    let lowered = bodies.join(" ").to_lowercase();
+    let british = BRITISH.iter().any(|stem| lowered.contains(stem));
+    let american = AMERICAN.iter().any(|stem| lowered.contains(stem));
+    match (british, american) {
+        (true, false) => rules.push("Spelling: British.".to_string()),
+        (false, true) => rules.push("Spelling: American.".to_string()),
+        _ => {}
+    }
+
+    rules
+}
+
+fn render_style(bodies: &[String], today: chrono::NaiveDate) -> String {
+    let rules = style_rules(bodies)
+        .iter()
+        .map(|rule| format!("- {rule}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "{STYLE_PREAMBLE}\n\nSource: your last {} pull request descriptions, counted {today}.\n\n{rules}\n",
+        bodies.len()
+    )
+}
+
+/// When a profile file says it was counted. A file the user wrote has no such
+/// line, and so no date, and is never called stale.
+pub fn counted_on(text: &str) -> Option<chrono::NaiveDate> {
+    let line = text.lines().find(|line| line.starts_with("Source:"))?;
+    let date = line.trim_end_matches('.').rsplit("counted ").next()?;
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
 }
 
 /// The people the user actually works with, counted rather than inferred.
@@ -275,7 +418,10 @@ async fn team_structure(context: &recipe::Context) -> Option<String> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    Some(format!("{TEAM_PREAMBLE}\n\n{people}"))
+    Some(format!(
+        "{TEAM_PREAMBLE}\n\nSource: meetings over the last {TEAM_DAYS} days, counted {}.\n\n{people}",
+        now.date_naive()
+    ))
 }
 
 /// What seeding would read and write. Runs nothing.
@@ -290,22 +436,12 @@ pub async fn profile_plan<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result
 
 /// Seed the profile. Only ever called because the user pressed the button.
 ///
-/// Wakes the engine and holds the door, the same as `generate_brief`: this is
-/// one model call and the idle supervisor must not stop the engine under it.
+/// Makes no model call, so it does not wake the engine: counting a sample
+/// costs milliseconds, and reading two gigabytes of weights to do it would not.
 #[tauri::command]
 pub async fn bootstrap_profile<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    engine: tauri::State<'_, crate::engine::Engine>,
-    client: tauri::State<'_, llama::Client>,
-    attention: tauri::State<'_, crate::agent::Attention>,
 ) -> Result<Report, Error> {
-    let _waiting = attention.begin();
-
-    engine
-        .start_and_wait(client.inner())
-        .await
-        .map_err(|error| Error::Engine(llama::Error::Transport(error.to_string())))?;
-
     let context = recipe::context(&app)
         .await
         .map_err(|error| Error::Corpus(corpus::Error::Index(error.to_string())))?;
@@ -340,7 +476,7 @@ fn rank(meetings: &[Vec<String>]) -> Vec<(String, usize)> {
 const STYLE_PREAMBLE: &str = "\
 # Writing style
 
-Chief drafted this from the descriptions on your own pull requests. It is a
+Chief counted this from the descriptions on your own pull requests. It is a
 draft: edit it, and Chief will not touch it again.";
 
 const TEAM_PREAMBLE: &str = "\
@@ -349,17 +485,6 @@ const TEAM_PREAMBLE: &str = "\
 Chief drafted this from who you have been meeting with. The headings are the
 people; what they own is for you to fill in. Edit it and Chief will leave it
 alone.";
-
-const STYLE_INSTRUCTIONS: &str = "\
-Below are things one person wrote. Describe how they write, so that drafts \
-prepared for them can sound like them.
-
-Rules:
-- Write about their style only. Never repeat what the samples were about.
-- Cover: tone, sentence length, greetings and sign-offs, and anything they \
-consistently do or never do.
-- At most six bullets, under the heading '## How you write'.
-- State only what the samples show. If they are too varied to tell, say so.";
 
 #[cfg(test)]
 mod tests {
@@ -409,8 +534,6 @@ mod tests {
             }
         ]
     }"#;
-
-    const STYLE: &str = r#"{"choices":[{"message":{"role":"assistant","content":"\n## How you write\n- Plain, declarative sentences.\n- You say what was measured."}}]}"#;
 
     struct Scratch(std::path::PathBuf);
 
@@ -564,9 +687,9 @@ mod tests {
     // ---- rule three: one call over a sample ----
 
     #[tokio::test]
-    async fn writes_a_style_from_the_users_own_descriptions() {
+    async fn writes_a_style_counted_from_the_users_own_descriptions() {
         let (github_host, github) = serve(vec![("HTTP/1.1 200 OK", WROTE)]);
-        let (engine_host, engine) = serve(vec![("HTTP/1.1 200 OK", STYLE)]);
+        let (engine_host, engine) = serve(Vec::<(&str, &str)>::new());
         let (context, _scratch) = context_for(&github_host, &engine_host, "style").await;
 
         let report = bootstrap(&context).await.expect("should draft");
@@ -578,37 +701,124 @@ mod tests {
             .read(WRITING_STYLE)
             .await
             .expect("should read");
-        assert!(written.contains("## How you write"), "{written}");
+        assert!(written.contains("- Length: about"), "{written}");
+        assert!(written.contains("- Emoji: none (0 of 2)."), "{written}");
         assert!(
             written.contains("It is a\ndraft: edit it"),
             "the file has to say it is a draft: {written}"
         );
+        assert!(
+            counted_on(&written).is_some(),
+            "a count with no date cannot be called stale: {written}"
+        );
 
         let _ = github.await;
         assert_eq!(
-            engine.await.expect("engine").len(),
-            1,
-            "one call over a sample, not a call per pull request"
+            engine.await.expect("engine"),
+            Vec::<String>::new(),
+            "counting a sample is not a model call"
         );
     }
 
-    #[tokio::test]
-    async fn sends_the_users_prose_and_not_their_titles() {
-        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", WROTE)]);
-        let (engine_host, engine) = serve(vec![("HTTP/1.1 200 OK", STYLE)]);
-        let (context, _scratch) = context_for(&github_host, &engine_host, "prose").await;
+    fn bodies(texts: &[&str]) -> Vec<String> {
+        texts.iter().map(|text| text.to_string()).collect()
+    }
 
-        bootstrap(&context).await.expect("should draft");
+    #[test]
+    fn counts_a_greeting_only_when_most_descriptions_share_it() {
+        let rules = style_rules(&bodies(&[
+            "Hi Sam,\nFixes the timeout.",
+            "Hi Priya,\nRuns checks once.",
+            "Hi team,\nDrops the flag.",
+            "Drops the other flag.",
+        ]));
 
-        let sent = engine.await.expect("engine").join("");
         assert!(
-            sent.contains("bounded the whole exchange"),
-            "the body should be sampled"
+            rules.contains(&"Greeting: opens with \"Hi\" (3 of 4).".to_string()),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn leaves_a_habit_out_rather_than_guessing_when_the_sample_is_split() {
+        let rules = style_rules(&bodies(&[
+            "Hi Sam,\nFixes it.",
+            "Hey Priya,\nFixes that.",
+            "Hello team,\nFixes this.",
+            "Fixes the other.",
+            "Fixes another.",
+        ]));
+
+        assert!(
+            !rules.iter().any(|rule| rule.starts_with("Greeting")),
+            "no greeting is common enough to be a rule: {rules:?}"
+        );
+    }
+
+    #[test]
+    fn counts_a_sign_off_and_says_so_when_there_is_none() {
+        let signed = style_rules(&bodies(&[
+            "Fixes it.\n\nThanks",
+            "Fixes that.\n\nThanks!",
+            "Fixes this.",
+        ]));
+        assert!(
+            signed.contains(&"Sign-off: ends with \"Thanks\" (2 of 3).".to_string()),
+            "{signed:?}"
+        );
+
+        let unsigned = style_rules(&bodies(&["Fixes it.", "Fixes that.", "Fixes this."]));
+        assert!(
+            unsigned.contains(&"Sign-off: none (0 of 3).".to_string()),
+            "{unsigned:?}"
+        );
+    }
+
+    #[test]
+    fn counts_length_as_the_median_of_the_descriptions() {
+        let rules = style_rules(&bodies(&["one two", "one two three four", "one"]));
+
+        assert!(
+            rules.contains(&"Length: about 2 words (median of 3).".to_string()),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn counts_emoji_and_spelling() {
+        let rules = style_rules(&bodies(&[
+            "Fixes the colour handling \u{1F389}",
+            "Optimise the centre panel",
+        ]));
+
+        assert!(
+            rules.contains(&"Emoji: used in 1 of 2.".to_string()),
+            "{rules:?}"
         );
         assert!(
-            !sent.contains("Stop a long answer being thrown away"),
-            "a title is not prose the user composed"
+            rules.contains(&"Spelling: British.".to_string()),
+            "{rules:?}"
         );
+
+        let mixed = style_rules(&bodies(&["The colour", "The color"]));
+        assert!(
+            !mixed.iter().any(|rule| rule.starts_with("Spelling")),
+            "a split sample is not a spelling: {mixed:?}"
+        );
+    }
+
+    #[test]
+    fn reads_back_the_date_a_file_was_counted_and_none_from_a_hand_written_one() {
+        let text = render_style(
+            &bodies(&["Fixes it."]),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 13).expect("date"),
+        );
+
+        assert_eq!(
+            counted_on(&text),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 13)
+        );
+        assert_eq!(counted_on("# Writing style\n\nI write short."), None);
     }
 
     #[tokio::test]
@@ -624,25 +834,6 @@ mod tests {
             engine.await.expect("engine"),
             Vec::<String>::new(),
             "there was nothing to send"
-        );
-    }
-
-    // ---- a failed generation writes nothing ----
-
-    #[tokio::test]
-    async fn leaves_the_starter_alone_when_the_model_fails() {
-        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", WROTE)]);
-        let (engine_host, _engine) = serve(vec![(
-            "HTTP/1.1 500 Internal Server Error",
-            "{\"error\":\"no\"}",
-        )]);
-        let (context, _scratch) = context_for(&github_host, &engine_host, "enginefail").await;
-
-        bootstrap(&context).await.expect_err("the engine refused");
-
-        assert!(
-            is_untouched(&context.corpus, WRITING_STYLE).await,
-            "a failed draft must leave the starter exactly as it was"
         );
     }
 
@@ -669,7 +860,7 @@ mod tests {
         assert_eq!(
             engine.await.expect("engine"),
             Vec::<String>::new(),
-            "and there was no reason to spend a model call on it"
+            "and there was no engine to ask"
         );
     }
 

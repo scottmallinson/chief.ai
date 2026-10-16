@@ -212,7 +212,11 @@ pub fn from_event<Tz: chrono::TimeZone>(
     zone: &Tz,
 ) -> Option<WorkLogRecord> {
     let timestamp = as_utc(&event.start, zone)?;
-    let when = clock_time(&event.start);
+    let when = if event.all_day {
+        "all day"
+    } else {
+        clock_time(&event.start)
+    };
     let who = if event.attendees.is_empty() {
         String::new()
     } else {

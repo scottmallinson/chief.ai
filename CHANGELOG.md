@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.11.0 (2026-10-16)
+
+### Features
+
+- **agent:** cut an invented greeting name out of a draft instead of refusing it ([60b526e](https://github.com/scottmallinson/chief.ai/commit/60b526e1de4914baac2efc40cba5ce192087a041))
+- **agent:** ground review-request drafts in the people and messages tied to the item ([4ee67a0](https://github.com/scottmallinson/chief.ai/commit/4ee67a0469d8d783fc8e6124a8fedb57dd26546a))
+- **agent:** count the writing style instead of asking the model to describe it ([eaa6aae](https://github.com/scottmallinson/chief.ai/commit/eaa6aaed2c4a42cf495bffa92641c44792d8e0be))
+
+### Fixes
+
+- **agent:** accept only names the draft was given, never ones found in a kept example ([0d2c5bf](https://github.com/scottmallinson/chief.ai/commit/0d2c5bfe9dc201c0f12d703c6cb07f7bc4f20a44))
+
+## 0.10.0 (2026-10-06)
+
+### Features
+
+- **agent:** brief the next three meetings and write the brief again as the day moves ([9721a54](https://github.com/scottmallinson/chief.ai/commit/9721a54ff566c47593cedda786c7a30345126b6b))
+
+### Fixes
+
+- **repo:** pin the scenario briefs to the morning so the runner's clock cannot fail them ([dfff233](https://github.com/scottmallinson/chief.ai/commit/dfff233e8de391ce457e88bac134724e1a8ede8a))
+- **ui:** leave the setup screen by itself when the engine was loading at launch ([f5320ae](https://github.com/scottmallinson/chief.ai/commit/f5320ae7f577d19488a515124ac43bbc19f5922e))
+
+## 0.9.0 (2026-10-06)
+
+### Features
+
+- **agent:** run the light tier on Qwen3 1.7B and fix the standup request ([a9e9d36](https://github.com/scottmallinson/chief.ai/commit/a9e9d364bc3a2fc35c4bd09d72c60a32a88b05a6))
+
+## 0.8.1 (2026-10-06)
+
+### Fixes
+
+- **agent:** let a Monday stand-up see the previous week's work ([800d18f](https://github.com/scottmallinson/chief.ai/commit/800d18fd55e36acb12c407eeafc760f0b5050063))
+- **agent:** stop a looping model filling the brief with one list ([24681b0](https://github.com/scottmallinson/chief.ai/commit/24681b08bdb8b577a380b78fa54cda1a8009a4b7))
+- **daemon:** get the brief and the calendar right at the edges of a day ([56c34f2](https://github.com/scottmallinson/chief.ai/commit/56c34f27b893fe9d90b13d340ec72584eb1c8102))
+- **corpus:** write a file whole or not at all ([a6621f6](https://github.com/scottmallinson/chief.ai/commit/a6621f6a6a35f7c6bde45d45750b99e1103eb9a7))
+- **ui:** move to the new day when the window outlives midnight ([a3c44f1](https://github.com/scottmallinson/chief.ai/commit/a3c44f12f5fcb3f1563dc3c659b1abd30073e802))
+
+## 0.8.0 (2026-09-23)
+
+### Features
+
+- **ui:** draw scrollbars in the Instrument style ([8336d06](https://github.com/scottmallinson/chief.ai/commit/8336d063fc91d08e47e742dbfcb89f6e0dc6f7a2))
+
+## 0.7.0 (2026-09-23)
+
+### Features
+
+- **tauri:** leave no working login entry behind when Chief is removed ([71cec72](https://github.com/scottmallinson/chief.ai/commit/71cec72476c8a72e451ec70b1b999018f7f5c9b5))
+- **tauri:** open Chief at login, when the user asks for it ([bc47acd](https://github.com/scottmallinson/chief.ai/commit/bc47acd6c027f14af03d0b01625d9e63c91670ba))
+- **tauri:** keep running in the tray when the window closes ([dfe5ffa](https://github.com/scottmallinson/chief.ai/commit/dfe5ffa0837b0aeeb06e106f254bf302bccad502))
+
 ## 0.6.0 (2026-09-16)
 
 ### Features
