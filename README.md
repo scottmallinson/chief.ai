@@ -144,6 +144,12 @@ from stale or missing context comes out generic, and that what is known about th
 and about how the user writes should be loaded before the model writes anything. The ideas are
 COSTA's; the code, and the way Chief keeps and checks what it knows, are Chief's own.
 
+Stopping the model after a period of inactivity, so its memory is returned, follows the approach of
+[Biscotti](https://github.com/scosman/Biscotti). Chief's implementation is its own.
+
+Goose, Tidebreak, CortexAgent, Zeno and OpenHuman were studied while shaping Chief. No code from
+them is used.
+
 ## Licence
 
 [MIT](LICENSE)
