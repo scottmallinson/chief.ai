@@ -11,7 +11,7 @@ const model = (g3rate, g4pass) => ({
   gates: {
     G1: gate(true),
     G2: gate(true),
-    G3: gate(g3rate === 0, { informational: true, rate: g3rate }),
+    G3: gate(g3rate === 0, { rate: g3rate }),
     G4: gate(g4pass),
     G5: gate(true),
   },
@@ -26,9 +26,10 @@ const env = {
 const judged = { items: [], pairs: [], skipped: true, notes: [] };
 
 describe('ranking', () => {
-  it('ranks a model that invents on quiet days, because the invention rate is reported and not gated', () => {
+  it('does not rank a model that invents on quiet days, because that gate blocks', () => {
     const s = summarise(env, { a: model(0.4, true), b: model(0, true) }, judged);
-    expect(s.ranked.map((m) => m.id).sort()).toEqual(['a', 'b']);
+    expect(s.ranked.map((m) => m.id)).toEqual(['b']);
+    expect(s.unranked.map((m) => m.id)).toEqual(['a']);
   });
   it('still refuses a model that fails a real gate', () => {
     const s = summarise(env, { a: model(0, false), b: model(0, true) }, judged);
