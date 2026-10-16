@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1 (2026-10-16)
+
+### Fixes
+
+- **tauri:** stop a leftover engine before the Windows installer copies files ([727dfbf](https://github.com/scottmallinson/chief.ai/commit/727dfbfd591266c801d38c3199bb244739299042))
+
 ## 0.12.0 (2026-10-16)
 
 ### Features

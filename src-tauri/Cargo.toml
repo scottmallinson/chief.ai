@@ -1,6 +1,6 @@
 [package]
 name = "Chief"
-version = "0.12.0"
+version = "0.12.1"
 description = "A privacy-first, on-device AI chief of staff."
 authors = ["Scott Mallinson <scott@scottmallinson.com>"]
 license = "MIT"
