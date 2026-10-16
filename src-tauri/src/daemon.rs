@@ -26,6 +26,7 @@ use crate::ingest;
 use crate::integrations;
 use crate::journal;
 use crate::llama;
+use crate::profile;
 use crate::propose;
 use crate::recipe;
 use crate::session::GithubSession;
@@ -307,6 +308,7 @@ async fn one_pass<R: Runtime>(app: AppHandle<R>) -> Outcome {
 
     outcome.yielded |= brief_if_the_day_has_none(&app).await;
     roll_up_old_work(&app).await;
+    recount_facts(&app).await;
     outcome.yielded |= propose_for_one_thing(&app).await;
 
     // The engine is free to go idle again from here.
@@ -495,6 +497,26 @@ async fn brief_if_the_day_has_none<R: Runtime>(app: &AppHandle<R>) -> bool {
     }
 
     false
+}
+
+/// Count the facts again if today has not had a recount.
+///
+/// Before the draft, which reads them, and after the brief, which does not.
+/// Failing is never fatal.
+async fn recount_facts<R: Runtime>(app: &AppHandle<R>) {
+    let attention = app.state::<Attention>().inner().clone();
+
+    let context = match recipe::context(app).await {
+        Ok(context) => context,
+        Err(error) => {
+            eprintln!("no recount this pass: {error}");
+            return;
+        }
+    };
+
+    if profile::recount_if_due(&context, &attention).await {
+        eprintln!("counted today's facts");
+    }
 }
 
 /// Draft for one thing Chief noticed, if anything is waiting.

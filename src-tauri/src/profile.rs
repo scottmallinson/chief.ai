@@ -1,10 +1,9 @@
-//! Filling in the corpus from the user's own work.
+//! Counting facts about the user from their own work.
 //!
-//! `ensure_shape` creates seven files with a heading each and nothing in them,
-//! and a draft written against an empty `writing_style.md` sounds like a model.
-//! COSTA's finding, and the reason this step exists: stale or absent context
-//! produces generic drafts, so the profile has to be seeded from something real
-//! before Proposed Actions is worth building.
+//! A draft written with nothing known about the user sounds like a model, and a
+//! draft written from stale facts sounds like somebody else. The facts are
+//! counted from what the user wrote and who they worked with, and kept as rows
+//! (see `facts.rs`) so each one carries where it came from and when.
 //!
 //! Three rules hold this together, and all three are about not taking something
 //! that is the user's:
@@ -14,40 +13,54 @@
 //!    anything. The interface shows it and waits. This is the first feature that
 //!    reads the user's own writing in bulk to build a profile of it, and a
 //!    profile built quietly is the wrong way to do that however local it stays.
-//! 2. **A file the user has touched is theirs.** A starter file is replaced only
-//!    while it is still byte-for-byte the starter Chief wrote. See
-//!    [`is_untouched`].
-//! 3. **Counted, not inferred.** The writing style and the team are both
-//!    arithmetic over what the user wrote and who they met. A 3B model asked to
-//!    describe a voice made up habits the samples did not show, so no model is
-//!    called here at all. Each file says what it was counted from and when, so
-//!    a reader can tell a fact from a stale one: see [`counted_on`].
+//! 2. **A fact the user has touched is theirs.** A recount replaces only the
+//!    rows Chief counted; one the user edited or removed is left as they left
+//!    it. See `facts::recount`.
+//! 3. **Counted, not inferred.** The writing style, the reviewers and the team
+//!    are arithmetic over what the user wrote and who they met. A 3B model asked
+//!    to describe a voice made up habits the samples did not show, so no model
+//!    is called here at all.
+//!
+//! The two markdown files in the corpus are not read for drafting any more.
+//! Briefs still read them as background, so they are left where they are.
 
 use serde::Serialize;
 
 use crate::corpus;
+use crate::db;
+use crate::facts::{self, NewFact};
 use crate::github;
 use crate::llama;
 use crate::recipe;
 use crate::session::{GithubSession, OutlookSession};
+use crate::settings;
 
-/// Where the two profile files live.
+/// The two corpus files drafting used to read. Still the user's, still read by
+/// briefs; named here so the settings card can say drafts no longer use them.
 pub const WRITING_STYLE: &str = "context/agents/profile/writing_style.md";
 pub const TEAM_STRUCTURE: &str = "context/agents/org/team_structure.md";
 
 /// How many of the user's own pull requests are sampled for a writing style.
 ///
-/// A sample, not a corpus. Enough for a voice to show through, few enough that
-/// the one call this makes stays inside the prompt budget.
+/// A sample, not a corpus. Enough for a voice to show through.
 const SAMPLE: u8 = 20;
+
+/// How many of the user's pull requests have their reviews read.
+///
+/// One GitHub request each, so this is the cost of the step: thirty requests,
+/// once when the user asks, and then once a day.
+const REVIEWED: u8 = 30;
+
+/// The most reviewers kept per repository. A draft takes fewer than this.
+const REVIEWERS: usize = 8;
 
 /// How many days of calendar are counted for the team.
 const TEAM_DAYS: i64 = 28;
 
-/// How many people the team file names. Past this it is an address book.
+/// How many people the meeting count names. Past this it is an address book.
 const TEAM_SIZE: usize = 12;
 
-/// How many meetings somebody has to appear in before they are on the team.
+/// How many meetings somebody has to appear in before they are counted.
 ///
 /// Two, not one. A single meeting is an interview, a vendor call, or somebody
 /// who was cc'd — a recurring one is a working relationship.
@@ -60,7 +73,9 @@ pub enum Error {
     Engine(#[from] llama::Error),
     #[error(transparent)]
     Corpus(#[from] corpus::Error),
-    #[error("there is nothing to learn a writing style from yet")]
+    #[error(transparent)]
+    Storage(#[from] db::Error),
+    #[error("there is nothing to learn from yet")]
     NothingToLearnFrom,
 }
 
@@ -76,10 +91,10 @@ impl serde::Serialize for Error {
 pub struct Plan {
     /// What Chief would read, in the user's words rather than in API names.
     pub reads: Vec<String>,
-    /// Which corpus files it would write.
+    /// Which facts it would count.
     pub writes: Vec<String>,
-    /// Files it would leave alone because they are no longer the starter Chief
-    /// wrote. Named so the user can see why nothing happened to them.
+    /// What it would leave alone, and why, so "nothing happened to that one"
+    /// always has a visible reason.
     pub keeps: Vec<String>,
 }
 
@@ -93,18 +108,12 @@ pub struct Report {
 
 /// Is this file still exactly what `ensure_shape` put there?
 ///
-/// Content, not modification time. mtime says *when* a file was last written
-/// and content says *what is in it*, and only the second is the question being
-/// asked: a git checkout, a Dropbox sync or a restored backup all move mtime
-/// without changing a byte, and an editor that saves an unmodified buffer does
-/// the same. Judged on mtime, Chief would refuse to seed a file nobody had ever
-/// opened. Judged on content it refuses exactly when there is something of the
-/// user's to lose, which is the rule this is trying to keep.
-///
-/// A file that is absent counts as untouched: there is nothing there to lose.
+/// Content, not modification time: a git checkout, a Dropbox sync or a restored
+/// backup all move mtime without changing a byte. A file that is absent counts
+/// as untouched.
 pub async fn is_untouched(corpus: &corpus::Corpus, path: &str) -> bool {
     let Some(starter) = corpus::starter(path) else {
-        // Not a file Chief created, so not one it may overwrite.
+        // Not a file Chief created.
         return false;
     };
 
@@ -115,56 +124,185 @@ pub async fn is_untouched(corpus: &corpus::Corpus, path: &str) -> bool {
     }
 }
 
+/// The user's facts that a recount will not touch, as one sentence, if any.
+async fn owned_facts(context: &recipe::Context) -> Option<String> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM facts WHERE origin != 'counted'")
+        .fetch_one(&context.pool)
+        .await
+        .unwrap_or(0);
+
+    match count {
+        0 => None,
+        1 => Some("1 fact you changed or removed stays as you left it".to_string()),
+        n => Some(format!(
+            "{n} facts you changed or removed stay as you left them"
+        )),
+    }
+}
+
 /// What seeding would do, without doing any of it.
 pub async fn plan(context: &recipe::Context) -> Plan {
-    let mut writes = Vec::new();
     let mut keeps = Vec::new();
 
+    if let Some(owned) = owned_facts(context).await {
+        keeps.push(owned);
+    }
+
     for path in [WRITING_STYLE, TEAM_STRUCTURE] {
-        if is_untouched(&context.corpus, path).await {
-            writes.push(path.to_string());
-        } else {
-            keeps.push(path.to_string());
+        if !is_untouched(&context.corpus, path).await {
+            keeps.push(format!(
+                "{path}: your briefs still read it, but drafts no longer do"
+            ));
         }
     }
 
     Plan {
         reads: vec![
             format!("The descriptions you wrote on your last {SAMPLE} pull requests"),
+            format!(
+                "Who reviewed your last {REVIEWED} pull requests (one request to GitHub for each)"
+            ),
             format!("Who you met with over the last {TEAM_DAYS} days, and how often"),
         ],
-        writes,
+        writes: vec![
+            "How you write: greeting, sign-off, length, emoji, spelling".to_string(),
+            "Who reviews your pull requests, repository by repository".to_string(),
+            "Who you meet with most".to_string(),
+        ],
         keeps,
     }
 }
 
-/// Seed the profile from the user's own work.
+/// Count the facts from the user's own work.
 ///
-/// Every file is written only if it is still the starter, so running this twice
-/// is not destructive — the second run reports the same files as kept.
+/// Every kind is replaced as a whole, so running this twice is not destructive:
+/// the second run counts the same things again and leaves what the user wrote.
 pub async fn bootstrap(context: &recipe::Context) -> Result<Report, Error> {
+    let today = chrono::Local::now().date_naive();
     let mut report = Report::default();
+    let mut kept = 0;
 
-    for (path, drafted) in [
-        (WRITING_STYLE, writing_style(context).await?),
-        (TEAM_STRUCTURE, team_structure(context).await),
-    ] {
-        let Some(markdown) = drafted else {
-            continue;
-        };
-
-        if is_untouched(&context.corpus, path).await {
-            context.corpus.write(path, &markdown).await?;
-            report.written.push(path.to_string());
-        } else {
-            report.kept.push(path.to_string());
+    let written = sample(context).await;
+    if !written.is_empty() {
+        let rows = style_facts(&written, today);
+        let done = facts::recount(
+            &context.pool,
+            &[
+                facts::GREETING,
+                facts::SIGN_OFF,
+                facts::LENGTH,
+                facts::EMOJI,
+                facts::SPELLING,
+            ],
+            rows,
+        )
+        .await?;
+        kept += done.kept;
+        if done.written > 0 {
+            report
+                .written
+                .push(format!("{} facts about how you write", done.written));
         }
+    }
+
+    if let Some(rows) = reviewer_facts(context, today).await {
+        let done = facts::recount(&context.pool, &[facts::REVIEWS], rows).await?;
+        kept += done.kept;
+        if done.written > 0 {
+            report.written.push(format!(
+                "{} facts about who reviews your pull requests",
+                done.written
+            ));
+        }
+    }
+
+    let team = team_facts(context, today).await;
+    if !team.is_empty() {
+        let done = facts::recount(&context.pool, &[facts::MEETS], team).await?;
+        kept += done.kept;
+        if done.written > 0 {
+            report
+                .written
+                .push(format!("{} facts about who you meet with", done.written));
+        }
+    }
+
+    if kept > 0 {
+        report.kept.push(format!(
+            "{kept} facts you had changed or removed, left as they were"
+        ));
+    }
+
+    if report.written.is_empty() && report.kept.is_empty() {
+        return Err(Error::NothingToLearnFrom);
     }
 
     Ok(report)
 }
 
-/// The user's own prose, as a sample for the model to describe.
+/// Where the date of the last automatic recount is kept.
+const RECOUNTED_ON: &str = "facts.recounted_on";
+
+/// Recount once a day, so what Chief knows about the user moves with their work.
+///
+/// Only after the user has counted once themselves: rule one of this module is
+/// that the first reading of their work is something they asked for.
+///
+/// Asking "has today been counted" rather than keeping an interval is correct
+/// across sleep and a machine that was off, for the reason the brief does the
+/// same. It is the same arithmetic as the button, so it replaces counted rows
+/// only and a fact the user wrote or deleted is left alone. The date is
+/// recorded only on success: a pass that found GitHub unreachable tries again
+/// next pass rather than waiting a day.
+///
+/// Returns whether a recount ran.
+pub async fn recount_if_due(
+    context: &recipe::Context,
+    attention: &crate::agent::Attention,
+) -> bool {
+    // Only for someone who has already pressed the button. The first count is
+    // the consent; this keeps it current and never starts it.
+    let begun: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM facts WHERE origin IN ('counted', 'hidden')")
+            .fetch_one(&context.pool)
+            .await
+            .unwrap_or(0);
+    if begun == 0 {
+        return false;
+    }
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    let last = settings::get(&context.pool, RECOUNTED_ON)
+        .await
+        .unwrap_or_default();
+    if last.as_deref() == Some(today.as_str()) {
+        return false;
+    }
+
+    // A recount makes up to thirty GitHub requests and no model call, but a
+    // person waiting on an answer still outranks it.
+    if attention.is_engaged() {
+        return false;
+    }
+
+    match bootstrap(context).await {
+        Ok(_) => {
+            if let Err(error) = settings::set(&context.pool, RECOUNTED_ON, &today).await {
+                eprintln!("could not record the recount: {error}");
+            }
+            true
+        }
+        // Nothing connected yet, which is not a failure and costs nothing.
+        Err(Error::NothingToLearnFrom) => false,
+        Err(error) => {
+            eprintln!("no recount this pass: {error}");
+            false
+        }
+    }
+}
+
+/// The user's own prose, as a sample to count.
 async fn sample(context: &recipe::Context) -> Vec<String> {
     let mut written = Vec::new();
 
@@ -188,23 +326,118 @@ async fn sample(context: &recipe::Context) -> Vec<String> {
     written
 }
 
-/// The writing style, counted from the sample.
-async fn writing_style(context: &recipe::Context) -> Result<Option<String>, Error> {
-    // Nothing to write about is not an empty style file, it is a machine with
-    // no connected account or nobody who writes pull request descriptions.
-    if !is_untouched(&context.corpus, WRITING_STYLE).await {
-        return Ok(None);
+/// Who reviewed the user's recent pull requests, counted per repository.
+///
+/// `None` when no GitHub account answered at all, so a machine with nothing
+/// connected does not wipe the reviewers it counted before. A pull request
+/// whose reviews cannot be read (a repository since deleted, a rate limit) is
+/// skipped; the people it would have shown are simply not counted this time.
+async fn reviewer_facts(
+    context: &recipe::Context,
+    today: chrono::NaiveDate,
+) -> Option<Vec<NewFact>> {
+    let mut answered = false;
+    let mut rows: Vec<NewFact> = Vec::new();
+
+    for account in recipe::github_accounts(context).await {
+        let session = GithubSession::new(&context.pool, &context.github, account);
+
+        let Ok(own) = session.login().await else {
+            continue;
+        };
+        let Ok(pull_requests) = session
+            .pull_requests(github::Involvement::Authored, github::State::All, REVIEWED)
+            .await
+        else {
+            continue;
+        };
+        answered = true;
+
+        // (repository, reviewer) -> pull requests reviewed; repository -> sampled.
+        let mut reviewed: Vec<(String, String, i64)> = Vec::new();
+        let mut sampled: Vec<(String, i64)> = Vec::new();
+
+        for pull_request in pull_requests.iter().filter(|one| !one.draft) {
+            let repository = pull_request.repository.to_lowercase();
+
+            let Ok(reviewers) = session
+                .reviewers(&pull_request.repository, pull_request.number)
+                .await
+            else {
+                continue;
+            };
+
+            match sampled.iter_mut().find(|(seen, _)| *seen == repository) {
+                Some((_, total)) => *total += 1,
+                None => sampled.push((repository.clone(), 1)),
+            }
+
+            for reviewer in reviewers.into_iter().filter(|login| *login != own) {
+                match reviewed
+                    .iter_mut()
+                    .find(|(repo, who, _)| *repo == repository && *who == reviewer)
+                {
+                    Some((_, _, count)) => *count += 1,
+                    None => reviewed.push((repository.clone(), reviewer, 1)),
+                }
+            }
+        }
+
+        for (repository, total) in &sampled {
+            let mut here: Vec<&(String, String, i64)> = reviewed
+                .iter()
+                .filter(|(repo, _, _)| repo == repository)
+                .collect();
+            here.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+            here.truncate(REVIEWERS);
+
+            rows.extend(here.into_iter().map(|(repo, who, count)| NewFact {
+                about: who.clone(),
+                what: facts::REVIEWS.to_string(),
+                scope: repo.clone(),
+                value: String::new(),
+                count: *count,
+                total: *total,
+                source: "GitHub reviews on your pull requests".to_string(),
+                seen_on: today.to_string(),
+            }));
+        }
     }
 
-    let written = sample(context).await;
-    if written.is_empty() {
-        return Err(Error::NothingToLearnFrom);
+    answered.then_some(rows)
+}
+
+/// The people the user meets most, counted rather than inferred.
+async fn team_facts(context: &recipe::Context, today: chrono::NaiveDate) -> Vec<NewFact> {
+    let now = chrono::Local::now();
+    let from = (now - chrono::Duration::days(TEAM_DAYS))
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    let to = now.format("%Y-%m-%dT%H:%M:%S").to_string();
+
+    let mut meetings: Vec<Vec<String>> = Vec::new();
+
+    for account in recipe::outlook_accounts(context).await {
+        let session = OutlookSession::new(&context.pool, &context.microsoft, account);
+
+        if let Ok(events) = session.events(&from, &to, recipe::PER_SOURCE).await {
+            meetings.extend(events.iter().map(|event| event.attendees.clone()));
+        }
     }
 
-    Ok(Some(render_style(
-        &written,
-        chrono::Local::now().date_naive(),
-    )))
+    rank(&meetings)
+        .into_iter()
+        .map(|(name, count)| NewFact {
+            about: name.clone(),
+            what: facts::MEETS.to_string(),
+            scope: String::new(),
+            value: name,
+            count: i64::try_from(count).unwrap_or(i64::MAX),
+            total: 0,
+            source: format!("your calendar over the last {TEAM_DAYS} days"),
+            seen_on: today.to_string(),
+        })
+        .collect()
 }
 
 const GREETINGS: [&str; 6] = ["hi", "hey", "hello", "dear", "morning", "hiya"];
@@ -295,33 +528,41 @@ fn habit(found: &[String], total: usize) -> Option<(String, usize)> {
         .filter(|(_, count)| *count >= 2 && count * 2 >= total)
 }
 
-/// One line per habit, each a count and never an impression.
+/// One fact per habit, each a count and never an impression.
 ///
 /// A habit the sample does not settle is left out rather than guessed at: a
-/// missing line costs a draft some personality, an invented one costs the user
+/// missing fact costs a draft some personality, an invented one costs the user
 /// a message that does not sound like them.
-fn style_rules(bodies: &[String]) -> Vec<String> {
+fn style_facts(bodies: &[String], today: chrono::NaiveDate) -> Vec<NewFact> {
     let total = bodies.len();
-    let mut rules = Vec::new();
+    let source = format!("your last {total} pull request descriptions");
+    let mut rows = Vec::new();
+
+    let mut add = |what: &str, value: String, count: usize| {
+        rows.push(NewFact {
+            about: facts::YOU.to_string(),
+            what: what.to_string(),
+            scope: String::new(),
+            value,
+            count: i64::try_from(count).unwrap_or(i64::MAX),
+            total: i64::try_from(total).unwrap_or(i64::MAX),
+            source: source.clone(),
+            seen_on: today.to_string(),
+        });
+    };
 
     let greetings: Vec<String> = bodies.iter().filter_map(|body| first_word(body)).collect();
     if let Some((word, count)) = habit(&greetings, total) {
-        rules.push(format!(
-            "Greeting: opens with \"{}\" ({count} of {total}).",
-            sentence_case(&word)
-        ));
+        add(facts::GREETING, sentence_case(&word), count);
     } else if greetings.is_empty() && total >= 3 {
-        rules.push(format!("Greeting: none (0 of {total})."));
+        add(facts::GREETING, String::new(), 0);
     }
 
     let sign_offs: Vec<String> = bodies.iter().filter_map(|body| last_words(body)).collect();
     if let Some((words, count)) = habit(&sign_offs, total) {
-        rules.push(format!(
-            "Sign-off: ends with \"{}\" ({count} of {total}).",
-            sentence_case(&words)
-        ));
+        add(facts::SIGN_OFF, sentence_case(&words), count);
     } else if sign_offs.is_empty() && total >= 3 {
-        rules.push(format!("Sign-off: none (0 of {total})."));
+        add(facts::SIGN_OFF, String::new(), 0);
     }
 
     let mut lengths: Vec<usize> = bodies
@@ -329,99 +570,24 @@ fn style_rules(bodies: &[String]) -> Vec<String> {
         .map(|body| body.split_whitespace().count())
         .collect();
     lengths.sort_unstable();
-    rules.push(format!(
-        "Length: about {} words (median of {total}).",
-        lengths[lengths.len() / 2]
-    ));
+    add(facts::LENGTH, lengths[lengths.len() / 2].to_string(), 0);
 
     let with_emoji = bodies
         .iter()
         .filter(|body| body.chars().any(is_emoji))
         .count();
-    rules.push(if with_emoji == 0 {
-        format!("Emoji: none (0 of {total}).")
-    } else {
-        format!("Emoji: used in {with_emoji} of {total}.")
-    });
+    add(facts::EMOJI, String::new(), with_emoji);
 
     let lowered = bodies.join(" ").to_lowercase();
     let british = BRITISH.iter().any(|stem| lowered.contains(stem));
     let american = AMERICAN.iter().any(|stem| lowered.contains(stem));
     match (british, american) {
-        (true, false) => rules.push("Spelling: British.".to_string()),
-        (false, true) => rules.push("Spelling: American.".to_string()),
+        (true, false) => add(facts::SPELLING, "British".to_string(), 0),
+        (false, true) => add(facts::SPELLING, "American".to_string(), 0),
         _ => {}
     }
 
-    rules
-}
-
-fn render_style(bodies: &[String], today: chrono::NaiveDate) -> String {
-    let rules = style_rules(bodies)
-        .iter()
-        .map(|rule| format!("- {rule}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!(
-        "{STYLE_PREAMBLE}\n\nSource: your last {} pull request descriptions, counted {today}.\n\n{rules}\n",
-        bodies.len()
-    )
-}
-
-/// When a profile file says it was counted. A file the user wrote has no such
-/// line, and so no date, and is never called stale.
-pub fn counted_on(text: &str) -> Option<chrono::NaiveDate> {
-    let line = text.lines().find(|line| line.starts_with("Source:"))?;
-    let date = line.trim_end_matches('.').rsplit("counted ").next()?;
-    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
-}
-
-/// The people the user actually works with, counted rather than inferred.
-///
-/// No model call. Who somebody meets, and how often, is arithmetic — asking a
-/// 3B model to do it would be slower, less accurate and would spend the one
-/// call this step is allowed.
-///
-/// Reviewers and repository collaborators belong here too and are deliberately
-/// absent: GitHub's search response carries neither, so gathering them is one
-/// API call per pull request, which is the per-artefact fan-out this step is
-/// specifically not allowed to do.
-async fn team_structure(context: &recipe::Context) -> Option<String> {
-    let now = chrono::Local::now();
-    let from = (now - chrono::Duration::days(TEAM_DAYS))
-        .format("%Y-%m-%dT%H:%M:%S")
-        .to_string();
-    let to = now.format("%Y-%m-%dT%H:%M:%S").to_string();
-
-    let mut meetings: Vec<Vec<String>> = Vec::new();
-
-    for account in recipe::outlook_accounts(context).await {
-        let session = OutlookSession::new(&context.pool, &context.microsoft, account);
-
-        if let Ok(events) = session.events(&from, &to, recipe::PER_SOURCE).await {
-            meetings.extend(events.iter().map(|event| event.attendees.clone()));
-        }
-    }
-
-    let team = rank(&meetings);
-
-    if team.is_empty() {
-        return None;
-    }
-
-    let people = team
-        .iter()
-        .map(|(name, count)| {
-            format!("## {name}\n\nIn {count} of your meetings this month. What do they own?\n")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    Some(format!(
-        "{TEAM_PREAMBLE}\n\nSource: meetings over the last {TEAM_DAYS} days, counted {}.\n\n{people}",
-        now.date_naive()
-    ))
+    rows
 }
 
 /// What seeding would read and write. Runs nothing.
@@ -434,10 +600,11 @@ pub async fn profile_plan<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result
     Ok(plan(&context).await)
 }
 
-/// Seed the profile. Only ever called because the user pressed the button.
+/// Count the facts. Only ever called because the user pressed the button.
 ///
-/// Makes no model call, so it does not wake the engine: counting a sample
-/// costs milliseconds, and reading two gigabytes of weights to do it would not.
+/// Makes no model call, so it does not wake the engine: counting costs
+/// milliseconds and a handful of GitHub requests, and reading two gigabytes of
+/// weights to do it would not.
 #[tauri::command]
 pub async fn bootstrap_profile<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -472,20 +639,6 @@ fn rank(meetings: &[Vec<String>]) -> Vec<(String, usize)> {
     seen
 }
 
-/// Said at the top of the file rather than in a dialog nobody keeps.
-const STYLE_PREAMBLE: &str = "\
-# Writing style
-
-Chief counted this from the descriptions on your own pull requests. It is a
-draft: edit it, and Chief will not touch it again.";
-
-const TEAM_PREAMBLE: &str = "\
-# Team
-
-Chief drafted this from who you have been meeting with. The headings are the
-people; what they own is for you to fill in. Edit it and Chief will leave it
-alone.";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,21 +669,6 @@ mod tests {
                 "updated_at": "2026-08-17T10:00:00Z",
                 "body": "Release now calls the same workflow CI does, so a release is green by construction rather than by trust.",
                 "pull_request": { "merged_at": "2026-08-17T09:58:00Z" }
-            }
-        ]
-    }"#;
-
-    /// The same search, but nobody wrote a description.
-    const WROTE_NOTHING: &str = r#"{
-        "total_count": 1,
-        "items": [
-            {
-                "number": 44, "title": "A title and nothing else",
-                "state": "closed", "draft": false, "body": null,
-                "html_url": "https://github.com/x/y/pull/44",
-                "repository_url": "https://api.github.com/repos/x/y",
-                "updated_at": "2026-08-18T10:00:00Z",
-                "pull_request": { "merged_at": "2026-08-18T09:58:00Z" }
             }
         ]
     }"#;
@@ -599,17 +737,17 @@ mod tests {
         (context, scratch)
     }
 
-    // ---- rule two: a file the user has touched is theirs ----
+    // ---- the files are still the user's ----
 
     #[tokio::test]
-    async fn counts_an_untouched_starter_as_ours_to_replace() {
+    async fn counts_an_untouched_starter_as_untouched() {
         let (corpus, _scratch) = corpus_at("untouched").await;
 
         assert!(is_untouched(&corpus, WRITING_STYLE).await);
     }
 
     #[tokio::test]
-    async fn counts_a_file_that_is_not_there_as_ours_to_write() {
+    async fn counts_a_file_that_is_not_there_as_untouched() {
         let (corpus, _scratch) = corpus_at("absent").await;
         let root = corpus.root().join(WRITING_STYLE);
         std::fs::remove_file(&root).expect("should remove");
@@ -639,9 +777,142 @@ mod tests {
             .await
             .expect("write");
 
+        assert!(!is_untouched(&corpus, "journal/monday.md").await);
+    }
+
+    #[tokio::test]
+    async fn never_touches_the_markdown_files_when_it_counts() {
+        let (github_host, _github) = serve(vec![
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", OWN_LOGIN),
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", REVIEWS_44),
+            ("HTTP/1.1 200 OK", REVIEWS_43),
+        ]);
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "files").await;
+
+        let mine = "# Writing style\n\nI always sign off with 'cheers'.\n";
+        context
+            .corpus
+            .write(WRITING_STYLE, mine)
+            .await
+            .expect("write");
+
+        bootstrap(&context).await.expect("should count");
+
+        assert_eq!(
+            context.corpus.read(WRITING_STYLE).await.expect("read"),
+            mine,
+            "briefs still read this file; counting is not allowed near it"
+        );
+    }
+
+    // ---- keeping up with the day ----
+
+    /// The state of somebody who has pressed the button once.
+    async fn counted_once(context: &recipe::Context) {
+        let row = NewFact {
+            about: "you".to_string(),
+            what: facts::GREETING.to_string(),
+            scope: String::new(),
+            value: "Hi".to_string(),
+            count: 3,
+            total: 4,
+            source: "test".to_string(),
+            seen_on: "2000-01-01".to_string(),
+        };
+        facts::recount(&context.pool, &[facts::GREETING], vec![row])
+            .await
+            .expect("seed");
+    }
+
+    fn full_reply() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", OWN_LOGIN),
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", REVIEWS_44),
+            ("HTTP/1.1 200 OK", REVIEWS_43),
+        ]
+    }
+
+    #[tokio::test]
+    async fn recounts_when_yesterdays_count_is_the_latest() {
+        let (github_host, github) = serve(full_reply());
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "daily").await;
+        counted_once(&context).await;
+        settings::set(&context.pool, RECOUNTED_ON, "2000-01-01")
+            .await
+            .expect("set");
+        let attention = crate::agent::Attention::default();
+
+        assert!(recount_if_due(&context, &attention).await);
+
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(
+            settings::get(&context.pool, RECOUNTED_ON)
+                .await
+                .expect("get")
+                .as_deref(),
+            Some(today.as_str()),
+            "the day is recorded so the next pass knows"
+        );
+        github.await.expect("every reply should have been used");
+    }
+
+    #[tokio::test]
+    async fn does_not_recount_twice_in_a_day() {
+        let (github_host, github) = serve(full_reply());
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "twice").await;
+        counted_once(&context).await;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        settings::set(&context.pool, RECOUNTED_ON, &today)
+            .await
+            .expect("set");
+        let attention = crate::agent::Attention::default();
+
+        assert!(!recount_if_due(&context, &attention).await);
+
+        // The stub is still waiting for its first request. A recount that ran
+        // would have used the replies and finished.
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(300), github).await;
+        assert!(waited.is_err(), "a second recount reached GitHub");
+    }
+
+    #[tokio::test]
+    async fn never_starts_counting_for_someone_who_has_not_asked() {
+        let (github_host, github) = serve(full_reply());
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "unasked").await;
+        let attention = crate::agent::Attention::default();
+
+        assert!(!recount_if_due(&context, &attention).await);
+
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(300), github).await;
         assert!(
-            !is_untouched(&corpus, "journal/monday.md").await,
-            "only a starter Chief wrote is Chief's to replace"
+            waited.is_err(),
+            "the first reading of their work is theirs to start"
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_recount_while_somebody_is_waiting_on_an_answer() {
+        let (github_host, github) = serve(full_reply());
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "waiting").await;
+        let attention = crate::agent::Attention::default();
+        counted_once(&context).await;
+        let _waiting = attention.begin();
+
+        assert!(!recount_if_due(&context, &attention).await);
+
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(300), github).await;
+        assert!(
+            waited.is_err(),
+            "a person's question outranks a background count"
         );
     }
 
@@ -654,11 +925,18 @@ mod tests {
 
         let plan = plan(&context).await;
 
-        assert_eq!(plan.writes, vec![WRITING_STYLE, TEAM_STRUCTURE]);
-        assert!(plan.keeps.is_empty());
+        assert_eq!(plan.writes.len(), 3, "{:?}", plan.writes);
+        assert!(plan.keeps.is_empty(), "{:?}", plan.keeps);
         assert!(
             plan.reads.iter().any(|line| line.contains("pull requests")),
             "the user is agreeing to this sentence: {:?}",
+            plan.reads
+        );
+        assert!(
+            plan.reads
+                .iter()
+                .any(|line| line.contains("one request to GitHub for each")),
+            "the cost of reading reviews has to be said before it is paid: {:?}",
             plan.reads
         );
         assert_eq!(
@@ -666,10 +944,15 @@ mod tests {
             Vec::<String>::new(),
             "planning must not run the thing it is describing"
         );
+        let counted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM facts")
+            .fetch_one(&context.pool)
+            .await
+            .expect("count");
+        assert_eq!(counted, 0, "and must not write anything either");
     }
 
     #[tokio::test]
-    async fn says_which_files_it_would_leave_alone() {
+    async fn says_what_it_would_leave_alone() {
         let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
         let (context, _scratch) = context_for("127.0.0.1:1", &engine_host, "plankeep").await;
         context
@@ -677,46 +960,243 @@ mod tests {
             .write(WRITING_STYLE, "mine now")
             .await
             .expect("should write");
+        facts::save(
+            &context.pool,
+            None,
+            NewFact {
+                about: facts::YOU.to_string(),
+                what: facts::GREETING.to_string(),
+                scope: String::new(),
+                value: "Hey".to_string(),
+                count: 0,
+                total: 0,
+                source: String::new(),
+                seen_on: String::new(),
+            },
+            "2026-10-16",
+        )
+        .await
+        .expect("a fact of the user's own");
 
         let plan = plan(&context).await;
 
-        assert_eq!(plan.keeps, vec![WRITING_STYLE]);
-        assert_eq!(plan.writes, vec![TEAM_STRUCTURE]);
+        assert!(
+            plan.keeps
+                .iter()
+                .any(|line| line.starts_with("1 fact you changed")),
+            "{:?}",
+            plan.keeps
+        );
+        assert!(
+            plan.keeps
+                .iter()
+                .any(|line| line.contains(WRITING_STYLE) && line.contains("no longer")),
+            "{:?}",
+            plan.keeps
+        );
     }
 
-    // ---- rule three: one call over a sample ----
+    // ---- counting ----
+
+    /// The user's own handle, as GitHub's `/user` answers.
+    const OWN_LOGIN: &str = r#"{"login": "Octocat"}"#;
+
+    /// Reviews on the two pull requests in [`WROTE`]: Priya on both, a bot, the
+    /// user themselves, and a review nobody has submitted.
+    const REVIEWS_44: &str = r#"[
+        {"state": "APPROVED", "user": {"login": "Priya-N", "type": "User"}},
+        {"state": "COMMENTED", "user": {"login": "Priya-N", "type": "User"}},
+        {"state": "COMMENTED", "user": {"login": "dependabot[bot]", "type": "Bot"}},
+        {"state": "COMMENTED", "user": {"login": "octocat", "type": "User"}},
+        {"state": "PENDING", "user": {"login": "ghost", "type": "User"}}
+    ]"#;
+
+    const REVIEWS_43: &str = r#"[
+        {"state": "CHANGES_REQUESTED", "user": {"login": "priya-n", "type": "User"}},
+        {"state": "APPROVED", "user": {"login": "tomasz", "type": "User"}}
+    ]"#;
+
+    async fn counted(context: &recipe::Context) -> Vec<facts::Fact> {
+        facts::list(&context.pool).await.expect("list")
+    }
 
     #[tokio::test]
-    async fn writes_a_style_counted_from_the_users_own_descriptions() {
-        let (github_host, github) = serve(vec![("HTTP/1.1 200 OK", WROTE)]);
+    async fn counts_style_and_reviewers_from_the_users_own_work() {
+        // Order of requests: the description sample, the user's handle, the
+        // pull requests whose reviews are read, then one request for each.
+        let (github_host, github) = serve(vec![
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", OWN_LOGIN),
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", REVIEWS_44),
+            ("HTTP/1.1 200 OK", REVIEWS_43),
+        ]);
         let (engine_host, engine) = serve(Vec::<(&str, &str)>::new());
         let (context, _scratch) = context_for(&github_host, &engine_host, "style").await;
 
-        let report = bootstrap(&context).await.expect("should draft");
+        let report = bootstrap(&context).await.expect("should count");
 
-        assert!(report.written.contains(&WRITING_STYLE.to_string()));
+        assert!(report
+            .written
+            .iter()
+            .any(|line| line.contains("how you write")));
 
-        let written = context
-            .corpus
-            .read(WRITING_STYLE)
-            .await
-            .expect("should read");
-        assert!(written.contains("- Length: about"), "{written}");
-        assert!(written.contains("- Emoji: none (0 of 2)."), "{written}");
+        let rows = counted(&context).await;
+        let line = |what: &str| {
+            rows.iter()
+                .find(|row| row.what == what && row.about == facts::YOU)
+                .map(facts::style_line)
+                .unwrap_or_default()
+        };
+        assert!(line(facts::LENGTH).starts_with("Length: about"), "{rows:?}");
+        assert_eq!(line(facts::EMOJI), "Emoji: none (0 of 2).");
         assert!(
-            written.contains("It is a\ndraft: edit it"),
-            "the file has to say it is a draft: {written}"
+            rows.iter().all(counted_with_a_date),
+            "a count with no date cannot be called stale: {rows:?}"
         );
-        assert!(
-            counted_on(&written).is_some(),
-            "a count with no date cannot be called stale: {written}"
+
+        let reviews: Vec<(String, i64, i64)> = rows
+            .iter()
+            .filter(|row| row.what == facts::REVIEWS)
+            .map(|row| (row.about.clone(), row.count, row.total))
+            .collect();
+        assert_eq!(
+            reviews,
+            [("priya-n".to_string(), 2, 2), ("tomasz".to_string(), 1, 2)],
+            "Priya reviewed both, counted once each however many reviews she left; \
+             the bot, the user and an unsubmitted review are not people who reviewed"
         );
+        assert!(rows
+            .iter()
+            .all(|row| row.scope.is_empty() || row.scope == "scottmallinson/chief.ai"));
 
         let _ = github.await;
         assert_eq!(
             engine.await.expect("engine"),
             Vec::<String>::new(),
-            "counting a sample is not a model call"
+            "counting is not a model call"
+        );
+    }
+
+    fn counted_with_a_date(row: &facts::Fact) -> bool {
+        chrono::NaiveDate::parse_from_str(&row.seen_on, "%Y-%m-%d").is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_whose_reviews_cannot_be_read_costs_only_itself() {
+        let (github_host, _github) = serve(vec![
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", OWN_LOGIN),
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 404 Not Found", r#"{"message": "Not Found"}"#),
+            ("HTTP/1.1 200 OK", REVIEWS_43),
+        ]);
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "gone").await;
+
+        bootstrap(&context).await.expect("should count");
+
+        let reviewers: Vec<(String, i64, i64)> = counted(&context)
+            .await
+            .into_iter()
+            .filter(|row| row.what == facts::REVIEWS)
+            .map(|row| (row.about, row.count, row.total))
+            .collect();
+        assert_eq!(
+            reviewers,
+            [("priya-n".to_string(), 1, 1), ("tomasz".to_string(), 1, 1)],
+            "the one that could not be read is neither counted nor held against anyone"
+        );
+    }
+
+    #[tokio::test]
+    async fn keeps_the_reviewers_it_counted_when_github_cannot_be_reached() {
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for("127.0.0.1:1", &engine_host, "offline").await;
+        facts::recount(
+            &context.pool,
+            &[facts::REVIEWS],
+            vec![NewFact {
+                about: "priya-n".to_string(),
+                what: facts::REVIEWS.to_string(),
+                scope: "acme/api".to_string(),
+                value: String::new(),
+                count: 5,
+                total: 6,
+                source: "GitHub reviews on your pull requests".to_string(),
+                seen_on: "2026-10-01".to_string(),
+            }],
+        )
+        .await
+        .expect("an earlier count");
+
+        let outcome = bootstrap(&context).await;
+
+        assert!(
+            matches!(outcome, Err(Error::NothingToLearnFrom)),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            counted(&context).await.len(),
+            1,
+            "an unreachable GitHub is not evidence that nobody reviews"
+        );
+    }
+
+    #[tokio::test]
+    async fn says_so_rather_than_inventing_a_style_from_nothing() {
+        let (engine_host, engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for("127.0.0.1:1", &engine_host, "nothing").await;
+
+        let error = bootstrap(&context).await.expect_err("nothing to count");
+
+        assert!(matches!(error, Error::NothingToLearnFrom), "{error:?}");
+        assert!(counted(&context).await.is_empty());
+        assert_eq!(engine.await.expect("engine"), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn never_overwrites_what_the_user_wrote() {
+        let (github_host, _github) = serve(vec![
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", OWN_LOGIN),
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", REVIEWS_44),
+            ("HTTP/1.1 200 OK", REVIEWS_43),
+        ]);
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "keep").await;
+
+        facts::save(
+            &context.pool,
+            None,
+            NewFact {
+                about: facts::YOU.to_string(),
+                what: facts::EMOJI.to_string(),
+                scope: String::new(),
+                value: "never".to_string(),
+                count: 0,
+                total: 0,
+                source: String::new(),
+                seen_on: String::new(),
+            },
+            "2026-10-16",
+        )
+        .await
+        .expect("save");
+
+        let report = bootstrap(&context).await.expect("should count");
+
+        let emoji = counted(&context)
+            .await
+            .into_iter()
+            .find(|row| row.what == facts::EMOJI)
+            .expect("emoji row");
+        assert_eq!(emoji.origin, facts::YOURS);
+        assert_eq!(emoji.value, "never", "the user's word beat the count");
+        assert!(
+            report.kept.iter().any(|line| line.starts_with("1 facts")),
+            "and the report says so: {report:?}"
         );
     }
 
@@ -724,14 +1204,25 @@ mod tests {
         texts.iter().map(|text| text.to_string()).collect()
     }
 
+    /// The style, as the lines a prompt would carry.
+    fn rules(texts: &[&str]) -> Vec<String> {
+        style_facts(
+            &bodies(texts),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 13).expect("date"),
+        )
+        .iter()
+        .map(|row| facts::style_text(&row.what, &row.value, row.count, row.total))
+        .collect()
+    }
+
     #[test]
     fn counts_a_greeting_only_when_most_descriptions_share_it() {
-        let rules = style_rules(&bodies(&[
+        let rules = rules(&[
             "Hi Sam,\nFixes the timeout.",
             "Hi Priya,\nRuns checks once.",
             "Hi team,\nDrops the flag.",
             "Drops the other flag.",
-        ]));
+        ]);
 
         assert!(
             rules.contains(&"Greeting: opens with \"Hi\" (3 of 4).".to_string()),
@@ -741,13 +1232,13 @@ mod tests {
 
     #[test]
     fn leaves_a_habit_out_rather_than_guessing_when_the_sample_is_split() {
-        let rules = style_rules(&bodies(&[
+        let rules = rules(&[
             "Hi Sam,\nFixes it.",
             "Hey Priya,\nFixes that.",
             "Hello team,\nFixes this.",
             "Fixes the other.",
             "Fixes another.",
-        ]));
+        ]);
 
         assert!(
             !rules.iter().any(|rule| rule.starts_with("Greeting")),
@@ -757,17 +1248,17 @@ mod tests {
 
     #[test]
     fn counts_a_sign_off_and_says_so_when_there_is_none() {
-        let signed = style_rules(&bodies(&[
+        let signed = rules(&[
             "Fixes it.\n\nThanks",
             "Fixes that.\n\nThanks!",
             "Fixes this.",
-        ]));
+        ]);
         assert!(
             signed.contains(&"Sign-off: ends with \"Thanks\" (2 of 3).".to_string()),
             "{signed:?}"
         );
 
-        let unsigned = style_rules(&bodies(&["Fixes it.", "Fixes that.", "Fixes this."]));
+        let unsigned = rules(&["Fixes it.", "Fixes that.", "Fixes this."]);
         assert!(
             unsigned.contains(&"Sign-off: none (0 of 3).".to_string()),
             "{unsigned:?}"
@@ -776,7 +1267,7 @@ mod tests {
 
     #[test]
     fn counts_length_as_the_median_of_the_descriptions() {
-        let rules = style_rules(&bodies(&["one two", "one two three four", "one"]));
+        let rules = rules(&["one two", "one two three four", "one"]);
 
         assert!(
             rules.contains(&"Length: about 2 words (median of 3).".to_string()),
@@ -786,10 +1277,10 @@ mod tests {
 
     #[test]
     fn counts_emoji_and_spelling() {
-        let rules = style_rules(&bodies(&[
+        let rules = rules(&[
             "Fixes the colour handling \u{1F389}",
             "Optimise the centre panel",
-        ]));
+        ]);
 
         assert!(
             rules.contains(&"Emoji: used in 1 of 2.".to_string()),
@@ -800,67 +1291,10 @@ mod tests {
             "{rules:?}"
         );
 
-        let mixed = style_rules(&bodies(&["The colour", "The color"]));
+        let mixed = self::rules(&["The colour", "The color"]);
         assert!(
             !mixed.iter().any(|rule| rule.starts_with("Spelling")),
             "a split sample is not a spelling: {mixed:?}"
-        );
-    }
-
-    #[test]
-    fn reads_back_the_date_a_file_was_counted_and_none_from_a_hand_written_one() {
-        let text = render_style(
-            &bodies(&["Fixes it."]),
-            chrono::NaiveDate::from_ymd_opt(2026, 10, 13).expect("date"),
-        );
-
-        assert_eq!(
-            counted_on(&text),
-            chrono::NaiveDate::from_ymd_opt(2026, 10, 13)
-        );
-        assert_eq!(counted_on("# Writing style\n\nI write short."), None);
-    }
-
-    #[tokio::test]
-    async fn says_so_rather_than_inventing_a_style_from_nothing() {
-        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", WROTE_NOTHING)]);
-        let (engine_host, engine) = serve(Vec::<(&str, &str)>::new());
-        let (context, _scratch) = context_for(&github_host, &engine_host, "nothing").await;
-
-        let error = bootstrap(&context).await.expect_err("nothing was written");
-
-        assert!(matches!(error, Error::NothingToLearnFrom), "{error:?}");
-        assert_eq!(
-            engine.await.expect("engine"),
-            Vec::<String>::new(),
-            "there was nothing to send"
-        );
-    }
-
-    #[tokio::test]
-    async fn never_overwrites_what_the_user_wrote() {
-        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", WROTE)]);
-        let (engine_host, engine) = serve(Vec::<(&str, &str)>::new());
-        let (context, _scratch) = context_for(&github_host, &engine_host, "keep").await;
-
-        let mine = "# Writing style\n\nI always sign off with 'cheers'.\n";
-        context
-            .corpus
-            .write(WRITING_STYLE, mine)
-            .await
-            .expect("write");
-
-        bootstrap(&context).await.expect("should not fail");
-
-        assert_eq!(
-            context.corpus.read(WRITING_STYLE).await.expect("read"),
-            mine,
-            "the user's file is the user's"
-        );
-        assert_eq!(
-            engine.await.expect("engine"),
-            Vec::<String>::new(),
-            "and there was no engine to ask"
         );
     }
 

@@ -8,6 +8,7 @@ import { Chip } from '@/components/ui/chip';
 import { DisconnectAccount } from '@/components/DisconnectAccount';
 import { Freshness } from '@/components/Freshness';
 import { corpusLocation, type CorpusLocation } from '@/lib/corpus';
+import { FactsEditor } from '@/components/FactsEditor';
 import { ProfileBootstrap } from '@/components/ProfileBootstrap';
 import { CalendarSubscriptions } from '@/components/CalendarSubscriptions';
 import { AtlassianToken } from '@/components/AtlassianToken';
@@ -844,10 +845,11 @@ export function SettingsView() {
           <Corpus />
           <SettingsSection
             title="Your profile"
-            description="Drafts sound like a model until Chief has read some of your own writing. It can seed your writing style and your team from work you have already done — on this machine, and only when you ask."
+            description="Drafts sound like a model until Chief knows how you write and who reviews your work. It can count both from work you have already done — on this machine, and only when you ask. Every fact says where it came from, and you can correct or remove any of them."
             state={<Chip tone="quiet">On request</Chip>}
           >
             <ProfileBootstrap />
+            <FactsEditor />
           </SettingsSection>
           <ThisMachine />
           <WhenClosed />

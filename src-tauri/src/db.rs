@@ -214,7 +214,8 @@ ALTER TABLE briefs ADD COLUMN refresh_after TEXT;
 
 /// The drafts Chief prepared for things it noticed, and what became of them.
 ///
-/// COSTA's `task-action-state.json`, in the store Chief already has. The body
+/// One row per draft, in the store Chief already has: which item it came from,
+/// where the body is, and whether anybody has acted on it. The body
 /// lives in the corpus as markdown the user can open; only its state is here,
 /// so a draft the user edited in their own editor is still the one on screen.
 ///
@@ -332,6 +333,36 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 ";
 
+/// What Chief has counted about the user and the people around them, one row
+/// per fact.
+///
+/// A fact says one thing, where it came from and when it was last true:
+/// `priya-n / reviews / acme/api / 14 of 20 / GitHub reviews / 2026-10-12`.
+/// `origin` is who stands behind the row. `counted` rows are Chief's and are
+/// replaced on every recount; `yours` rows were typed or edited by the user and
+/// no recount touches them; `hidden` is a counted row the user deleted, kept so
+/// the next recount does not bring it back.
+///
+/// The unique index is the key a recount replaces by. `scope` is part of it
+/// because the same person reviews in more than one repository.
+const ADD_FACTS: &str = r"
+CREATE TABLE facts (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    about    TEXT NOT NULL,
+    what     TEXT NOT NULL,
+    scope    TEXT NOT NULL DEFAULT '',
+    value    TEXT NOT NULL DEFAULT '',
+    count    INTEGER NOT NULL DEFAULT 0,
+    total    INTEGER NOT NULL DEFAULT 0,
+    source   TEXT NOT NULL,
+    seen_on  TEXT NOT NULL,
+    origin   TEXT NOT NULL DEFAULT 'counted'
+);
+
+CREATE UNIQUE INDEX facts_key ON facts (about, what, scope);
+CREATE INDEX facts_scope ON facts (what, scope);
+";
+
 /// Migrations applied to [`DB_URL`], in order.
 ///
 /// Migrations are append-only: once a version has shipped, add a new one rather
@@ -390,6 +421,12 @@ pub fn migrations() -> Vec<Migration> {
             version: 9,
             description: "say when a partial brief is due a rewrite",
             sql: ADD_BRIEF_REFRESH,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 10,
+            description: "keep counted facts about the user and their people",
+            sql: ADD_FACTS,
             kind: MigrationKind::Up,
         },
     ]
@@ -900,6 +937,37 @@ mod tests {
             .expect("the entry should still be there");
 
         assert_eq!(title, "Merged PR #4", "the first line, and not the body");
+    }
+
+    /// An install on release 0.12 has nothing in `facts`, and upgrading must
+    /// leave everything it does have exactly where it was.
+    #[tokio::test]
+    async fn upgrading_adds_the_facts_table_and_leaves_the_rest_alone() {
+        let pool = pool_at_version(9).await;
+
+        sqlx::query("INSERT INTO work_logs (source, content) VALUES ('github', 'kept')")
+            .execute(&pool)
+            .await
+            .expect("an entry should be storable before the upgrade");
+
+        upgrade(&pool).await;
+
+        let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM work_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("the work log should still be there");
+        assert_eq!(kept, 1);
+
+        let insert = "INSERT INTO facts (about, what, scope, source, seen_on) \
+                      VALUES ('priya-n', 'reviews', 'acme/api', 'x', '2026-10-12')";
+        sqlx::query(insert)
+            .execute(&pool)
+            .await
+            .expect("a fact should be storable");
+        assert!(
+            sqlx::query(insert).execute(&pool).await.is_err(),
+            "the same person in the same repository is one fact, not two"
+        );
     }
 
     /// Deleting a row takes it out of the index, which is what lets DLE-4's
