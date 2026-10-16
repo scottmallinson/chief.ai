@@ -37,6 +37,13 @@ runs:
     # `/usr/bin/xdg-open` into the bundle, and stops with
     # `xdg-open binary not found` when it is not there — after the whole crate
     # has been compiled in release, which is the expensive place to find out.
+    #
+    # `libvulkan1` is there for the same bundler and the same reason. The
+    # engine's Vulkan backend links the Vulkan loader, linuxdeploy refuses an
+    # AppDir holding a library whose dependencies it cannot resolve, and
+    # nothing else in this list is guaranteed to pull the loader in. Chief
+    # does not need it at run time: without it that one backend fails to
+    # load and the engine runs on the CPU.
     - name: Install Linux dependencies
       if: runner.os == 'Linux'
       shell: bash
@@ -56,6 +63,7 @@ runs:
           patchelf \
           build-essential \
           file \
+          libvulkan1 \
           xdg-utils
 
     - uses: ./.github/actions/setup-node
