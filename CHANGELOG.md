@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.2 (2026-10-16)
+
+### Fixes
+
+- **agent:** restate the question after a tool result and block answers that only describe it ([cf85b3a](https://github.com/scottmallinson/chief.ai/commit/cf85b3aad6ff023c2c0e1834070f499943b1b401))
+
 ## 0.13.1 (2026-10-16)
 
 ### Fixes
