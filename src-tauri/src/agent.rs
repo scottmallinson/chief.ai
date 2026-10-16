@@ -391,6 +391,13 @@ where
     // results is only believed if this is true.
     let mut ran_a_tool = false;
 
+    // What was asked, kept to say again once a tool has answered it.
+    let question = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)
+        .map(|message| message.content.chars().take(300).collect::<String>());
+
     for round in 0..MAX_TOOL_ROUNDS {
         let request = ChatRequest::new(model, messages.clone());
         let request = if offer_tools {
@@ -465,6 +472,14 @@ where
             on_update(Update::Restart);
         }
 
+        // Drop the reminder from the last round; a fresh one follows these results.
+        if messages
+            .last()
+            .is_some_and(|last| last.content.starts_with(ANSWER_FROM_RESULT))
+        {
+            messages.pop();
+        }
+
         // Keep the model's own turn in the transcript: it is the question the
         // tool results are answering.
         messages.push(reply.clone());
@@ -487,6 +502,15 @@ where
             let room = context::DEFAULT_CEILING.saturating_sub(spent);
 
             messages.push(Message::tool_result(call, trim_result(result, room)));
+        }
+
+        // Say the question again, after the results. Measured on Llama 3.2 3B:
+        // handed a tool result, it described the result ("This output is from
+        // fetch_github_prs. It shows the pull requests...") and never answered
+        // what was asked, because by then the question was several hundred
+        // tokens back. A few dozen tokens of reminder is the cheap fix.
+        if let Some(question) = &question {
+            messages.push(Message::user(format!("{ANSWER_FROM_RESULT}{question}")));
         }
     }
 
@@ -514,6 +538,28 @@ where
     let _ = shown;
 
     Ok(vetted(reply.content, offer_tools_at_first, ran_a_tool))
+}
+
+/// Put after a tool's result, in front of the question it answers.
+const ANSWER_FROM_RESULT: &str = "Now answer my question from that result alone. Question: ";
+
+/// What is said when the model read the result and still did not answer.
+const DESCRIBED_NOT_ANSWERED: &str = "\
+I looked that up but couldn't turn it into an answer this time. \
+Try asking again, or ask more specifically, such as \"Which of my pull requests are open?\"";
+
+/// Whether an answer is a description of the tool's output rather than a reply.
+fn describes_the_tool_output(answer: &str) -> bool {
+    let lower = answer.trim_start().to_lowercase();
+
+    [
+        "this output is from",
+        "this is the output of",
+        "the output of the tool",
+        "this result is from",
+    ]
+    .iter()
+    .any(|start| lower.starts_with(start))
 }
 
 /// What is said when an answer cannot be trusted to reach the screen.
@@ -565,6 +611,10 @@ fn points_at_a_list_it_does_not_have(answer: &str) -> bool {
 fn vetted(answer: String, offered: bool, ran_a_tool: bool) -> String {
     if tools::is_call_in_text(&answer) {
         return COULD_NOT_LOOK_UP.to_string();
+    }
+
+    if describes_the_tool_output(&answer) {
+        return DESCRIBED_NOT_ANSWERED.to_string();
     }
 
     if offered && !ran_a_tool && points_at_a_list_it_does_not_have(&answer) {
@@ -1680,6 +1730,64 @@ mod orchestration_tests {
     }
 
     #[test]
+    fn an_answer_that_only_describes_the_tool_output_is_blocked() {
+        let described =
+            "This output is from \"fetch_github_prs\". It shows the user's pull requests.";
+        assert_eq!(vetted(described.into(), true, true), DESCRIBED_NOT_ANSWERED);
+        assert_eq!(
+            vetted(
+                "Two pull requests are open: #12 and #13.".into(),
+                true,
+                true
+            ),
+            "Two pull requests are open: #12 and #13."
+        );
+    }
+
+    #[tokio::test]
+    async fn says_the_question_again_after_the_result_and_only_once() {
+        let (base_url, server) = serve(vec![
+            ("HTTP/1.1 200 OK", asks_for_prs()),
+            ("HTTP/1.1 200 OK", asks_for_prs()),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let (github_host, github_server) = serve(vec![
+            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+        ]);
+        let context = context_connected_to(&github_host).await;
+
+        respond(
+            &client,
+            &context,
+            MODEL,
+            asked("What is waiting on me?"),
+            |_| {},
+        )
+        .await
+        .expect("the stub should answer");
+
+        let requests = server.await.expect("the stub should finish");
+        let messages = body_of(&requests[2])["messages"].clone();
+        let reminders = messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| {
+                m["content"]
+                    .as_str()
+                    .is_some_and(|c| c.starts_with(ANSWER_FROM_RESULT))
+            })
+            .count();
+        assert_eq!(
+            reminders, 1,
+            "reminders must not pile up across rounds: {messages}"
+        );
+        github_server.await.expect("GitHub stub should finish");
+    }
+
+    #[test]
     fn the_list_check_leaves_real_answers_alone() {
         assert!(points_at_a_list_it_does_not_have("Here are the PRs."));
         assert!(!points_at_a_list_it_does_not_have(
@@ -1737,8 +1845,12 @@ mod orchestration_tests {
             .as_array()
             .expect("messages should be a list");
 
-        // system, user, the assistant's tool call, then the tool result.
-        assert_eq!(messages.len(), 4);
+        // system, user, the assistant's tool call, the tool result, then the reminder.
+        assert_eq!(messages.len(), 5);
+        assert!(messages[4]["content"]
+            .as_str()
+            .unwrap()
+            .contains("What is waiting on me?"));
 
         let asked = &messages[2];
         assert_eq!(asked["role"], json!("assistant"));
