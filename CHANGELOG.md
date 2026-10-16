@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.0 (2026-10-16)
+
+### Features
+
+- **tauri:** ship GPU builds of the engine — Metal and Vulkan ([a0aabe6](https://github.com/scottmallinson/chief.ai/commit/a0aabe62cb0613f14215fc7e99ddf9e25d75a0be))
+
+### Fixes
+
+- **tauri:** start the engine in the directory that holds its backends ([9da34ff](https://github.com/scottmallinson/chief.ai/commit/9da34ff4f7052a61fc3d7c941e212278cbaa307c))
+
 ## 0.11.0 (2026-10-16)
 
 ### Features
