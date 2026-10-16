@@ -36,6 +36,8 @@ mod propose;
 mod proposed;
 mod recipe;
 mod retrieval;
+#[cfg(test)]
+mod scenarios;
 mod session;
 mod settings;
 mod setup;
