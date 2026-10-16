@@ -139,7 +139,7 @@ to everyone taking part.
 
 ## Acknowledgements
 
-Proposed Actions draws on ideas from **COSTA**, created by Stuart Frisby: that a draft written
+Proposed Actions draws on ideas from [**COSTA**](https://costawork.app), created by Stuart Frisby: that a draft written
 from stale or missing context comes out generic, and that what is known about the people involved
 and about how the user writes should be loaded before the model writes anything. The ideas are
 COSTA's; the code, and the way Chief keeps and checks what it knows, are Chief's own.
