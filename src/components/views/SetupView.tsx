@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { Check, Cpu, Download, RefreshCw } from 'lucide-react';
 
 import { ChiefMark } from '@/components/ChiefMark';
@@ -112,6 +112,26 @@ interface SetupViewProps {
  */
 export function SetupView({ onSkip }: SetupViewProps) {
   const { readiness, status, progress, error, recheck, download, start } = useSetup();
+
+  // **A model already on disk and an engine already loading is a launch, not a
+  // setup.** A window opened hidden at login is created while the engine is
+  // still reading the weights, so App's one check sees "loading" and lands
+  // here — and a person who set Chief up weeks ago then finds a first-run
+  // screen asking them to click "Start using Chief" (EM-11). So when the very
+  // first reading was a loading engine, the screen lets itself out once the
+  // engine answers. After a download it still waits to be told, because that
+  // is the moment the person is watching for.
+  const launching = useRef<boolean | null>(null);
+
+  if (launching.current === null && readiness !== null) {
+    launching.current = readiness.modelInstalled && readiness.engine === 'loading';
+  }
+
+  const launchFinished = launching.current === true && isReady(readiness);
+
+  useEffect(() => {
+    if (launchFinished) onSkip();
+  }, [launchFinished, onSkip]);
 
   const modelInstalled = readiness?.modelInstalled === true;
   const engine = readiness?.engine ?? 'down';
