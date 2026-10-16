@@ -181,13 +181,14 @@ export function renderMarkdown(dir, env, scored, judged, summary) {
   L.push('## 1. Headline');
   L.push('');
   L.push(
-    'A model that fails any gate is not ranked, however fast it is. Gates: G1 starts and answers · G2 fits in 8 GB · G3 invents nothing on quiet days (the share of quiet-day runs that invented something is shown beside it) · G4 finishes without circling · G5 tool calls valid.',
+    'A model that fails any gate is not ranked, however fast it is. Gates: G1 starts and answers · G2 fits in 8 GB · G3 invents nothing on quiet days (the share of quiet-day runs that invented something is shown beside it) · G4 finishes without circling · G5 tool calls valid · G6 no invented names in review-request drafts (only when the run has them).',
   );
   L.push('');
+  const hasG6 = summary.models.some((m) => m.gates.G6);
   L.push(
-    '| # | Model | Tier | G1 | G2 | G3 (invents) | G4 | G5 | Score | Quality | Tools | Usefulness | Speed | Memory |',
+    `| # | Model | Tier | G1 | G2 | G3 (invents) | G4 | G5 |${hasG6 ? ' G6 |' : ''} Score | Quality | Tools | Usefulness | Speed | Memory |`,
   );
-  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+  L.push(`|---|---|---|---|---|---|---|---|${hasG6 ? '---|' : ''}---|---|---|---|---|---|`);
   const order = [...summary.ranked, ...summary.unranked];
   order.forEach((m) => {
     const place = summary.ranked.includes(m)
@@ -197,7 +198,7 @@ export function renderMarkdown(dir, env, scored, judged, summary) {
       : 'n/r';
     const g = m.gates;
     L.push(
-      `| ${place} | ${m.name} | ${m.tier} | ${mark(g.G1.pass)} | ${mark(g.G2.pass)} | ${mark(g.G3.pass)} ${pct(g.G3.rate)} | ${mark(g.G4.pass)} | ${mark(g.G5.pass)} | ${num(m.composite)} | ${num(m.parts.quality)} | ${num(m.parts.tools)} | ${num(m.parts.usefulness)} | ${env.machine.target ? num(m.parts.speed) : 'n/a'} | ${num(m.parts.memory)} |`,
+      `| ${place} | ${m.name} | ${m.tier} | ${mark(g.G1.pass)} | ${mark(g.G2.pass)} | ${mark(g.G3.pass)} ${pct(g.G3.rate)} | ${mark(g.G4.pass)} | ${mark(g.G5.pass)} |${hasG6 ? ` ${g.G6 ? mark(g.G6.pass) : 'n/a'} |` : ''} ${num(m.composite)} | ${num(m.parts.quality)} | ${num(m.parts.tools)} | ${num(m.parts.usefulness)} | ${env.machine.target ? num(m.parts.speed) : 'n/a'} | ${num(m.parts.memory)} |`,
     );
   });
   L.push('');
