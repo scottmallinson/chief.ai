@@ -139,7 +139,7 @@ to everyone taking part.
 
 ## Acknowledgements
 
-Proposed Actions draws on ideas from **COSTA**, created by Stuart Frisby: that a draft written
+Proposed Actions draws on ideas from [**COSTA**](https://costawork.app), created by Stuart Frisby: that a draft written
 from stale or missing context comes out generic, and that what is known about the people involved
 and about how the user writes should be loaded before the model writes anything. The ideas are
 COSTA's; the code, and the way Chief keeps and checks what it knows, are Chief's own.
@@ -147,7 +147,9 @@ COSTA's; the code, and the way Chief keeps and checks what it knows, are Chief's
 Stopping the model after a period of inactivity, so its memory is returned, follows the approach of
 [Biscotti](https://github.com/scosman/Biscotti). Chief's implementation is its own.
 
-Goose, Tidebreak, CortexAgent, Zeno and OpenHuman were studied while shaping Chief. No code from
+[Goose](https://github.com/block/goose), [Tidebreak](https://github.com/brightwave-inc/tidebreak),
+[CortexAgent](https://github.com/greyok00/cortexagent), [Zeno](https://www.icosa.co/zeno) and
+[OpenHuman](https://github.com/tinyhumansai/OpenHuman) were studied while shaping Chief. No code from
 them is used.
 
 ## Licence
