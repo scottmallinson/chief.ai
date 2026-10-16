@@ -7,10 +7,6 @@ import { bootstrapProfile, profilePlan, type ProfilePlan, type ProfileReport } f
 
 type Status = 'loading' | 'ready' | 'working' | 'error';
 
-function count(files: number): string {
-  return files === 1 ? '1 file' : `${files} files`;
-}
-
 /**
  * Seeding the profile from the user's own work, with their consent.
  *
@@ -21,9 +17,10 @@ function count(files: number): string {
  * pressed. A profile assembled quietly would be the wrong way to do this even
  * though nothing leaves the laptop.
  *
- * The output is a draft. Files the user has since edited are listed as left
- * alone rather than silently skipped, so "nothing happened to that one" always
- * has a visible reason.
+ * The output is facts, listed below where the user can correct them. Anything
+ * they have since changed or removed is listed as left alone rather than
+ * silently skipped, so "nothing happened to that one" always has a visible
+ * reason.
  */
 export function ProfileBootstrap() {
   const [plan, setPlan] = useState<ProfilePlan | null>(null);
@@ -84,15 +81,11 @@ export function ProfileBootstrap() {
 
           {plan.writes.length > 0 && (
             <div className="mt-3.5">
-              <h3 className="micro text-muted-foreground">What it would write</h3>
+              <h3 className="micro text-muted-foreground">What it would count</h3>
               <ul className="mt-2 flex flex-col gap-1">
-                {plan.writes.map((path) => (
-                  <li
-                    key={path}
-                    className="font-mono text-[11px] break-all text-muted-foreground"
-                    data-selectable
-                  >
-                    {path}
+                {plan.writes.map((line) => (
+                  <li key={line} className="text-[13px] leading-snug text-muted-foreground">
+                    {line}
                   </li>
                 ))}
               </ul>
@@ -101,17 +94,11 @@ export function ProfileBootstrap() {
 
           {plan.keeps.length > 0 && (
             <div className="mt-3.5">
-              <h3 className="micro text-muted-foreground">
-                You have edited these, so Chief will not touch them
-              </h3>
+              <h3 className="micro text-muted-foreground">Left as it is</h3>
               <ul className="mt-2 flex flex-col gap-1">
-                {plan.keeps.map((path) => (
-                  <li
-                    key={path}
-                    className="font-mono text-[11px] break-all text-muted-foreground"
-                    data-selectable
-                  >
-                    {path}
+                {plan.keeps.map((line) => (
+                  <li key={line} className="text-[13px] leading-snug text-muted-foreground">
+                    {line}
                   </li>
                 ))}
               </ul>
@@ -128,7 +115,7 @@ export function ProfileBootstrap() {
       */}
       {report !== null && error === null && (
         <p className="mt-3.5 text-sm leading-relaxed text-verified-text" role="status">
-          {`Drafted ${count(report.written.length)}. Open the corpus and make it yours — Chief will not write over what you change.`}
+          {`Counted ${report.written.join(', ')}. Correct anything below — Chief will not write over what you change.`}
         </p>
       )}
 
@@ -149,7 +136,7 @@ export function ProfileBootstrap() {
         <div className="mt-4 flex flex-wrap gap-2">
           <Button size="sm" onClick={draft} disabled={isWorking}>
             <PenLine aria-hidden />
-            Draft these from my work
+            Count these from my work
           </Button>
         </div>
       )}

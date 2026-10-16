@@ -506,15 +506,18 @@ a short message asking for a review.
   `never_reaches_the_network_to_draft` asserts every request the pass makes to GitHub is a `GET`,
   having first asserted the request list is not empty — a loop over nothing passes without checking
   anything, which would be a broken stub dressed up as proof.
-- **The prompt runs people, then writing style, then examples, then the item**: COSTA's order, with
-  the user's own past messages added between style and item. Who these people are frames how to
-  address them, how the user writes frames the words, and the thing being written about arrives
-  last. `reads_the_team_and_the_style_before_the_item` asserts the three appear in that order in
-  what was actually sent. The order is kept because it was measured: four orders on six models
-  were within noise of each other, and the two rerun once names were checked against the people
-  the draft was given (this order and item-first) still were, so it is a convention and not a
-  requirement. What did matter was the check: it
-  accepts only names from the people block and never ones a kept example happened to contain.
+- **The prompt runs people, then writing style, then examples, then the item.** Who these people
+  are frames how to address them, how the user writes frames the words, and the thing being written
+  about arrives last. `reads_the_team_and_the_style_before_the_item` asserts the three appear in
+  that order in what was actually sent. The order is kept because it was measured: four orders on
+  six models were within noise of each other, and the two rerun once names were checked against the
+  people the draft was given (this order and item-first) still were, so it is a convention and not a
+  requirement. What did matter was the check: it accepts only names from the people block and never
+  ones a kept example happened to contain.
+- **People and style come from rows of facts, not from files.** `propose.rs` asks `facts.rs` for the
+  reviewers of this pull request's own repository (at most four, most frequent first) and for the
+  user's style facts, so a draft pays for the few rows about it and each line says where it came
+  from and when. A name in the draft is accepted only if it is in those rows.
 - **One item per pass.** A draft is a model call, and a machine that woke to nine stale pull
   requests would spend minutes of engine on work nobody asked for while the user waits behind it.
   The pass yields to `Attention` between accounts and between items, like the daemon's own.
@@ -532,31 +535,42 @@ a short message asking for a review.
   it repeatedly while looking at the result. `sends_nothing_but_the_instruction_and_the_draft`
   keeps it that way.
 
-## Seeding the profile
+## Facts about the user and their people
 
-`src-tauri/src/profile.rs` fills in `writing_style.md` and `team_structure.md` from the user's own
-work. COSTA's finding is the reason it exists: an empty corpus produces generic drafts, so the
-profile has to be seeded from something real before Proposed Actions is worth building.
+`src-tauri/src/facts.rs` holds what Chief knows as rows: `about / what / scope / value / count /
+total / source / seen_on / origin`. `profile.rs` counts them from the user's own work; `propose.rs`
+reads them. They replaced two free-text markdown files, because a line of prose has no source, no
+date and no count, so the only thing that could read it was string matching and nothing could say
+when it had gone out of date.
 
-Three rules, all about not taking something that is the user's:
+- **Three owners of a row.** `counted` is Chief's and a recount replaces it. `yours` was typed or
+  edited in Settings and no recount touches it. `hidden` is a counted row the user deleted, kept
+  invisible so the next recount does not put it back. `a_recount_never_overwrites_what_the_user_wrote`
+  and `a_row_the_user_deleted_stays_deleted_through_a_recount` guard that, and each was proven to
+  fail with the guard broken.
+- **Editing is in Settings, not in a file.** The facts card lists every row, says where and when it
+  was counted, and lets the user add, correct or remove one. Drafting no longer reads
+  `writing_style.md` or `team_structure.md`; briefs still read them as background, so they stay in
+  the corpus and are not touched.
+- **Counted, not inferred, and nothing runs without being asked.** `plan` says what would be read,
+  including that reviews cost one GitHub request per pull request (the last 30), and `bootstrap`
+  runs only when the user presses the button. Style is arithmetic over the descriptions of the
+  user's last 20 pull requests; reviewers are everyone who submitted a review on the last 30, once
+  per pull request, minus the user, bots and unsubmitted reviews; meetings are recurring attendees.
+  No model is called.
+- **A recount is one transaction.** It deletes Chief's rows of the kinds it is about to rewrite and
+  inserts the new ones together, so a failure half-way leaves the old rows. An unreachable GitHub
+  returns nothing at all rather than an empty list, so it cannot wipe reviewers counted before.
+- **The key is lower-case handle and lower-case `owner/name`.** `acme/api` never matches
+  `acme/api-gateway`. The same person under another tool's name is a different row until the alias
+  work lands; two rows for one human is harmless, one row for two humans names the wrong person.
+- **Refreshing is manual for now.** Every counted row carries its date, and a line older than 90
+  days says it may be out of date in the prompt. A background recount would break the rule above, so
+  it waits for a decision.
 
-- **Nothing runs without being asked.** `plan` says what would be read and what would be written, in
-  those words, and returns having touched nothing; the Settings card shows it and waits. This is the
-  first feature that reads the user's own writing in bulk to build a profile of it, and a profile
-  assembled quietly would be the wrong way to do that however local it stays.
-- **A file the user has touched is theirs.** `is_untouched` compares the file against the starter
-  `ensure_shape` wrote — content, not mtime. mtime says _when_ a file was written and content says
-  _what is in it_, and a git checkout, a Dropbox sync or a restored backup all move mtime without
-  changing a byte. Judged on mtime Chief would refuse to seed a file nobody had opened.
-- **One call over a sample.** Only the writing style needs a model. The team is _counted_ from
-  recurring meeting attendees, because who somebody meets and how often is arithmetic, and asking a
-  3B model to do it would be slower, less accurate, and would spend the one call this step is
-  allowed. Reviewers and repository collaborators belong there too and are deliberately absent:
-  GitHub's search response carries neither, so gathering them is one API call per pull request.
-
-`github::PullRequest` carries `body` for this and nothing else. It is `#[serde(skip_serializing)]`
-so it cannot leak into `as_tool_entries` — a list of pull request bodies would swamp the prompt
-budget, and the model does not need one to say what is waiting.
+`github::PullRequest` carries `body` for style counting and nothing else. It is
+`#[serde(skip_serializing)]` so it cannot leak into `as_tool_entries` — a list of pull request
+bodies would swamp the prompt budget, and the model does not need one to say what is waiting.
 
 ## Calendars without a sign-in
 

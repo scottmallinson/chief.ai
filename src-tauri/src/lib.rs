@@ -17,6 +17,7 @@ mod corpus;
 mod daemon;
 mod db;
 mod engine;
+mod facts;
 mod github;
 mod ical;
 mod ingest;
@@ -158,6 +159,9 @@ pub fn run() {
             proposed::dismiss_proposal,
             proposed::list_proposals,
             proposed::save_proposal,
+            facts::delete_fact,
+            facts::list_facts,
+            facts::save_fact,
             profile::bootstrap_profile,
             profile::profile_plan,
             recipe::generate_brief,

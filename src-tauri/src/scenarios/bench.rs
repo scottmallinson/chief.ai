@@ -33,7 +33,7 @@ use futures_util::StreamExt;
 use tokio::process::{Child, Command};
 
 use crate::probe::Tier;
-use crate::{agent, engine, profile, propose, tools};
+use crate::{agent, engine, facts, propose, tools};
 
 // ---------------------------------------------------------------------------
 // The recording proxy
@@ -503,9 +503,47 @@ const FIXTURES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-const DRAFT_TEAM: &str = "# Team\n\n## acme/api\n- Priya Nair reviews acme/api\n\n## acme/web\n- Tomasz Wrona reviews acme/web\n- Imogen Clarke reviews acme/web\n\n## Platform\n- Dev Patel runs the platform team\n";
+/// What the draft scenarios know about the user, as the facts a seeding would
+/// have counted: who reviews where, and how the user writes. Dev Patel is
+/// someone met in meetings and tied to no repository, so a draft has no business
+/// naming him.
+async fn teach_the_draft_scenarios(pool: &sqlx::SqlitePool) {
+    let today = chrono::Local::now().date_naive().to_string();
+    let row = |about: &str, what: &str, scope: &str, value: &str, count: i64, total: i64| {
+        facts::NewFact {
+            about: about.to_string(),
+            what: what.to_string(),
+            scope: scope.to_string(),
+            value: value.to_string(),
+            count,
+            total,
+            source: "the benchmark".to_string(),
+            seen_on: today.clone(),
+        }
+    };
+    let you = facts::YOU;
 
-const DRAFT_STYLE: &str = "# Writing style\n\n- Greets with \"Hi\" and a first name.\n- Signs off with \"Thanks\".\n- Short: two or three sentences.\n- No emoji.\n- British spelling.\n";
+    facts::recount(
+        pool,
+        &[],
+        vec![
+            row("priya-nair", facts::REVIEWS, "acme/api", "", 9, 10),
+            row("priya-nair", facts::NAME, "", "Priya Nair", 0, 0),
+            row("tomasz-wrona", facts::REVIEWS, "acme/web", "", 6, 10),
+            row("tomasz-wrona", facts::NAME, "", "Tomasz Wrona", 0, 0),
+            row("imogen-clarke", facts::REVIEWS, "acme/web", "", 4, 10),
+            row("imogen-clarke", facts::NAME, "", "Imogen Clarke", 0, 0),
+            row("dev patel", facts::MEETS, "", "Dev Patel", 5, 0),
+            row(you, facts::GREETING, "", "Hi", 8, 10),
+            row(you, facts::SIGN_OFF, "", "Thanks", 7, 10),
+            row(you, facts::LENGTH, "", "40", 0, 10),
+            row(you, facts::EMOJI, "", "", 0, 10),
+            row(you, facts::SPELLING, "", "British", 0, 0),
+        ],
+    )
+    .await
+    .expect("facts");
+}
 
 async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
     let day = today();
@@ -955,18 +993,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
         "draft-review-known" | "draft-review-unknown" => {
             let known = id == "draft-review-known";
             let world = world(None, None, engine_url).await;
-            world
-                .ctx
-                .corpus
-                .write(profile::TEAM_STRUCTURE, DRAFT_TEAM)
-                .await
-                .expect("team file");
-            world
-                .ctx
-                .corpus
-                .write(profile::WRITING_STYLE, DRAFT_STYLE)
-                .await
-                .expect("style file");
+            teach_the_draft_scenarios(&world.ctx.pool).await;
 
             let repository = if known { "acme/api" } else { "acme/billing" };
             let item = github::PullRequest {

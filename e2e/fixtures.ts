@@ -354,6 +354,10 @@ function installBackend(setup: Setup) {
         case 'profile_plan':
           return Promise.resolve({ reads: [], writes: [], keeps: [] });
 
+        // A `Fact[]`, never the `[]` every other list gets by default.
+        case 'list_facts':
+          return Promise.resolve([]);
+
         // A `Registration[]`, which shares only its `service` field with an
         // account: answering this with the account list would hand the card
         // an object with no `source` and it would render `undefined`.

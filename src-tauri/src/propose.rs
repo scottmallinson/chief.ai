@@ -11,19 +11,23 @@
 //! on Friday morning.
 //!
 //! The prompt runs **the people tied to the item, then writing style, then
-//! examples, then the item**: the order COSTA uses, with the user's own past
-//! messages added between style and item. Who these people are frames how to
-//! address them, how the user writes frames the words, and only then does the
-//! thing being written about arrive. It is kept because it was measured, not
-//! because it is required: four orders were run on six models, and the two that
-//! were rerun once names were checked against what the draft was given were not
-//! detectably different.
+//! examples, then the item**. Who these people are frames how to address them,
+//! how the user writes frames the words, and only then does the thing being
+//! written about arrive. It is kept because it was measured, not because it is
+//! required: four orders were run on six models, and the two that were rerun
+//! once names were checked against what the draft was given were not detectably
+//! different.
+//!
+//! The people and the style come from rows of facts (see `facts.rs`), chosen by
+//! SQL for the item's own repository, so a draft pays for the few rows that are
+//! about it and every line says where it came from. A name in the draft is
+//! accepted only if it is in those rows.
 
 use crate::context::Budget;
 use crate::corpus;
+use crate::facts;
 use crate::github;
 use crate::llama::{self, ChatRequest, Message, Options};
-use crate::profile;
 use crate::proposed::{self, NewProposal};
 use crate::recipe;
 use crate::session::GithubSession;
@@ -319,11 +323,10 @@ pub(crate) async fn draft_for_bench(
     })
 }
 
-/// Neither profile file has been touched, so there is nothing of the user's to
-/// write from.
+/// Nothing is known about how the user writes or who reviews their work, so
+/// there is nothing of theirs to write from.
 async fn has_no_profile(context: &recipe::Context) -> bool {
-    profile::is_untouched(&context.corpus, profile::WRITING_STYLE).await
-        && profile::is_untouched(&context.corpus, profile::TEAM_STRUCTURE).await
+    !facts::has_profile(&context.pool).await.unwrap_or(false)
 }
 
 /// Three lines, no names, no model. A greeting with no name in it cannot be
@@ -341,9 +344,6 @@ struct Drafted {
     text: String,
 }
 
-/// How long before a counted profile is flagged as possibly out of date.
-const STALE_PROFILE_DAYS: i64 = 90;
-
 /// How many of the user's own past requests go in as examples of their voice.
 const EXAMPLES: usize = 3;
 
@@ -353,60 +353,6 @@ const EXAMPLE_CHARS: usize = 400;
 
 /// The most people carried in, however many the file lists for a repository.
 const PEOPLE: usize = 4;
-
-/// Sections of the team file, each starting at its `## ` line.
-fn sections(team: &str) -> Vec<&str> {
-    let mut starts: Vec<usize> = team
-        .match_indices("## ")
-        .filter(|(at, _)| *at == 0 || team.as_bytes()[*at - 1] == b'\n')
-        .map(|(at, _)| at)
-        .collect();
-    starts.push(team.len());
-
-    starts
-        .windows(2)
-        .map(|pair| team[pair[0]..pair[1]].trim_end())
-        .collect()
-}
-
-/// The people the file ties to this repository: those whose section names it.
-///
-/// Matched on the whole `owner/name`, case-insensitively and only at a word
-/// edge, so `acme/api` does not pull in `acme/api-gateway`.
-fn people_for(team: &str, repository: &str) -> Vec<String> {
-    let wanted = repository.to_lowercase();
-
-    sections(team)
-        .into_iter()
-        .filter(|section| {
-            let lower = section.to_lowercase();
-            lower.match_indices(&wanted).any(|(at, _)| {
-                let mut after = lower[at + wanted.len()..].chars();
-                match after.next() {
-                    Some('-' | '_') => false,
-                    Some('.') => !after.next().is_some_and(char::is_alphanumeric),
-                    Some(c) => !c.is_alphanumeric(),
-                    None => true,
-                }
-            })
-        })
-        .take(PEOPLE)
-        .map(str::to_string)
-        .collect()
-}
-
-/// The `Source:` line of a counted profile, with a warning when it is old.
-fn provenance(text: &str, today: chrono::NaiveDate) -> Option<String> {
-    let source = text.lines().find(|line| line.starts_with("Source:"))?;
-
-    match profile::counted_on(text) {
-        Some(counted) if (today - counted).num_days() > STALE_PROFILE_DAYS => Some(format!(
-            "{source} That was {} days ago and may be out of date.",
-            (today - counted).num_days()
-        )),
-        _ => Some(source.to_string()),
-    }
-}
 
 /// The body of a draft Chief kept, without the heading it wrote above it.
 fn body_of(kept: &str) -> String {
@@ -569,33 +515,34 @@ async fn ask_model(
     push(&mut budget, "instructions", INSTRUCTIONS);
 
     // People, then writing style, then examples, then the item. See the module
-    // note: COSTA's order, kept after measuring; no order was detectably better.
-    if let Ok(team) = context.corpus.read(profile::TEAM_STRUCTURE).await {
-        let tied = people_for(&team, &pull_request.repository);
+    // note: the order was kept after measuring; no order was detectably better.
+    let people = facts::people_for(&context.pool, &pull_request.repository, PEOPLE as i64)
+        .await
+        .unwrap_or_default();
 
-        if !tied.is_empty() {
-            let mut block = String::from("## people on this repository\n");
-            if let Some(source) = provenance(&team, today) {
-                block.push_str(&source);
-                block.push('\n');
-            }
-            block.push_str(&tied.join("\n\n"));
-            push(&mut budget, "team", &crate::context::slim(&block));
+    if !people.is_empty() {
+        let mut block = String::from("## people who review your pull requests here\n");
+        for person in &people {
+            block.push_str(&facts::person_line(person, &pull_request.repository, today));
+            block.push('\n');
         }
+        push(&mut budget, "team", block.trim_end());
     }
 
-    if let Ok(text) = context.corpus.read(profile::WRITING_STYLE).await {
-        let slimmed = crate::context::slim(&text);
+    let style = facts::style(&context.pool).await.unwrap_or_default();
 
-        if !slimmed.trim().is_empty() {
-            let mut block = String::from("## style\n");
-            if let Some(source) = provenance(&text, today) {
-                block.push_str(&source);
-                block.push('\n');
-            }
-            block.push_str(&slimmed);
-            push(&mut budget, "style", &block);
+    if !style.is_empty() {
+        let mut block = String::from("## style\n");
+        if let Some(source) = facts::style_source(&style, today) {
+            block.push_str(&source);
+            block.push('\n');
         }
+        for row in &style {
+            block.push_str("- ");
+            block.push_str(&facts::style_line(row));
+            block.push('\n');
+        }
+        push(&mut budget, "style", block.trim_end());
     }
 
     let examples = examples_for(context, &pull_request.repository).await;
@@ -792,6 +739,37 @@ mod passes {
         )
     }
 
+    /// Teach the database things, as a recount would have.
+    async fn know(pool: &sqlx::SqlitePool, rows: Vec<facts::NewFact>) {
+        facts::recount(pool, &[], rows).await.expect("facts");
+    }
+
+    fn style_row(what: &str, value: &str, count: i64, total: i64) -> facts::NewFact {
+        facts::NewFact {
+            about: facts::YOU.to_string(),
+            what: what.to_string(),
+            scope: String::new(),
+            value: value.to_string(),
+            count,
+            total,
+            source: "your last 4 pull request descriptions".to_string(),
+            seen_on: chrono::Local::now().date_naive().to_string(),
+        }
+    }
+
+    fn reviewer(login: &str, repository: &str, count: i64) -> facts::NewFact {
+        facts::NewFact {
+            about: login.to_string(),
+            what: facts::REVIEWS.to_string(),
+            scope: repository.to_string(),
+            value: String::new(),
+            count,
+            total: 10,
+            source: "GitHub reviews on your pull requests".to_string(),
+            seen_on: chrono::Local::now().date_naive().to_string(),
+        }
+    }
+
     async fn context_for(
         github_host: &str,
         engine_host: &str,
@@ -824,13 +802,7 @@ mod passes {
             .ensure_shape()
             .await
             .expect("should create the shape");
-        corpus
-            .write(
-                profile::WRITING_STYLE,
-                "# Writing style\n\n- Greeting: opens with \"Hi\" (3 of 4).",
-            )
-            .await
-            .expect("should write a style");
+        know(&pool, vec![style_row(facts::GREETING, "Hi", 3, 4)]).await;
 
         let context = recipe::Context {
             pool,
@@ -1096,22 +1068,11 @@ mod passes {
         let (engine_host, engine) = serve(vec![("HTTP/1.1 200 OK", DRAFTED.to_string())]);
         let (context, _scratch) = context_for(&github_host, &engine_host, "order").await;
 
-        context
-            .corpus
-            .write(
-                profile::TEAM_STRUCTURE,
-                "# Team\n\n## Ana Silva\n\nReviews scottmallinson/chief.ai engine work.",
-            )
-            .await
-            .expect("write");
-        context
-            .corpus
-            .write(
-                profile::WRITING_STYLE,
-                "# Writing style\n\n- Short sentences.",
-            )
-            .await
-            .expect("write");
+        know(
+            &context.pool,
+            vec![reviewer("ana-silva", "scottmallinson/chief.ai", 6)],
+        )
+        .await;
 
         run_once(&context, &Attention::default())
             .await
@@ -1119,11 +1080,9 @@ mod passes {
 
         let sent = engine.await.expect("engine").join("");
         let team = sent
-            .find("Ana Silva")
+            .find("@ana-silva")
             .expect("the team should be in the prompt");
-        let style = sent
-            .find("Short sentences")
-            .expect("the style should be too");
+        let style = sent.find("opens with").expect("the style should be too");
         let item = sent.find("Stop a long answer").expect("and the item");
 
         // The shipped order. Who these people are frames how to address them;
@@ -1131,40 +1090,6 @@ mod passes {
         // arrives last.
         assert!(team < style, "org structure comes before writing style");
         assert!(style < item, "writing style comes before the item");
-    }
-
-    const TEAM: &str =
-        "# Team structure\n\nSource: meetings over the last 28 days, counted 2026-10-01.\n\n\
-## Priya Nair\n\nReviews acme/api.\n\n## Tomasz Wrona\n\nReviews acme/web.\n\n\
-## Dev Patel\n\nReviews acme/api-gateway.";
-
-    #[test]
-    fn carries_only_the_people_tied_to_the_repository() {
-        let tied = people_for(TEAM, "acme/api");
-
-        assert_eq!(tied.len(), 1, "{tied:?}");
-        assert!(tied[0].contains("Priya Nair"), "{tied:?}");
-        assert!(people_for(TEAM, "acme/billing").is_empty());
-    }
-
-    #[test]
-    fn flags_a_profile_counted_long_ago_and_not_a_recent_one() {
-        let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 10, d).expect("date");
-        let later = chrono::NaiveDate::from_ymd_opt(2027, 3, 1).expect("date");
-
-        assert!(
-            !provenance(TEAM, day(13))
-                .expect("source")
-                .contains("out of date"),
-            "a fortnight is not stale"
-        );
-        assert!(
-            provenance(TEAM, later)
-                .expect("source")
-                .contains("may be out of date"),
-            "five months is"
-        );
-        assert_eq!(provenance("# hand written", day(13)), None);
     }
 
     #[test]
@@ -1296,23 +1221,23 @@ mod passes {
         let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", open_prs(11))]);
         let (engine_host, engine) = serve(vec![("HTTP/1.1 200 OK", DRAFTED.to_string())]);
         let (context, _scratch) = context_for(&github_host, &engine_host, "tied").await;
-        context
-            .corpus
-            .write(
-                profile::TEAM_STRUCTURE,
-                "# Team\n\n## Ana Silva\n\nReviews scottmallinson/chief.ai.\n\n## Bo Chen\n\nReviews other/thing.",
-            )
-            .await
-            .expect("write");
+        know(
+            &context.pool,
+            vec![
+                reviewer("ana-silva", "scottmallinson/chief.ai", 6),
+                reviewer("bo-chen", "other/thing", 9),
+            ],
+        )
+        .await;
 
         run_once(&context, &Attention::default())
             .await
             .expect("run");
 
         let sent = engine.await.expect("engine").join("");
-        assert!(sent.contains("Ana Silva"), "{sent}");
+        assert!(sent.contains("@ana-silva"), "{sent}");
         assert!(
-            !sent.contains("Bo Chen"),
+            !sent.contains("bo-chen"),
             "an unrelated person is not sent: {sent}"
         );
     }
@@ -1448,10 +1373,10 @@ mod passes {
         let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", open_prs(11))]);
         let (engine_host, engine) = serve(Vec::<(&str, &str)>::new());
         let (context, _scratch) = context_for(&github_host, &engine_host, "bare").await;
-        for path in [profile::WRITING_STYLE, profile::TEAM_STRUCTURE] {
-            let starter = corpus::starter(path).expect("starter");
-            context.corpus.write(path, starter).await.expect("reset");
-        }
+        sqlx::query("DELETE FROM facts")
+            .execute(&context.pool)
+            .await
+            .expect("forget everything");
 
         let proposal = run_once(&context, &Attention::default())
             .await

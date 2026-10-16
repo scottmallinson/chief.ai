@@ -4,9 +4,9 @@ import { invoke } from '@tauri-apps/api/core';
 export interface ProfilePlan {
   /** What Chief would read, in the user's words rather than in API names. */
   reads: string[];
-  /** Which corpus files it would write. */
+  /** Which facts it would count. */
   writes: string[];
-  /** Files it would leave alone, because they are no longer Chief's starter. */
+  /** What it would leave as it is, and why. */
   keeps: string[];
 }
 
