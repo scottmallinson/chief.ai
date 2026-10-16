@@ -581,6 +581,59 @@ impl Client {
         Ok(items.iter().map(pull_request_from).collect())
     }
 
+    /// Who reviewed one pull request, as lower-case handles.
+    ///
+    /// Anyone who submitted a review counts once, whatever they said: a
+    /// comment-only review is still somebody who looked. Bots are dropped,
+    /// because a name a draft addresses must be a person. A review nobody has
+    /// submitted yet (`PENDING`) is not a review.
+    pub async fn reviewers(
+        &self,
+        token: &str,
+        repository: &str,
+        number: i64,
+    ) -> Result<Vec<String>, Error> {
+        let url = format!(
+            "{}/repos/{repository}/pulls/{number}/reviews",
+            self.api_host
+        );
+
+        let response = self
+            .http
+            .get(url)
+            .query(&[("per_page", "100")])
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+
+        let body: Value = self.read(response).await?;
+
+        let reviews = body
+            .as_array()
+            .ok_or_else(|| Error::Decode("the reviews response was not a list".to_string()))?;
+
+        let mut found: Vec<String> = Vec::new();
+
+        for review in reviews {
+            let login = review["user"]["login"].as_str().unwrap_or_default();
+            let is_bot = review["user"]["type"].as_str() == Some("Bot") || login.ends_with("[bot]");
+
+            if login.is_empty() || is_bot || review["state"].as_str() == Some("PENDING") {
+                continue;
+            }
+
+            let login = login.to_lowercase();
+            if !found.contains(&login) {
+                found.push(login);
+            }
+        }
+
+        Ok(found)
+    }
+
     /// Issues assigned to the user and still open.
     ///
     /// The other half of "waiting on me": a review request is somebody blocked

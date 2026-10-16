@@ -354,6 +354,42 @@ impl<'a> GithubSession<'a> {
             .await
     }
 
+    /// Who reviewed one pull request, renewing the credential the same way.
+    pub async fn reviewers(
+        &self,
+        repository: &str,
+        number: i64,
+    ) -> Result<Vec<String>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.reviewers(&token, repository, number).await
+            })
+            .await
+    }
+
+    /// The account's own handle, lower-case, read without recording anything.
+    pub async fn login(&self) -> Result<String, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(
+                token,
+                |token| async move { self.client.viewer(&token).await },
+            )
+            .await
+            .map(|login| login.to_lowercase())
+    }
+
     /// Who this account belongs to, recorded so the settings screen can say.
     pub async fn name_account(&self) -> Result<String, github::Error> {
         let token = self

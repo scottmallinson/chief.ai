@@ -11,9 +11,14 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 const plan = {
   reads: [
     'The descriptions you wrote on your last 20 pull requests',
+    'Who reviewed your last 30 pull requests (one request to GitHub for each)',
     'Who you met with over the last 28 days, and how often',
   ],
-  writes: ['context/agents/profile/writing_style.md', 'context/agents/org/team_structure.md'],
+  writes: [
+    'How you write: greeting, sign-off, length, emoji, spelling',
+    'Who reviews your pull requests, repository by repository',
+    'Who you meet with most',
+  ],
   keeps: [],
 };
 
@@ -46,19 +51,29 @@ describe('ProfileBootstrap', () => {
     ).toBeInTheDocument();
   });
 
-  it('names the files it would write', async () => {
+  it('says the cost of reading reviews before it is paid', async () => {
     backend();
 
     render(<ProfileBootstrap />);
 
-    expect(await screen.findByText('context/agents/profile/writing_style.md')).toBeInTheDocument();
+    expect(await screen.findByText(/one request to GitHub for each/)).toBeInTheDocument();
+  });
+
+  it('names the facts it would count', async () => {
+    backend();
+
+    render(<ProfileBootstrap />);
+
+    expect(
+      await screen.findByText('Who reviews your pull requests, repository by repository'),
+    ).toBeInTheDocument();
   });
 
   it('reads nothing until the user asks it to', async () => {
     backend();
 
     render(<ProfileBootstrap />);
-    await screen.findByRole('button', { name: 'Draft these from my work' });
+    await screen.findByRole('button', { name: 'Count these from my work' });
 
     expect(
       invoke.mock.calls.every(([command]) => command === 'profile_plan'),
@@ -68,58 +83,62 @@ describe('ProfileBootstrap', () => {
 
   it('seeds the profile when the user asks', async () => {
     backend({
-      bootstrap_profile: { written: ['context/agents/profile/writing_style.md'], kept: [] },
+      bootstrap_profile: { written: ['5 facts about how you write'], kept: [] },
     });
 
     render(<ProfileBootstrap />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Draft these from my work' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Count these from my work' }));
 
-    expect(await screen.findByText(/Drafted 1 file/)).toBeInTheDocument();
+    expect(await screen.findByText(/Counted 5 facts about how you write/)).toBeInTheDocument();
   });
 
-  it('says which files were left alone, and why', async () => {
+  it('says what was left alone, and why', async () => {
     backend({
-      profile_plan: { ...plan, writes: [], keeps: ['context/agents/profile/writing_style.md'] },
+      profile_plan: {
+        ...plan,
+        keeps: ['2 facts you changed or removed stay as you left them'],
+      },
     });
 
     render(<ProfileBootstrap />);
 
-    expect(
-      await screen.findByText(/You have edited these, so Chief will not touch them/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('Left as it is')).toBeInTheDocument();
+    expect(await screen.findByText(/2 facts you changed or removed/)).toBeInTheDocument();
   });
 
-  it('offers nothing to press when every file is the user’s', async () => {
+  it('offers nothing to press when there is nothing to count', async () => {
     backend({
-      profile_plan: { ...plan, writes: [], keeps: ['context/agents/profile/writing_style.md'] },
+      profile_plan: {
+        ...plan,
+        writes: [],
+        keeps: ['2 facts you changed or removed stay as you left them'],
+      },
     });
 
     render(<ProfileBootstrap />);
-    await screen.findByText(/You have edited these/);
+    await screen.findByText('Left as it is');
 
     expect(
-      screen.queryByRole('button', { name: 'Draft these from my work' }),
+      screen.queryByRole('button', { name: 'Count these from my work' }),
     ).not.toBeInTheDocument();
   });
 
   it('says so in words when there is nothing to learn from', async () => {
     backend({
-      bootstrap_profile: new Error('there is nothing to learn a writing style from yet'),
+      bootstrap_profile: new Error('there is nothing to learn from yet'),
     });
 
     render(<ProfileBootstrap />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Draft these from my work' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Count these from my work' }));
 
-    expect(
-      await screen.findByText(/nothing to learn a writing style from yet/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/nothing to learn from yet/)).toBeInTheDocument();
   });
 
   it('says it is working, and will not be asked twice', async () => {
     backend({ bootstrap_profile: new Promise(() => undefined) });
 
     render(<ProfileBootstrap />);
-    const draft = await screen.findByRole('button', { name: 'Draft these from my work' });
+    const draft = await screen.findByRole('button', { name: 'Count these from my work' });
     await userEvent.click(draft);
 
     expect(draft).toBeDisabled();

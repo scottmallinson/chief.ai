@@ -101,6 +101,7 @@ const KEEPS_RUNNING = { tray: true, keepRunning: true, trayName: 'system tray' }
 function answering(value: unknown, syncStates: unknown[] = [], registrations = BUILT_IN) {
   invoke.mockImplementation((command: string) => {
     if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+    if (command === 'list_facts') return Promise.resolve([]);
     if (command === 'sync_status') return Promise.resolve(syncStates);
     if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
     if (command === 'sign_in_registrations') return Promise.resolve(registrations);
@@ -177,6 +178,7 @@ describe('SettingsView', () => {
   it('carries the connection as state, not as an action', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'run_doctor') return Promise.resolve(report);
       if (command === 'corpus_location') return Promise.resolve(corpus);
       return Promise.resolve([]);
@@ -222,6 +224,7 @@ describe('SettingsView', () => {
   it('shows the device code and opens the browser', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
       // Never settles, so the waiting state stays on screen.
@@ -240,6 +243,7 @@ describe('SettingsView', () => {
   it('says so when the corpus folder is not there yet', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'corpus_location') {
         return Promise.resolve({ ...corpus, exists: false, files: 0 });
       }
@@ -262,6 +266,7 @@ describe('SettingsView', () => {
 
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(browserLogin);
       // Never settles, so the waiting state stays on screen.
@@ -285,6 +290,7 @@ describe('SettingsView', () => {
   it('reports the connection once the user finishes', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
       if (command === 'finish_login') return Promise.resolve(connected([octocat]));
@@ -301,6 +307,7 @@ describe('SettingsView', () => {
   it('surfaces a missing client id rather than failing silently', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([]);
       return Promise.reject(
         new Error('no GitHub client id is configured. Register an OAuth app...'),
@@ -316,6 +323,7 @@ describe('SettingsView', () => {
   it('lets a connected account be disconnected', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       return Promise.resolve(command === 'disconnect' ? [] : [octocat]);
     });
 
@@ -334,6 +342,7 @@ describe('SettingsView', () => {
   it('names the service it is signing in to', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
       return new Promise(() => {});
@@ -416,6 +425,7 @@ describe('SettingsView', () => {
     answering([octocat]);
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'sync_status') return Promise.resolve([]);
       if (command === 'account_data') return Promise.resolve({ entries: 0, proposals: 0 });
       if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
@@ -445,6 +455,7 @@ describe('SettingsView', () => {
   it('disconnects the account whose button was pressed', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([octocat, hubot]);
       if (command === 'account_data') return Promise.resolve({ entries: 3, proposals: 1 });
       return Promise.resolve([octocat]);
@@ -471,6 +482,7 @@ describe('SettingsView', () => {
   it('disconnects an account named in the same gesture', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([octocat, hubot]);
       if (command === 'label_account') {
         return Promise.resolve([{ ...octocat, label: 'Personal' }, hubot]);
@@ -496,6 +508,7 @@ describe('SettingsView', () => {
   it('disconnects one account while another is being renamed', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([octocat, hubot]);
       // Never settles: the write is still in flight when the click lands,
       // which is the whole of the race on a machine doing real work.
@@ -518,6 +531,7 @@ describe('SettingsView', () => {
   it('keeps the other account nameable while one rename is in flight', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([octocat, hubot]);
       if (command === 'label_account') return new Promise(() => {});
       return Promise.resolve([octocat, hubot]);
@@ -536,6 +550,7 @@ describe('SettingsView', () => {
   it('lets an abandoned sign-in be given up on', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([octocat]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
       // Rust polls until GitHub expires the code, which is fifteen minutes.
@@ -560,6 +575,7 @@ describe('SettingsView', () => {
 
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
       return new Promise((resolve) => {
@@ -604,6 +620,7 @@ describe('SettingsView', () => {
   it('says when adding an account signed in as the one already connected', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
       if (command === 'connections') return Promise.resolve([octocat]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
@@ -636,6 +653,7 @@ describe('SettingsView', () => {
   it('says nothing when reconnecting the account that asked to be reconnected', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
       if (command === 'connections') return Promise.resolve([octocat]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
@@ -664,6 +682,7 @@ describe('SettingsView', () => {
   it('says how long the code has left', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([]);
       if (command === 'start_login') return Promise.resolve(deviceLogin);
       return new Promise(() => {});
@@ -678,6 +697,7 @@ describe('SettingsView', () => {
   it('puts the stored name back when a rename is refused', async () => {
     invoke.mockImplementation((command: string) => {
       if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+      if (command === 'list_facts') return Promise.resolve([]);
       if (command === 'connections') return Promise.resolve([hubot]);
       if (command === 'label_account') return Promise.reject(new Error('the database is locked'));
       return Promise.resolve([hubot]);
@@ -717,6 +737,7 @@ describe('SettingsView', () => {
     function withData(entries: number, proposals: number) {
       invoke.mockImplementation((command: string) => {
         if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'list_facts') return Promise.resolve([]);
         if (command === 'sync_status') return Promise.resolve([]);
         if (command === 'account_data') return Promise.resolve({ entries, proposals });
 
@@ -796,6 +817,7 @@ describe('SettingsView', () => {
     it('still offers the disconnect when the counts cannot be read', async () => {
       invoke.mockImplementation((command: string) => {
         if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'list_facts') return Promise.resolve([]);
         if (command === 'sync_status') return Promise.resolve([]);
         if (command === 'account_data') return Promise.reject(new Error('the database is locked'));
 
@@ -915,6 +937,7 @@ describe('SettingsView', () => {
     it('survives an answer that is not a list of states', async () => {
       invoke.mockImplementation((command: string) => {
         if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'list_facts') return Promise.resolve([]);
         if (command === 'sync_status') return Promise.resolve({ nothing: 'like a state' });
 
         return Promise.resolve([octocat]);
@@ -935,6 +958,7 @@ describe('SettingsView', () => {
     it('still lets an account be managed when freshness cannot be read', async () => {
       invoke.mockImplementation((command: string) => {
         if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'list_facts') return Promise.resolve([]);
         if (command === 'sync_status') return Promise.reject(new Error('the database is locked'));
 
         return Promise.resolve([octocat]);
@@ -961,6 +985,7 @@ describe('SettingsView', () => {
     it('says on screen that Atlassian is connected read-only', async () => {
       invoke.mockImplementation((command: string) => {
         if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'list_facts') return Promise.resolve([]);
         return Promise.resolve([]);
       });
 
@@ -983,6 +1008,7 @@ describe('SettingsView', () => {
     it('says on screen that GitHub grants more than Chief uses', async () => {
       invoke.mockImplementation((command: string) => {
         if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'list_facts') return Promise.resolve([]);
         return Promise.resolve([]);
       });
 
@@ -1001,6 +1027,7 @@ describe('SettingsView', () => {
         }
         if (command === 'set_launch_at_login') return Promise.resolve(null);
         if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'list_facts') return Promise.resolve([]);
         if (command === 'sync_status') return Promise.resolve([]);
         if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
         if (command === 'window_behaviour') return Promise.resolve(behaviour);
