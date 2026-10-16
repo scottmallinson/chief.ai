@@ -30,7 +30,7 @@ import { scoreRunDir } from './score.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MODELS_DIR = path.join(ROOT, 'bench', '.models');
 const RESULTS = path.join(ROOT, 'bench-results');
-const FIXTURE_VERSION = 'v1';
+const FIXTURE_VERSION = 'v2';
 
 function options(argv) {
   const out = { judge: 'none', repeats: 5, maxSpend: 10 };
