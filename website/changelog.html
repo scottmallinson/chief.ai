@@ -103,15 +103,53 @@
         Every release of Chief since the first one. The list is written from the commits at release
         time rather than by hand, so it says what actually shipped — and a release only happens when
         something a person can download has changed. Version
-        <span data-version>0.10.0</span> is current.
+        <span data-version>0.11.0</span> is current.
       </p>
 
       <div class="changelog">
+        <section class="release" id="v0-11-0">
+          <div class="release-mark">
+            <p class="release-version">0.11.0</p>
+            <p class="release-date mono">2026-10-16</p>
+            <p class="release-latest">current release</p>
+          </div>
+          <div class="release-changes">
+            <div class="release-group">
+              <p class="micro">Features</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">cut an invented greeting name out of a draft instead of refusing it</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/60b526e1de4914baac2efc40cba5ce192087a041">60b526e</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">ground review-request drafts in the people and messages tied to the item</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/4ee67a0469d8d783fc8e6124a8fedb57dd26546a">4ee67a0</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">count the writing style instead of asking the model to describe it</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/eaa6aaed2c4a42cf495bffa92641c44792d8e0be">eaa6aae</a>
+                </li>
+              </ul>
+            </div>
+            <div class="release-group">
+              <p class="micro">Fixes</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">accept only names the draft was given, never ones found in a kept example</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/0d2c5bfe9dc201c0f12d703c6cb07f7bc4f20a44">0d2c5bf</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
         <section class="release" id="v0-10-0">
           <div class="release-mark">
             <p class="release-version">0.10.0</p>
             <p class="release-date mono">2026-10-06</p>
-            <p class="release-latest">current release</p>
           </div>
           <div class="release-changes">
             <div class="release-group">

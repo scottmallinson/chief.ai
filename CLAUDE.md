@@ -506,10 +506,15 @@ a short message asking for a review.
   `never_reaches_the_network_to_draft` asserts every request the pass makes to GitHub is a `GET`,
   having first asserted the request list is not empty — a loop over nothing passes without checking
   anything, which would be a broken stub dressed up as proof.
-- **The prompt is assembled in COSTA's order, literally**: org structure, then writing style, then
-  the item. Who these people are frames how to address them, how the user writes frames the words,
-  and the thing being written about arrives last. `reads_the_team_and_the_style_before_the_item`
-  asserts the three appear in that order in what was actually sent.
+- **The prompt runs people, then writing style, then examples, then the item**: COSTA's order, with
+  the user's own past messages added between style and item. Who these people are frames how to
+  address them, how the user writes frames the words, and the thing being written about arrives
+  last. `reads_the_team_and_the_style_before_the_item` asserts the three appear in that order in
+  what was actually sent. The order is kept because it was measured: four orders on six models
+  were within noise of each other, and the two rerun once names were checked against the people
+  the draft was given (this order and item-first) still were, so it is a convention and not a
+  requirement. What did matter was the check: it
+  accepts only names from the people block and never ones a kept example happened to contain.
 - **One item per pass.** A draft is a model call, and a machine that woke to nine stale pull
   requests would spend minutes of engine on work nobody asked for while the user waits behind it.
   The pass yields to `Attention` between accounts and between items, like the daemon's own.

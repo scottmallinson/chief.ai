@@ -1,7 +1,7 @@
 {
   "name": "Chief",
   "private": true,
-  "version": "0.10.0",
+  "version": "0.11.0",
   "type": "module",
   "description": "A privacy-first, 100% on-device AI Chief of Staff desktop application.",
   "license": "MIT",
@@ -38,6 +38,7 @@
     "rust:lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
     "runbook": "cargo test --manifest-path src-tauri/Cargo.toml --lib scenarios && vitest run src/hooks/use-brief.test.ts",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --all-features",
+    "bench": "node bench/run.mjs",
     "fix": "pnpm format && pnpm lint:fix && pnpm rust:fmt",
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm check:migrations && pnpm check:changelog && pnpm test",
     "verify:commits": "commitlint --from origin/main --to HEAD",

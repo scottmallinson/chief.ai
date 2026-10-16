@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.0 (2026-10-16)
+
+### Features
+
+- **agent:** cut an invented greeting name out of a draft instead of refusing it ([60b526e](https://github.com/scottmallinson/chief.ai/commit/60b526e1de4914baac2efc40cba5ce192087a041))
+- **agent:** ground review-request drafts in the people and messages tied to the item ([4ee67a0](https://github.com/scottmallinson/chief.ai/commit/4ee67a0469d8d783fc8e6124a8fedb57dd26546a))
+- **agent:** count the writing style instead of asking the model to describe it ([eaa6aae](https://github.com/scottmallinson/chief.ai/commit/eaa6aaed2c4a42cf495bffa92641c44792d8e0be))
+
+### Fixes
+
+- **agent:** accept only names the draft was given, never ones found in a kept example ([0d2c5bf](https://github.com/scottmallinson/chief.ai/commit/0d2c5bfe9dc201c0f12d703c6cb07f7bc4f20a44))
+
 ## 0.10.0 (2026-10-06)
 
 ### Features
