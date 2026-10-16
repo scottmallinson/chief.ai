@@ -490,6 +490,16 @@ const FIXTURES: &[(&str, &str, &str)] = &[
         "tools",
         "tomorrow's meetings: fetch_calendar, tomorrow",
     ),
+    (
+        "tool-calendar-unconnected",
+        "tools",
+        "tomorrow's meetings with no Outlook connected: say so, invent nothing",
+    ),
+    (
+        "tool-mail-unconnected",
+        "tools",
+        "today's email with no Outlook connected: say so, invent nothing",
+    ),
     ("chat-no-tool", "chat", "a question no tool fits"),
     (
         "draft-review-known",
@@ -963,6 +973,41 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
                     "must": ["Quarterly planning", "1:1 with Priya"],
                     "order": ["Quarterly planning", "1:1 with Priya"],
                 }),
+                routed,
+            }
+        }
+
+        // GitHub is connected and Outlook is not, so the honest answer to a
+        // calendar or mail question is that it is not connected. Before the
+        // tool list was narrowed the model was handed the tool and met the
+        // error; after, it has no tool and is told in the prompt. Either way it
+        // must say so and name nothing: no meeting, no sender, no time.
+        "tool-calendar-unconnected" | "tool-mail-unconnected" => {
+            let github = github_with(Github::default()).await;
+            let world = world(Some(&github.host), None, NOWHERE).await;
+            let context = tools::Context {
+                pool: world.ctx.pool.clone(),
+                github: world.ctx.github.clone(),
+                microsoft: world.ctx.microsoft.clone(),
+            };
+            let client = llama::Client::with_base_url(engine_url).expect("client");
+            let question = if id == "tool-calendar-unconnected" {
+                "What meetings do I have tomorrow?"
+            } else {
+                "Has anyone emailed me today?"
+            };
+
+            let routed = intent::route(question).is_some();
+            let answer = if routed {
+                Err("routed".to_string())
+            } else {
+                agent::answer_for_bench(&client, &context, tier, question)
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            Played {
+                answer,
+                key: json!({ "must": ["connect"], "forbid_times": true }),
                 routed,
             }
         }
