@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.0 (2026-10-16)
+
+### Features
+
+- **daemon:** recount the facts once a day after the first count ([cfe4b16](https://github.com/scottmallinson/chief.ai/commit/cfe4b1604482dd6dfe9c07c5bb80e921459e2371))
+- **agent:** draft review requests from counted facts the user can edit ([920b15c](https://github.com/scottmallinson/chief.ai/commit/920b15c632fca09f66b1dcc9cae5662b487a7e51))
+
 ## 0.12.1 (2026-10-16)
 
 ### Fixes
