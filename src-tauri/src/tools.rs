@@ -209,6 +209,70 @@ pub fn catalog() -> Vec<Tool> {
     ]
 }
 
+/// A tool call the model wrote out as its answer, rather than the engine
+/// recognising it as one.
+///
+/// Llama 3.2 writes a call as a bare object, `{"name": "...", "parameters":
+/// {...}}`, with no wrapper tag. The server's parser does not always catch that
+/// form, so the reply arrives as plain content and the loop took it for the
+/// answer: Windows showed the JSON itself. Measured on Llama 3.2 3B, which is
+/// what that machine runs.
+///
+/// Only a reply that is *entirely* one such object counts, optionally inside a
+/// code fence or `<tool_call>` tags. A sentence that merely contains braces is
+/// an answer. Returns the name and the arguments as written, for any name: the
+/// caller decides whether it is a tool Chief has.
+fn written_call(content: &str) -> Option<(String, Value)> {
+    let mut text = content.trim();
+
+    for (open, close) in [
+        ("<tool_call>", "</tool_call>"),
+        ("```json", "```"),
+        ("```", "```"),
+    ] {
+        if let Some(inner) = text.strip_prefix(open) {
+            text = inner.strip_suffix(close).unwrap_or(inner).trim();
+            break;
+        }
+    }
+
+    let object: Value = serde_json::from_str(text).ok()?;
+    let name = object.get("name")?.as_str()?.to_string();
+
+    // `name` plus an arguments field is what makes it a call. A bare
+    // `{"name": "Sam"}` is somebody's data.
+    let arguments = object
+        .get("parameters")
+        .or_else(|| object.get("arguments"))?
+        .clone();
+
+    Some((name, arguments))
+}
+
+/// The call a reply is made of, when it is one of Chief's own tools written out
+/// as text. `id` is what the result will be returned under.
+pub fn call_in_text(content: &str, id: &str) -> Option<ToolCall> {
+    let (name, arguments) = written_call(content)?;
+
+    if ![FETCH_GITHUB_PRS, FETCH_CALENDAR, FETCH_RECENT_MAIL].contains(&name.as_str()) {
+        return None;
+    }
+
+    Some(ToolCall::new(
+        id,
+        ToolCallFunction {
+            name,
+            arguments: arguments.to_string(),
+        },
+    ))
+}
+
+/// Whether a reply is a tool call written out as text, of any name — which is
+/// never something to show a person.
+pub fn is_call_in_text(content: &str) -> bool {
+    written_call(content).is_some()
+}
+
 /// Run the tool the model asked for and return the JSON we feed back to it.
 ///
 /// A failure is reported to the model rather than to the user: it gets an
@@ -948,5 +1012,44 @@ mod tests {
                 .is_some_and(|message| message.contains("no tool called")),
             "got {result}"
         );
+    }
+
+    #[test]
+    fn reads_the_call_llama_writes_as_text() {
+        let call = call_in_text(
+            r#"{"name": "fetch_calendar", "parameters": {"range": "week"}}"#,
+            "t",
+        )
+        .expect("a bare call should be read");
+        assert_eq!(call.function.name, "fetch_calendar");
+        assert_eq!(call.function.arguments, r#"{"range":"week"}"#);
+
+        assert!(call_in_text(
+            "```json\n{\"name\": \"fetch_recent_mail\", \"arguments\": {}}\n```",
+            "t"
+        )
+        .is_some());
+        assert!(call_in_text(
+            "<tool_call>{\"name\": \"fetch_recent_mail\", \"arguments\": {}}</tool_call>",
+            "t"
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn does_not_mistake_prose_or_data_for_a_call() {
+        for text in [
+            "I will call {\"name\": \"fetch_calendar\", \"parameters\": {}} for you.",
+            r#"{"name": "Sam"}"#,
+            "Hello",
+            "",
+        ] {
+            assert!(!is_call_in_text(text), "{text:?}");
+        }
+        // A tool Chief does not have is recognised as a call, and not run.
+        assert!(is_call_in_text(
+            r#"{"name": "fetch_weather", "parameters": {}}"#
+        ));
+        assert!(call_in_text(r#"{"name": "fetch_weather", "parameters": {}}"#, "t").is_none());
     }
 }
