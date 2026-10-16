@@ -10,11 +10,14 @@
 //! one — the thing you would have written yourself on Friday afternoon, ready
 //! on Friday morning.
 //!
-//! The prompt is assembled in COSTA's order, literally: **the people tied to the
-//! item, then writing style, then examples, then the item**. Who these people are frames how to address
-//! them, how the user writes frames the words, and only then does the thing
-//! being written about arrive. Reversing it produces a draft about a pull
-//! request that happens to mention a person.
+//! The prompt runs **the people tied to the item, then writing style, then
+//! examples, then the item**: the order COSTA uses, with the user's own past
+//! messages added between style and item. Who these people are frames how to
+//! address them, how the user writes frames the words, and only then does the
+//! thing being written about arrive. It is kept because it was measured, not
+//! because it is required: four orders were run on six models, and the two that
+//! were rerun once names were checked against what the draft was given were not
+//! detectably different.
 
 use crate::context::Budget;
 use crate::corpus;
@@ -244,7 +247,7 @@ enum Written {
     Model(String),
 }
 
-/// The one model call, assembled in COSTA's order, then checked.
+/// The one model call: people, style, examples, item, then checked.
 async fn compose(
     context: &recipe::Context,
     pull_request: &github::PullRequest,
@@ -566,7 +569,7 @@ async fn ask_model(
     push(&mut budget, "instructions", INSTRUCTIONS);
 
     // People, then writing style, then examples, then the item. See the module
-    // note: the order is COSTA's and it is load-bearing, not decorative.
+    // note: COSTA's order, kept after measuring; no order was detectably better.
     if let Ok(team) = context.corpus.read(profile::TEAM_STRUCTURE).await {
         let tied = people_for(&team, &pull_request.repository);
 
@@ -1123,9 +1126,9 @@ mod passes {
             .expect("the style should be too");
         let item = sent.find("Stop a long answer").expect("and the item");
 
-        // COSTA's ordering, literally. Who these people are frames how to
-        // address them; how the user writes frames the words; the thing being
-        // written about arrives last.
+        // The shipped order. Who these people are frames how to address them;
+        // how the user writes frames the words; the thing being written about
+        // arrives last.
         assert!(team < style, "org structure comes before writing style");
         assert!(style < item, "writing style comes before the item");
     }
