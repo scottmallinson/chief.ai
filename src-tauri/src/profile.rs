@@ -33,6 +33,7 @@ use crate::github;
 use crate::llama;
 use crate::recipe;
 use crate::session::{GithubSession, OutlookSession};
+use crate::settings;
 
 /// The two corpus files drafting used to read. Still the user's, still read by
 /// briefs; named here so the settings card can say drafts no longer use them.
@@ -47,7 +48,7 @@ const SAMPLE: u8 = 20;
 /// How many of the user's pull requests have their reviews read.
 ///
 /// One GitHub request each, so this is the cost of the step: thirty requests,
-/// once, when the user asks.
+/// once when the user asks, and then once a day.
 const REVIEWED: u8 = 30;
 
 /// The most reviewers kept per repository. A draft takes fewer than this.
@@ -237,6 +238,68 @@ pub async fn bootstrap(context: &recipe::Context) -> Result<Report, Error> {
     }
 
     Ok(report)
+}
+
+/// Where the date of the last automatic recount is kept.
+const RECOUNTED_ON: &str = "facts.recounted_on";
+
+/// Recount once a day, so what Chief knows about the user moves with their work.
+///
+/// Only after the user has counted once themselves: rule one of this module is
+/// that the first reading of their work is something they asked for.
+///
+/// Asking "has today been counted" rather than keeping an interval is correct
+/// across sleep and a machine that was off, for the reason the brief does the
+/// same. It is the same arithmetic as the button, so it replaces counted rows
+/// only and a fact the user wrote or deleted is left alone. The date is
+/// recorded only on success: a pass that found GitHub unreachable tries again
+/// next pass rather than waiting a day.
+///
+/// Returns whether a recount ran.
+pub async fn recount_if_due(
+    context: &recipe::Context,
+    attention: &crate::agent::Attention,
+) -> bool {
+    // Only for someone who has already pressed the button. The first count is
+    // the consent; this keeps it current and never starts it.
+    let begun: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM facts WHERE origin IN ('counted', 'hidden')")
+            .fetch_one(&context.pool)
+            .await
+            .unwrap_or(0);
+    if begun == 0 {
+        return false;
+    }
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    let last = settings::get(&context.pool, RECOUNTED_ON)
+        .await
+        .unwrap_or_default();
+    if last.as_deref() == Some(today.as_str()) {
+        return false;
+    }
+
+    // A recount makes up to thirty GitHub requests and no model call, but a
+    // person waiting on an answer still outranks it.
+    if attention.is_engaged() {
+        return false;
+    }
+
+    match bootstrap(context).await {
+        Ok(_) => {
+            if let Err(error) = settings::set(&context.pool, RECOUNTED_ON, &today).await {
+                eprintln!("could not record the recount: {error}");
+            }
+            true
+        }
+        // Nothing connected yet, which is not a failure and costs nothing.
+        Err(Error::NothingToLearnFrom) => false,
+        Err(error) => {
+            eprintln!("no recount this pass: {error}");
+            false
+        }
+    }
 }
 
 /// The user's own prose, as a sample to count.
@@ -742,6 +805,114 @@ mod tests {
             context.corpus.read(WRITING_STYLE).await.expect("read"),
             mine,
             "briefs still read this file; counting is not allowed near it"
+        );
+    }
+
+    // ---- keeping up with the day ----
+
+    /// The state of somebody who has pressed the button once.
+    async fn counted_once(context: &recipe::Context) {
+        let row = NewFact {
+            about: "you".to_string(),
+            what: facts::GREETING.to_string(),
+            scope: String::new(),
+            value: "Hi".to_string(),
+            count: 3,
+            total: 4,
+            source: "test".to_string(),
+            seen_on: "2000-01-01".to_string(),
+        };
+        facts::recount(&context.pool, &[facts::GREETING], vec![row])
+            .await
+            .expect("seed");
+    }
+
+    fn full_reply() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", OWN_LOGIN),
+            ("HTTP/1.1 200 OK", WROTE),
+            ("HTTP/1.1 200 OK", REVIEWS_44),
+            ("HTTP/1.1 200 OK", REVIEWS_43),
+        ]
+    }
+
+    #[tokio::test]
+    async fn recounts_when_yesterdays_count_is_the_latest() {
+        let (github_host, github) = serve(full_reply());
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "daily").await;
+        counted_once(&context).await;
+        settings::set(&context.pool, RECOUNTED_ON, "2000-01-01")
+            .await
+            .expect("set");
+        let attention = crate::agent::Attention::default();
+
+        assert!(recount_if_due(&context, &attention).await);
+
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(
+            settings::get(&context.pool, RECOUNTED_ON)
+                .await
+                .expect("get")
+                .as_deref(),
+            Some(today.as_str()),
+            "the day is recorded so the next pass knows"
+        );
+        github.await.expect("every reply should have been used");
+    }
+
+    #[tokio::test]
+    async fn does_not_recount_twice_in_a_day() {
+        let (github_host, github) = serve(full_reply());
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "twice").await;
+        counted_once(&context).await;
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        settings::set(&context.pool, RECOUNTED_ON, &today)
+            .await
+            .expect("set");
+        let attention = crate::agent::Attention::default();
+
+        assert!(!recount_if_due(&context, &attention).await);
+
+        // The stub is still waiting for its first request. A recount that ran
+        // would have used the replies and finished.
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(300), github).await;
+        assert!(waited.is_err(), "a second recount reached GitHub");
+    }
+
+    #[tokio::test]
+    async fn never_starts_counting_for_someone_who_has_not_asked() {
+        let (github_host, github) = serve(full_reply());
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "unasked").await;
+        let attention = crate::agent::Attention::default();
+
+        assert!(!recount_if_due(&context, &attention).await);
+
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(300), github).await;
+        assert!(
+            waited.is_err(),
+            "the first reading of their work is theirs to start"
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_recount_while_somebody_is_waiting_on_an_answer() {
+        let (github_host, github) = serve(full_reply());
+        let (engine_host, _engine) = serve(Vec::<(&str, &str)>::new());
+        let (context, _scratch) = context_for(&github_host, &engine_host, "waiting").await;
+        let attention = crate::agent::Attention::default();
+        counted_once(&context).await;
+        let _waiting = attention.begin();
+
+        assert!(!recount_if_due(&context, &attention).await);
+
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(300), github).await;
+        assert!(
+            waited.is_err(),
+            "a person's question outranks a background count"
         );
     }
 

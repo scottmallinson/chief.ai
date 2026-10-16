@@ -564,9 +564,16 @@ when it had gone out of date.
 - **The key is lower-case handle and lower-case `owner/name`.** `acme/api` never matches
   `acme/api-gateway`. The same person under another tool's name is a different row until the alias
   work lands; two rows for one human is harmless, one row for two humans names the wrong person.
-- **Refreshing is manual for now.** Every counted row carries its date, and a line older than 90
-  days says it may be out of date in the prompt. A background recount would break the rule above, so
-  it waits for a decision.
+- **Recounted once a day by the daemon, so the facts move with the work.** `profile::recount_if_due`
+  asks "has today been counted" (`facts.recounted_on` in `settings`) rather than keeping an interval,
+  for the reason the brief does: it is correct across sleep and a machine that was off. It is the
+  same arithmetic as the button, so it replaces counted rows only; it steps aside while a question
+  is in flight; and the day is recorded only on success, so an unreachable GitHub is retried next
+  pass. It never _starts_ counting: it runs only once the user has pressed the button themselves, so
+  rule one of `profile.rs` (the first reading of their work is theirs to ask for) still holds. The
+  three guard tests (`does_not_recount_twice_in_a_day`, `never_starts_counting_for_someone_who_has_not_asked`,
+  `does_not_recount_while_somebody_is_waiting_on_an_answer`) were each proven to fail with their check
+  disabled. The button stays for counting on demand. A line older than 90 days still says it may be out of date.
 
 `github::PullRequest` carries `body` for style counting and nothing else. It is
 `#[serde(skip_serializing)]` so it cannot leak into `as_tool_entries` — a list of pull request
