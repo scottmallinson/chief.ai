@@ -15,7 +15,7 @@
 
 /* The released version. Rewritten by scripts/release.mjs — keep the shape of
    this line intact, it is matched by a regular expression. */
-const VERSION = '0.13.0';
+const VERSION = '0.13.1';
 
 const REPO = 'scottmallinson/chief.ai';
 

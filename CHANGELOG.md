@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.1 (2026-10-16)
+
+### Fixes
+
+- **agent:** run a tool call the model writes as text and block answers that point at nothing ([e798eb6](https://github.com/scottmallinson/chief.ai/commit/e798eb6ba127f55fa92c2038f799466ee01a33a0))
+
 ## 0.13.0 (2026-10-16)
 
 ### Features
