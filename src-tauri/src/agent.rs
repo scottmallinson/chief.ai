@@ -1219,7 +1219,7 @@ mod orchestration_tests {
                             "type": "function",
                             "function": {
                                 "name": "fetch_github_prs",
-                                "arguments": "{\"state\":\"open\"}",
+                                "arguments": "{\"state\":\"open\",\"whose\":\"mine\"}",
                             },
                         }],
                     },
