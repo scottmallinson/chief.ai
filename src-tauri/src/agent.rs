@@ -387,7 +387,11 @@ where
     // the model made of it — see the retry below.
     let mut offer_tools = offer_tools_at_first;
 
-    for _ in 0..MAX_TOOL_ROUNDS {
+    // Whether any tool actually ran for this answer. An answer that points at
+    // results is only believed if this is true.
+    let mut ran_a_tool = false;
+
+    for round in 0..MAX_TOOL_ROUNDS {
         let request = ChatRequest::new(model, messages.clone());
         let request = if offer_tools {
             request.with_tools(catalog.clone())
@@ -405,7 +409,7 @@ where
             })
             .await;
 
-        let reply = match outcome {
+        let mut reply = match outcome {
             Ok(reply) => reply,
             // A smaller model offered tools will sometimes answer a question no
             // tool fits by emitting several malformed calls at once, which the
@@ -440,8 +444,18 @@ where
             Err(error) => return Err(error.into()),
         };
 
+        // A model that writes its call out as text instead of making it. The
+        // engine did not recognise it, so it arrived as the answer; run it as
+        // the call it was, rather than showing the JSON to the user.
+        if reply.tool_calls.is_empty() && offer_tools {
+            if let Some(call) = tools::call_in_text(&reply.content, &format!("text_call_{round}")) {
+                reply.content.clear();
+                reply.tool_calls = vec![call];
+            }
+        }
+
         if reply.tool_calls.is_empty() {
-            return Ok(reply.content);
+            return Ok(vetted(reply.content, offer_tools_at_first, ran_a_tool));
         }
 
         // Some models narrate before they decide to look something up. That
@@ -461,6 +475,7 @@ where
             });
 
             let result = tools::dispatch(context, call).await;
+            ran_a_tool = true;
 
             // Tool output is prompt, and it is the least bounded thing that
             // becomes prompt: twenty-five pull requests of JSON took one
@@ -498,7 +513,65 @@ where
 
     let _ = shown;
 
-    Ok(reply.content)
+    Ok(vetted(reply.content, offer_tools_at_first, ran_a_tool))
+}
+
+/// What is said when an answer cannot be trusted to reach the screen.
+const COULD_NOT_LOOK_UP: &str = "\
+I couldn't look that up this time, so I have nothing reliable to show you. \
+Try asking again, or ask for something specific, such as \"What is waiting on me?\"";
+
+/// Whether an answer says it is giving a list and gives none.
+///
+/// Measured on Llama 3.2: after a tool call that was never run, follow-ups were
+/// answered "This is the list of pull requests the user should focus on next."
+/// with no list under it. Deliberately narrow: a fixed set of phrases that point
+/// at a list, and no line anywhere that looks like an item.
+fn points_at_a_list_it_does_not_have(answer: &str) -> bool {
+    let lower = answer.to_lowercase();
+
+    let points = [
+        "this is the list",
+        "here is the list",
+        "here's the list",
+        "this list of",
+        "the list below",
+        "here are the",
+        "below is",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase));
+
+    let has_items = answer.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("- ")
+            || line.starts_with("* ")
+            || line.starts_with("• ")
+            || line
+                .split_once(['.', ')'])
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    });
+
+    points && !has_items
+}
+
+/// The last check before an answer reaches the user. Invented or unsupported
+/// content is blocked, not warned about: a tool call shown as text, or an answer
+/// that points at results no tool produced.
+///
+/// `offered` is whether tools were on offer from the start — an answer written
+/// from facts already in the prompt (`offered` false) has its results in front of
+/// it, so only the first check applies.
+fn vetted(answer: String, offered: bool, ran_a_tool: bool) -> String {
+    if tools::is_call_in_text(&answer) {
+        return COULD_NOT_LOOK_UP.to_string();
+    }
+
+    if offered && !ran_a_tool && points_at_a_list_it_does_not_have(&answer) {
+        return COULD_NOT_LOOK_UP.to_string();
+    }
+
+    answer
 }
 
 /// An answer, and the line under it saying where it came from.
@@ -1481,6 +1554,155 @@ mod orchestration_tests {
         assert!(
             whole.contains("truncated"),
             "a cut result must say it was cut, or the model answers as though it read all of it"
+        );
+    }
+
+    /// A streamed reply that is only the text of a call, as Llama 3.2 writes it.
+    fn writes_a_call_as_text(call: &str) -> String {
+        events(&[
+            json!({ "choices": [{ "index": 0, "delta": { "content": call } }] }),
+            json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }] }),
+        ])
+    }
+
+    #[tokio::test]
+    async fn runs_a_call_the_model_wrote_out_as_text() {
+        let (base_url, server) = serve(vec![
+            (
+                "HTTP/1.1 200 OK",
+                writes_a_call_as_text(
+                    r#"{"name": "fetch_github_prs", "parameters": {"state": "open", "whose": "mine"}}"#,
+                ),
+            ),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = context_connected_to(&github_host).await;
+
+        let mut updates = Vec::new();
+        let answer = respond(
+            &client,
+            &context,
+            MODEL,
+            asked("Prioritise the PRs I should focus on next"),
+            |update| updates.push(update),
+        )
+        .await
+        .expect("the stub should answer");
+
+        assert_eq!(answer, ANSWER, "the JSON must not be the answer");
+        assert!(
+            updates.contains(&Update::Restart),
+            "the JSON already streamed to the window must be taken back: {updates:?}"
+        );
+
+        let requests = server.await.expect("the stub should finish");
+        let messages = body_of(&requests[1])["messages"].clone();
+        assert_eq!(
+            messages[3]["role"],
+            json!("tool"),
+            "the call should have run"
+        );
+        github_server.await.expect("GitHub should have been asked");
+    }
+
+    #[tokio::test]
+    async fn an_invalid_argument_in_a_written_call_goes_back_to_the_model() {
+        let (base_url, server) = serve(vec![
+            (
+                "HTTP/1.1 200 OK",
+                writes_a_call_as_text(
+                    r#"{"name": "fetch_calendar", "parameters": {"range": "connect"}}"#,
+                ),
+            ),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("127.0.0.1:1").await;
+
+        respond(&client, &context, MODEL, asked("What is on today?"), |_| {})
+            .await
+            .expect("the stub should answer");
+
+        let requests = server.await.expect("the stub should finish");
+        let messages = body_of(&requests[1])["messages"].clone();
+        let result = messages[3]["content"].as_str().expect("tool content");
+        assert!(
+            result.contains("error") && result.contains("connect"),
+            "the model should be told the value was wrong: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn never_shows_a_tool_call_it_cannot_run() {
+        // Tools not offered, so the call cannot be run; showing it is the
+        // other way to get it wrong.
+        let (base_url, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            writes_a_call_as_text(r#"{"name": "fetch_weather", "parameters": {}}"#),
+        )]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("127.0.0.1:1").await;
+
+        let answer = respond(&client, &context, MODEL, asked("Will it rain?"), |_| {})
+            .await
+            .expect("the stub should answer");
+
+        assert_eq!(answer, COULD_NOT_LOOK_UP);
+        server.await.expect("the stub should finish");
+    }
+
+    #[tokio::test]
+    async fn blocks_an_answer_that_points_at_a_list_no_tool_produced() {
+        let claims = events(&[
+            json!({ "choices": [{ "index": 0, "delta": { "content":
+                "This is the list of pull requests the user should focus on next." } }] }),
+            json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }] }),
+        ]);
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", claims)]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let context = context_connected_to("127.0.0.1:1").await;
+
+        let answer = respond(
+            &client,
+            &context,
+            MODEL,
+            asked("Verify you returned them"),
+            |_| {},
+        )
+        .await
+        .expect("the stub should answer");
+
+        assert_eq!(answer, COULD_NOT_LOOK_UP);
+        server.await.expect("the stub should finish");
+    }
+
+    #[test]
+    fn the_list_check_leaves_real_answers_alone() {
+        assert!(points_at_a_list_it_does_not_have("Here are the PRs."));
+        assert!(!points_at_a_list_it_does_not_have(
+            "Here are the PRs:\n- #12 Fix the thing\n- #13 Add the other"
+        ));
+        assert!(!points_at_a_list_it_does_not_have(
+            "Here is the list:\n1. First\n2. Second"
+        ));
+        assert!(!points_at_a_list_it_does_not_have(
+            "One pull request is waiting."
+        ));
+        assert!(!points_at_a_list_it_does_not_have(
+            "Why did the chicken cross the road?"
+        ));
+        // A tool-backed answer is never second-guessed.
+        assert_eq!(
+            vetted("Here are the PRs.".into(), true, true),
+            "Here are the PRs."
+        );
+        // Nor one written from facts already in the prompt.
+        assert_eq!(
+            vetted("Here are the PRs.".into(), false, false),
+            "Here are the PRs."
         );
     }
 
