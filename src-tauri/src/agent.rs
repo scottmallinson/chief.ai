@@ -161,7 +161,8 @@ a service is not connected, or fails, say exactly that and name what would fix i
 Never put a placeholder, an example or a plausible-sounding name, meeting, pull
 request or date in place of one you were actually given.
 
-Answer in a few sentences, or a short list. Prefer specifics over generalities.";
+Answer in a few sentences, or a short list. Prefer specifics over generalities.
+Name each pull request, meeting or message by its title, not by its number alone.";
 
 /// One turn of the conversation as the UI holds it.
 #[derive(Debug, Clone, Deserialize)]
