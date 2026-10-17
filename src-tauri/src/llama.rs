@@ -704,6 +704,72 @@ impl Client {
         }
     }
 
+    /// Embed `inputs` with an embedding model served by `llama-server
+    /// --embedding`, one vector per input, in the order they were sent.
+    ///
+    /// Only the router uses this. It goes through the same loopback-only client
+    /// as chat, so what is embedded cannot leave the machine either.
+    pub async fn embed(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, Error> {
+        let url = self.endpoint("/v1/embeddings")?;
+
+        let response = self
+            .http
+            .post(url)
+            .json(&serde_json::json!({ "model": "embedding", "input": inputs }))
+            .send()
+            .await
+            .map_err(|error| self.transport_error(error))?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|error| Error::Decode(error.to_string()))?;
+
+        if !status.is_success() {
+            return Err(if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                Error::Loading
+            } else {
+                Error::Status {
+                    status: status.as_u16(),
+                    body,
+                }
+            });
+        }
+
+        #[derive(Deserialize)]
+        struct Embedding {
+            #[serde(default)]
+            index: usize,
+            embedding: Vec<f32>,
+        }
+
+        #[derive(Deserialize)]
+        struct Embeddings {
+            data: Vec<Embedding>,
+        }
+
+        let mut parsed: Embeddings = serde_json::from_str(&body)
+            .map_err(|error| Error::Decode(format!("{error}; response body: {body}")))?;
+
+        // The server numbers each vector; do not rely on it answering in order.
+        parsed.data.sort_by_key(|entry| entry.index);
+
+        if parsed.data.len() != inputs.len() {
+            return Err(Error::Decode(format!(
+                "asked for {} embeddings and got {}",
+                inputs.len(),
+                parsed.data.len()
+            )));
+        }
+
+        Ok(parsed
+            .data
+            .into_iter()
+            .map(|entry| entry.embedding)
+            .collect())
+    }
+
     /// Post a chat request and hand back the response once it is known to be
     /// good, so both the buffered and the streamed path fail the same way.
     async fn ask(&self, request: &ChatRequest, stream: bool) -> Result<reqwest::Response, Error> {

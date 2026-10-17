@@ -209,6 +209,67 @@ pub fn catalog() -> Vec<Tool> {
     ]
 }
 
+/// The reads that answer a question routed to `source`, each with what it is
+/// called in the material the model is shown.
+///
+/// **Broader than a model would ask for.** A model choosing its own call picks
+/// `merged` for "what did I ship" and `tomorrow` for "what is on tomorrow";
+/// with the source chosen by the router there is nobody to pick, so the
+/// arguments are the widest ones the tool accepts and the model reads the part
+/// it needs. That costs prompt, which is the first thing the experiment
+/// measures. Calendar takes the week for the same reason, and the clock is
+/// already in the prompt to say which day is which.
+pub fn calls_for(source: crate::router::Source) -> Vec<(&'static str, ToolCall)> {
+    use crate::router::Source;
+
+    let call = |id: &str, name: &str, arguments: Value| {
+        ToolCall::new(
+            id,
+            ToolCallFunction {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+        )
+    };
+
+    match source {
+        Source::GithubPullRequests => vec![
+            (
+                "Pull requests waiting on my review",
+                call(
+                    "routed_1",
+                    FETCH_GITHUB_PRS,
+                    json!({ "state": "open", "whose": "reviewing" }),
+                ),
+            ),
+            (
+                "My open pull requests",
+                call(
+                    "routed_2",
+                    FETCH_GITHUB_PRS,
+                    json!({ "state": "open", "whose": "mine" }),
+                ),
+            ),
+            (
+                "My merged pull requests",
+                call(
+                    "routed_3",
+                    FETCH_GITHUB_PRS,
+                    json!({ "state": "merged", "whose": "mine" }),
+                ),
+            ),
+        ],
+        Source::Calendar => vec![(
+            "My calendar this week",
+            call("routed_1", FETCH_CALENDAR, json!({ "range": "week" })),
+        )],
+        Source::Mail => vec![(
+            "My recent mail",
+            call("routed_1", FETCH_RECENT_MAIL, json!({})),
+        )],
+    }
+}
+
 /// A tool call the model wrote out as its answer, rather than the engine
 /// recognising it as one.
 ///

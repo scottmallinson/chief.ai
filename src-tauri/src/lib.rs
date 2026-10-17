@@ -37,6 +37,7 @@ mod propose;
 mod proposed;
 mod recipe;
 mod retrieval;
+mod router;
 #[cfg(test)]
 mod scenarios;
 mod session;
