@@ -152,11 +152,9 @@ pub fn catalog() -> Vec<Tool> {
     vec![
         Tool::function(ToolFunction {
             name: FETCH_GITHUB_PRS.to_string(),
-            description: "Fetch the user's GitHub pull requests. Call this whenever they \
-             ask about pull requests, code review, or what they shipped. Use state \
-             'merged' for what they shipped, and whose 'reviewing' for what is waiting \
-             on them. Covers every connected account; each pull request names the one it \
-             came from, and 'accounts' reports what was read from each."
+            description: "The user's GitHub pull requests, from every connected account. \
+             state 'merged' is what they shipped; whose 'reviewing' is what is \
+             waiting on them."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -164,13 +162,12 @@ pub fn catalog() -> Vec<Tool> {
                     "state": {
                         "type": "string",
                         "enum": ["open", "closed", "merged", "all"],
-                        "description": "Which pull requests to return. Defaults to open.",
+                        "description": "Defaults to open.",
                     },
                     "whose": {
                         "type": "string",
                         "enum": ["mine", "reviewing"],
-                        "description": "'mine' for the user's own, 'reviewing' for ones \
-                         waiting on their review. Defaults to mine.",
+                        "description": "Defaults to mine.",
                     },
                 },
                 "required": [],
@@ -178,9 +175,8 @@ pub fn catalog() -> Vec<Tool> {
         }),
         Tool::function(ToolFunction {
             name: FETCH_CALENDAR.to_string(),
-            description: "Fetch the user's Outlook calendar: meetings, when they are, and \
-                 who is in them. Call this whenever the user asks about their day, their \
-                 schedule, a meeting, or who they are seeing."
+            description: "The user's Outlook calendar: meetings, when they are, and who is \
+                 in them."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -188,7 +184,7 @@ pub fn catalog() -> Vec<Tool> {
                     "range": {
                         "type": "string",
                         "enum": ["today", "tomorrow", "week"],
-                        "description": "Which stretch of calendar to return. Defaults to today.",
+                        "description": "Defaults to today.",
                     },
                 },
                 "required": [],
@@ -196,9 +192,8 @@ pub fn catalog() -> Vec<Tool> {
         }),
         Tool::function(ToolFunction {
             name: FETCH_RECENT_MAIL.to_string(),
-            description: "Fetch the most recent messages in the user's Outlook inbox, with \
-                 who sent them and a short preview. Call this whenever the user asks about \
-                 email, what has come in, or who is waiting on them."
+            description: "The most recent messages in the user's Outlook inbox: sender and \
+                 a short preview."
                 .to_string(),
             parameters: json!({
                 "type": "object",
