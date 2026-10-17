@@ -11,6 +11,9 @@
 //   pnpm bench --judge none|api|claude-code|file   (default none)
 //   pnpm bench --max-spend 10        hard cap on judge spend, in dollars
 //   pnpm bench --score-only <dir>    re-score and re-report an existing run
+//   pnpm bench --router-server <llama-server> --router-model <gguf>
+//                                    route questions by meaning (experimental): starts an
+//                                    embedding server and points CHIEF_ROUTER_URL at it
 //
 // A run is one commit, one fixture set, one machine and every model. Results
 // from different commits are never ranked against each other.
@@ -45,6 +48,8 @@ function options(argv) {
     else if (flag === '--score-only') out.scoreOnly = path.resolve(value());
     else if (flag === '--out') out.out = path.resolve(value());
     else if (flag === '--machine') out.machine = value();
+    else if (flag === '--router-server') out.routerServer = path.resolve(value());
+    else if (flag === '--router-model') out.routerModel = path.resolve(value());
     else throw new Error(`unknown option ${flag}`);
   }
   return out;
@@ -136,7 +141,7 @@ function engineBinary() {
   };
 }
 
-function runRunner(model, weights, server, jsonl, opts) {
+function runRunner(model, weights, server, jsonl, opts, router) {
   const env = {
     ...process.env,
     CHIEF_BENCH_WEIGHTS: weights,
@@ -145,6 +150,7 @@ function runRunner(model, weights, server, jsonl, opts) {
     CHIEF_BENCH_REPEATS: String(opts.repeats),
     CHIEF_BENCH_TIER: model.tier,
     ...(opts.fixture ? { CHIEF_BENCH_ONLY: opts.fixture } : {}),
+    ...(router ? { CHIEF_ROUTER_URL: router.url } : {}),
   };
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -167,6 +173,55 @@ function runRunner(model, weights, server, jsonl, opts) {
         : reject(new Error(`the runner failed for ${model.id} (exit ${code})`)),
     );
   });
+}
+
+const ROUTER_PORT = 11436;
+
+/**
+ * Start the embedding server the experimental router asks. It sits beside the
+ * model under test for the whole run, so every model is routed by the same
+ * thing. Both flags or neither.
+ */
+async function startRouter(opts) {
+  if (!opts.routerServer && !opts.routerModel) return null;
+  if (!opts.routerServer || !opts.routerModel) {
+    throw new Error('--router-server and --router-model go together');
+  }
+  const url = `http://127.0.0.1:${ROUTER_PORT}`;
+  const child = spawn(
+    opts.routerServer,
+    [
+      '-m',
+      opts.routerModel,
+      '--embedding',
+      '--pooling',
+      'mean',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      String(ROUTER_PORT),
+      '--ctx-size',
+      '512',
+      '--batch-size',
+      '512',
+      '--ubatch-size',
+      '512',
+      '--parallel',
+      '1',
+    ],
+    { cwd: path.dirname(opts.routerServer), stdio: ['ignore', 'inherit', 'inherit'] },
+  );
+  for (let waited = 0; waited < 120; waited += 1) {
+    if (child.exitCode !== null) throw new Error('the embedding server exited before it was ready');
+    try {
+      if ((await fetch(`${url}/health`)).ok) return { url, child };
+    } catch {
+      // not up yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  child.kill();
+  throw new Error('the embedding server did not become ready in two minutes');
 }
 
 async function main() {
@@ -193,6 +248,8 @@ async function main() {
     );
   fs.mkdirSync(dir, { recursive: true });
 
+  const router = await startRouter(opts);
+
   const env = {
     fixture_version: FIXTURE_VERSION,
     started_at: new Date().toISOString(),
@@ -201,6 +258,7 @@ async function main() {
     engine: { build: engine.build },
     repeats: opts.repeats,
     judge: opts.judge,
+    router: router ? { model: path.basename(opts.routerModel), server: opts.routerServer } : null,
     models: [],
   };
 
@@ -215,9 +273,10 @@ async function main() {
       sha256: sha256(weights),
     });
     console.log(`\n=== ${model.name} (${model.tier}) ===`);
-    await runRunner(model, weights, engine.path, path.join(dir, `${model.id}.jsonl`), opts);
+    await runRunner(model, weights, engine.path, path.join(dir, `${model.id}.jsonl`), opts, router);
   }
 
+  router?.child.kill();
   env.finished_at = new Date().toISOString();
   fs.writeFileSync(path.join(dir, 'env.json'), `${JSON.stringify(env, null, 2)}\n`);
   await finish(dir, opts);
