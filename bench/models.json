@@ -54,6 +54,15 @@
       "tier": "light",
       "enabled": true,
       "notes": "Candidate (1.56 GB, Apache-2.0, official openbmb file). Needs a llama.cpp build that supports its architecture; a failed start is recorded as its result."
+    },
+    {
+      "id": "gemma-4-e2b",
+      "name": "Gemma 4 E2B Instruct",
+      "file": "google_gemma-4-E2B-it-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/google_gemma-4-E2B-it-GGUF/resolve/81012ba3538e061d5ee003f11f25335b17f82e2d/google_gemma-4-E2B-it-Q4_K_M.gguf",
+      "tier": "standard",
+      "enabled": true,
+      "notes": "Candidate (3.46 GB, Apache-2.0). Loads on the pinned llama.cpp build and returned a valid tool call in a one-off check, with thinking switched off through chat_template_kwargs (left on, a 120-token cap ran out before any answer). Whether the bench runner's thinking-off switch applies to this template is unchecked. Chief's notes say Gemma's template rejects two user turns in a row."
     }
   ]
 }
