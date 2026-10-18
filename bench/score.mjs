@@ -97,6 +97,8 @@ export function withoutNote(answer) {
   return answer.replace(NOTE, '').trim();
 }
 
+const TITLES = new Set(['dr', 'mr', 'mrs', 'ms', 'prof', 'st', 'jr', 'sr']);
+
 const COMMON_CAPITALISED = new Set([
   'i',
   "i'm",
@@ -140,7 +142,12 @@ const COMMON_CAPITALISED = new Set([
 export function inventedThings(answer, shown) {
   const text = withoutNote(answer);
   const seen = normal(shown);
-  const known = new Set(seen.match(/[a-z0-9]+(?:['][a-z]+)?/g) ?? []);
+  const known = new Set();
+  for (const token of seen.match(/[a-z0-9]+(?:['][a-z]+)?/g) ?? []) {
+    known.add(token);
+    // Material that says "Sam's birthday" also says "Sam".
+    if (token.endsWith("'s")) known.add(token.slice(0, -2));
+  }
   const found = [];
 
   for (const time of text.match(TIME) ?? []) {
@@ -167,12 +174,16 @@ export function inventedThings(answer, shown) {
       const clean = word.replace(/^[^A-Za-z]+|[^A-Za-z'\u2019]+$/g, '');
       if (!afterStop && /^[A-Z][a-z]{2,}/.test(clean)) {
         const key = normal(clean);
-        // "Parents'" and "Primary's" are the words the material has, possessed.
+        // "Parents'" and "Primary's" are the words the material has, possessed,
+        // and "All-day" is two words it has, joined.
         const stem = key.replace(/'s?$/, '');
-        if (!known.has(key) && !known.has(stem) && !COMMON_CAPITALISED.has(key))
+        const joined =
+          stem.includes('-') && stem.split('-').every((part) => !part || known.has(part));
+        if (!known.has(key) && !known.has(stem) && !joined && !COMMON_CAPITALISED.has(key))
           found.push(`name ${clean}`);
       }
-      afterStop = /[.!?:]$/.test(word);
+      // "Dr. Smith": the full stop after a title does not end a sentence.
+      afterStop = /[.!?:]$/.test(word) && !TITLES.has(clean.toLowerCase());
     }
   }
 

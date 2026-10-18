@@ -57,25 +57,157 @@ const COMMON_CAPITALISED: &[&str] = &[
     "utc",
 ];
 
-/// Things in `answer` that are not in `shown`: `time 3pm`, `number #42`,
-/// `name Priya`, each once, in the order they first appear.
-#[cfg(test)]
-pub fn unsupported(answer: &str, shown: &str) -> Vec<String> {
-    unsupported_in(answer, shown, shown)
+/// What an answer is compared with.
+///
+/// A brief is written from a prompt that carries rules, a clock and the
+/// material itself, and each of the checks wants a different part of it.
+#[derive(Debug, Clone, Copy)]
+pub struct Material<'a> {
+    /// Everything the model was shown. Names and numbers are looked for here.
+    pub shown: &'a str,
+    /// The material alone. A clock time is looked for here and nowhere else.
+    ///
+    /// A brief is stamped with the time it was written, so a model that writes
+    /// "Meeting at 06:00" over an all-day event has used a time it was given
+    /// (measured on Llama 3.2 3B). It is the time of nothing the user has.
+    pub items: &'a str,
+    /// The material and the clock, without the rules. Ordinary words are looked
+    /// for here, so a word the instructions happen to use ("meeting") does not
+    /// count as something the user's day contained.
+    pub words: &'a str,
 }
 
-/// [`unsupported`], with clock times looked for in `times_in` rather than in
-/// everything shown.
+impl<'a> Material<'a> {
+    /// One text for all three, for the cases where there is only one.
+    #[cfg(test)]
+    pub fn of(text: &'a str) -> Self {
+        Self {
+            shown: text,
+            items: text,
+            words: text,
+        }
+    }
+}
+
+/// How many words the material does not use it takes to call an answer
+/// unfaithful.
 ///
-/// A brief is stamped with the time it was written, and that time is in the
-/// prompt, so a model that writes "Meeting at 06:00" over an all-day event has
-/// used a time it was given. Measured on Llama 3.2 3B. It is the time of
-/// nothing the user has, so a time is looked for in the material alone.
-pub fn unsupported_in(answer: &str, shown: &str, times_in: &str) -> Vec<String> {
+/// Measured, not chosen: on the sparse days the answers that added claims in
+/// ordinary words ("All staff are required to attend", "Sam will receive a
+/// gift") used 5, 5 and 10 such words, and every faithful answer used 0 or 1,
+/// except one Llama 3.2 3B paraphrase ("Attend", "Meet", "Participate") at 3.
+/// Three would refuse that one; four does not. The margin is one word on a
+/// small sample, which is why the limit is a constant with its evidence in
+/// `research/answer-check/`.
+pub const NOVEL_LIMIT: usize = 4;
+
+/// Titles whose full stop does not end a sentence: "Dr. Smith" names Smith.
+const TITLES: &[&str] = &["dr", "mr", "mrs", "ms", "prof", "st", "jr", "sr"];
+
+/// Words short enough to carry no claim of their own, and the ordinary function
+/// words of English. This is not a list of things to be suspicious of: it is
+/// the words that cannot be an invention because every answer needs them.
+const FUNCTION_WORDS: &[&str] = &[
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "have",
+    "has",
+    "had",
+    "are",
+    "was",
+    "were",
+    "will",
+    "would",
+    "should",
+    "could",
+    "their",
+    "there",
+    "them",
+    "then",
+    "than",
+    "they",
+    "what",
+    "when",
+    "where",
+    "which",
+    "while",
+    "your",
+    "you",
+    "our",
+    "not",
+    "but",
+    "all",
+    "any",
+    "can",
+    "into",
+    "its",
+    "just",
+    "more",
+    "most",
+    "much",
+    "only",
+    "over",
+    "some",
+    "such",
+    "these",
+    "those",
+    "very",
+    "been",
+    "being",
+    "also",
+    "about",
+    "after",
+    "again",
+    "before",
+    "below",
+    "between",
+    "both",
+    "down",
+    "during",
+    "each",
+    "few",
+    "here",
+    "how",
+    "once",
+    "other",
+    "same",
+    "through",
+    "under",
+    "until",
+    "upon",
+    "who",
+    "why",
+    "does",
+    "did",
+    "doing",
+    "because",
+    "above",
+    "today",
+    "tomorrow",
+    "yesterday",
+    "now",
+    "next",
+    "still",
+    "back",
+    "off",
+    "out",
+    "per",
+    "via",
+];
+
+/// Things in `answer` that are not in `material`: `time 3pm`, `number #42`,
+/// `name Priya`, `words receive, gift, notice, posted`, each once, in the order
+/// they first appear.
+pub fn unsupported_by(answer: &str, material: &Material) -> Vec<String> {
     let names_in = without_placeholders(answer);
-    let seen = normal(shown);
-    let times_seen = normal(times_in);
-    let known: HashSet<String> = tokens(&seen).into_iter().collect();
+    let seen = normal(material.shown);
+    let times_seen = normal(material.items);
+    let known = known_words(&seen);
     let mut found: Vec<String> = Vec::new();
     let mut note = |what: String| {
         if !found.contains(&what) {
@@ -110,26 +242,83 @@ pub fn unsupported_in(answer: &str, shown: &str, times_in: &str) -> Vec<String> 
                 .trim_start_matches(|c: char| !c.is_ascii_alphabetic())
                 .trim_end_matches(|c: char| !c.is_ascii_alphabetic());
 
-            if !after_stop && looks_like_a_name(clean) {
-                let key = normal(clean);
-                // "Parents'" and "Primary's" are the words the material has, possessed.
-                let stem = key
-                    .strip_suffix("'s")
-                    .or_else(|| key.strip_suffix('\''))
-                    .unwrap_or(&key);
-                if !known.contains(&key)
-                    && !known.contains(stem)
-                    && !COMMON_CAPITALISED.contains(&key.as_str())
-                {
-                    note(format!("name {clean}"));
-                }
+            if !after_stop && looks_like_a_name(clean) && !is_known(clean, &known) {
+                note(format!("name {clean}"));
             }
 
-            after_stop = word.ends_with(['.', '!', '?', ':']);
+            let bare = clean.to_lowercase();
+            after_stop = word.ends_with(['.', '!', '?', ':']) && !TITLES.contains(&bare.as_str());
         }
     }
 
+    let novel = novel_words(&names_in, &known_words(&normal(material.words)));
+    if novel.len() >= NOVEL_LIMIT {
+        note(format!("words {}", novel.join(", ")));
+    }
+
     found
+}
+
+#[cfg(test)]
+pub fn unsupported(answer: &str, shown: &str) -> Vec<String> {
+    unsupported_by(answer, &Material::of(shown))
+}
+
+/// The words of `text` as written, plus the stem of each possessive: material
+/// that says "Sam's birthday" also says "Sam".
+fn known_words(text: &str) -> HashSet<String> {
+    let mut known = HashSet::new();
+
+    for token in tokens(text) {
+        if let Some(stem) = token.strip_suffix("'s") {
+            known.insert(stem.to_string());
+        }
+        known.insert(token);
+    }
+
+    known
+}
+
+/// Whether a capitalised word is one the material has, or a common one.
+///
+/// "Parents'" and "Primary's" are the words the material has, possessed, and
+/// "All-day" is two words it has, joined.
+fn is_known(word: &str, known: &HashSet<String>) -> bool {
+    let key = normal(word);
+    let stem = key
+        .strip_suffix("'s")
+        .or_else(|| key.strip_suffix('\''))
+        .unwrap_or(&key);
+
+    if known.contains(&key) || known.contains(stem) || COMMON_CAPITALISED.contains(&key.as_str()) {
+        return true;
+    }
+
+    stem.contains('-')
+        && stem
+            .split('-')
+            .all(|part| part.is_empty() || known.contains(part))
+}
+
+/// Content words of `answer` that `known` does not have, each once.
+fn novel_words(answer: &str, known: &HashSet<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    for token in tokens(&normal(answer)) {
+        let word = token.strip_suffix("'s").unwrap_or(&token);
+        let alphabetic = word.chars().all(|c| c.is_ascii_lowercase() || c == '\'');
+
+        if alphabetic
+            && word.len() >= 4
+            && !FUNCTION_WORDS.contains(&word)
+            && !known.contains(word)
+            && !out.iter().any(|seen| seen == word)
+        {
+            out.push(word.to_string());
+        }
+    }
+
+    out
 }
 
 /// A line without the marker that opens it: a bullet or a list number, and
@@ -450,6 +639,81 @@ mod tests {
     }
 
     #[test]
+    fn a_name_after_a_title_is_checked_because_the_title_has_a_full_stop() {
+        // Llama 3.2 3B: "11:30: Dentist check-up with Dr. Smith".
+        assert_eq!(
+            unsupported(
+                "- 11:30: Dentist check-up with Dr. Smith",
+                "11:30 Dentist check-up"
+            ),
+            vec!["name Smith"]
+        );
+        // A sentence that ends in a word still lets the next capital pass.
+        assert!(unsupported("- Dentist today. Smith later", "Dentist").is_empty());
+    }
+
+    #[test]
+    fn a_bare_name_is_known_when_the_material_has_it_possessed() {
+        assert!(unsupported("- Wish Sam a happy birthday", "All day Sam's birthday").is_empty());
+    }
+
+    #[test]
+    fn a_hyphenated_word_is_known_when_each_part_is() {
+        assert!(unsupported("- Meeting: All-day Bank holiday", "all day Bank holiday").is_empty());
+        assert_eq!(
+            unsupported("- With the Parent-Teacher group", "School pick-up"),
+            vec!["name Parent-Teacher"]
+        );
+    }
+
+    #[test]
+    fn claims_in_ordinary_words_are_caught_once_there_are_enough_of_them() {
+        let material = "## Today's meetings\n- all day Bank holiday\n- all day Sam's birthday";
+        let faithful = "- All day Bank holiday\n- All day Sam's birthday";
+        let invented = "- All day Bank holiday\n- Sam will receive a gift\n\
+                        - Bank holiday notice will be posted\n- Party is scheduled";
+
+        assert!(unsupported(faithful, material).is_empty());
+
+        let found = unsupported(invented, material);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].starts_with("words receive, gift, notice, posted"),
+            "{found:?}"
+        );
+    }
+
+    /// The limit is the boundary between a paraphrase and a claim.
+    #[test]
+    fn three_new_words_are_a_paraphrase_and_four_are_a_claim() {
+        let material = "14:00 Vendor call";
+
+        // Llama 3.2 3B on a busy day: "Attend", "Meet", "Participate" are the
+        // model's verbs for the same entries.
+        assert!(unsupported("- 14:00 Attend vendor call and discuss pricing", material).is_empty());
+        assert!(!unsupported(
+            "- 14:00 Attend vendor call, discuss pricing, review contract",
+            material
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn the_words_the_rules_use_are_not_the_days_words() {
+        let material = Material {
+            shown: "Rules: a meeting happens whether or not it is read about.\n- 09:00 Standup",
+            items: "- 09:00 Standup",
+            words: "- 09:00 Standup",
+        };
+
+        assert!(!unsupported_by(
+            "- Standup\n- Meeting happens whether read about\n- Rules apply",
+            &material
+        )
+        .is_empty());
+    }
+
+    #[test]
     fn the_first_word_of_a_line_and_of_a_sentence_are_not_checked() {
         assert!(unsupported("- Standup first. Meeting after", "nothing").is_empty());
     }
@@ -475,10 +739,25 @@ mod tests {
 
         assert!(unsupported("- Meeting at 06:00", &prompt).is_empty());
         assert_eq!(
-            unsupported_in("- Meeting at 06:00", &prompt, material),
+            unsupported_by(
+                "- Meeting at 06:00",
+                &Material {
+                    shown: &prompt,
+                    items: material,
+                    words: &prompt
+                }
+            ),
             vec!["time 06:00"]
         );
-        assert!(unsupported_in("- INSET day, 18 October 2026", &prompt, material).is_empty());
+        assert!(unsupported_by(
+            "- INSET day, 18 October 2026",
+            &Material {
+                shown: &prompt,
+                items: material,
+                words: &prompt
+            }
+        )
+        .is_empty());
     }
 
     #[test]

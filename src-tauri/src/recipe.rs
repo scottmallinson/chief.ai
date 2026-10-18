@@ -171,7 +171,7 @@ pub struct Brief {
     pub checked: Checked,
 }
 
-/// What [`check::unsupported_in`] made of the model's answer to a brief.
+/// What [`check::unsupported_by`] made of the model's answer to a brief.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Checked {
     /// What the answer said that the material does not: times, numbers and
@@ -878,10 +878,17 @@ async fn render_checked(
 ) -> Result<(String, Checked), Error> {
     // The prompt without its clock: a time must be somebody's, not the moment
     // the brief happened to be written.
-    let material = assemble(found, "")?;
+    let without_clock = assemble(found, "")?;
+    let material = check::Material {
+        shown: prompt,
+        items: without_clock
+            .strip_prefix(INSTRUCTIONS)
+            .unwrap_or(&without_clock),
+        words: prompt.strip_prefix(INSTRUCTIONS).unwrap_or(prompt),
+    };
 
     let written = render(engine, prompt).await?;
-    let first = check::unsupported_in(&written, prompt, &material);
+    let first = check::unsupported_by(&written, &material);
 
     if first.is_empty() {
         return Ok((written, Checked::default()));
@@ -1795,7 +1802,7 @@ mod tests {
     /// two emails and no meetings it wrote "Meeting with John Doe at 10:00".
     /// The answer is not used, and the model is not asked again.
     ///
-    /// Proved by making `check::unsupported_in` return nothing: the invented
+    /// Proved by making `check::unsupported_by` return nothing: the invented
     /// meeting is filed as the brief.
     #[tokio::test]
     async fn a_brief_that_invents_a_meeting_is_written_from_the_material_instead() {

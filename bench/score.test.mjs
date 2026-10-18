@@ -124,6 +124,23 @@ describe('inventedThings and lines that open with a time', () => {
   });
 });
 
+describe('inventedThings and the names it cannot tell from the material', () => {
+  it('reads a bare name as known when the material has it possessed', () => {
+    expect(inventedThings('- Wish Sam a happy birthday', "all day Sam's birthday")).toEqual([]);
+  });
+  it('reads a hyphenated word as known when each part is', () => {
+    expect(inventedThings('- Meeting: All-day Bank holiday', 'all day Bank holiday')).toEqual([]);
+    expect(inventedThings('- With the Parent-Teacher group', 'School pick-up')).toEqual([
+      'name Parent-Teacher',
+    ]);
+  });
+  it('checks the name after a title', () => {
+    expect(inventedThings('- 11:30: Dentist with Dr. Smith', '11:30 Dentist')).toEqual([
+      'name Smith',
+    ]);
+  });
+});
+
 describe('isLooping', () => {
   it('fires on the third copy of a line and not the second', () => {
     expect(isLooping('- review the open pull requests\n- review the open pull requests')).toBe(
