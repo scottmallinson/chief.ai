@@ -416,7 +416,20 @@ fn tomorrow() -> String {
         .to_string()
 }
 
+/// What checking the last brief's answer found, kept for the run record.
+///
+/// A fixture is played one at a time, so one slot is enough; `play` leaves it
+/// where `markdown_of` put it and the loop that writes the record takes it.
+static LAST_CHECK: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
+
 fn markdown_of(brief: Result<recipe::Brief, recipe::Error>) -> Result<String, String> {
+    if let Ok(brief) = &brief {
+        *LAST_CHECK.lock().expect("check slot") = Some(json!({
+            "first": brief.checked.first,
+            "fell_back": brief.checked.fell_back,
+        }));
+    }
+
     brief
         .map(|brief| brief.markdown)
         .map_err(|error| error.to_string())
@@ -1104,7 +1117,9 @@ async fn run_the_benchmark() {
             let swap_start = swap_used_mb();
 
             let started = Instant::now();
+            *LAST_CHECK.lock().expect("check slot") = None;
             let played = play(id, &proxy.host, tier).await;
+            let check = LAST_CHECK.lock().expect("check slot").take();
             let wall_ms = started.elapsed().as_millis() as u64;
             let exchanges = proxy.take();
 
@@ -1134,6 +1149,7 @@ async fn run_the_benchmark() {
                 "answer": answer,
                 "error": error,
                 "key": played.key,
+                "check": check,
                 "wall_ms": wall_ms,
                 "peak_resident_mb": engine.peak_mb.load(Ordering::SeqCst),
                 "swap_used_mb_start": swap_start,

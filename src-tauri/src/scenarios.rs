@@ -1977,7 +1977,7 @@ mod any {
         })
         .await;
         let engine = model_saying(
-            "- 10:00 Standup\n- Review the billing pull request\n- Review the search pull request\n\
+            "- Standup\n- Review the billing pull request\n- Review the search pull request\n\
              - Review the billing pull request\n- Review the search pull request\n\
              - Review the billing pull request\n- Review the search pull request",
         )

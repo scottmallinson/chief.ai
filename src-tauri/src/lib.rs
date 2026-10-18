@@ -10,6 +10,7 @@ mod agent;
 mod atlassian;
 mod background;
 mod calendar;
+mod check;
 mod clock;
 mod connect;
 mod context;
