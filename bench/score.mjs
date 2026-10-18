@@ -342,10 +342,18 @@ export function scoreRun(run) {
   m.looped = isLooping(body);
   m.hit_length = final.finish === 'length';
 
+  // A request that offered the model no tools is one Chief answered by reading
+  // the source itself (the experimental router). "Did the model choose the
+  // right tool" has no meaning there, so the tool checks are not applied and
+  // the run is judged on its answer. A fixture that expects a tool and gets
+  // no tools offered is marked, so the report can say how many were routed.
+  m.routed_read =
+    Boolean(key.tool) && exchanges.length > 0 && exchanges.every((e) => !e.request?.tools);
+
   // Tools.
   m.tool_calls = calls.map((call) => ({ name: call.name, args: call.args, valid: call.valid }));
   m.tool_valid = calls.length ? calls.every((call) => call.valid) : null;
-  if (key.tool) {
+  if (key.tool && !m.routed_read) {
     const wanted = calls.filter((call) => call.name === key.tool.name);
     m.tool_called = wanted.length > 0;
     m.tool_args_ok =
@@ -500,12 +508,15 @@ export function gatesFor(runs) {
   const validShare = validCalls.length
     ? validCalls.filter((call) => call.valid).length / validCalls.length
     : null;
+  const allRouted = tools.length > 0 && tools.every((run) => run.m.routed_read);
   g.G5 = {
     name: 'Tool calls are valid',
-    pass: validShare === null ? false : validShare >= 0.9,
+    pass: allRouted ? true : validShare === null ? false : validShare >= 0.9,
     detail:
       validShare === null
-        ? 'the model made no tool calls at all'
+        ? allRouted
+          ? 'not applicable: Chief read every source itself and the model was offered no tools'
+          : 'the model made no tool calls at all'
         : `${Math.round(validShare * 100)}% of ${validCalls.length} tool calls were valid`,
     evidence: tools
       .filter((run) => run.m.tool_valid === false)

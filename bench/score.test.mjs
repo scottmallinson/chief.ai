@@ -23,6 +23,7 @@ function run({
   response,
   group = 'brief-busy',
   fixture = 'f',
+  offered = true,
   extra = {},
 } = {}) {
   return {
@@ -38,7 +39,10 @@ function run({
     exchanges: [
       {
         status: 200,
-        request: { messages: [{ role: 'user', content: shown }] },
+        request: {
+          messages: [{ role: 'user', content: shown }],
+          ...(offered ? { tools: [{ type: 'function' }] } : {}),
+        },
         response: response ?? text(answer),
         first_ms: 100,
         total_ms: 900,
@@ -200,6 +204,21 @@ describe('scoreRun', () => {
     const wrong = scoreRun(run({ answer: 'ok', response: call({ range: 'fortnight' }), key }));
     expect(wrong.tool_args_ok).toBe(false);
     expect(wrong.tool_valid).toBe(false);
+  });
+
+  it('does not hold a run to the tool checks when no tools were offered', () => {
+    const key = { tool: { name: 'fetch_calendar', args: { range: ['tomorrow'] } } };
+    const read = scoreRun(run({ answer: 'ok', key, offered: false }));
+
+    expect(read.routed_read).toBe(true);
+    expect(read.tool_called).toBeNull();
+    expect(read.tool_args_ok).toBeNull();
+
+    // The same answer with tools on offer and none called is a miss, so the
+    // exemption is the router's and not a way to stop a model failing.
+    const missed = scoreRun(run({ answer: 'ok', key }));
+    expect(missed.routed_read).toBe(false);
+    expect(missed.tool_called).toBe(false);
   });
 
   it('fails a tool call when none was expected', () => {
