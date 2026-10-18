@@ -63,6 +63,15 @@
       "tier": "standard",
       "enabled": true,
       "notes": "Candidate (3.46 GB, Apache-2.0). Loads on the pinned llama.cpp build and returned a valid tool call in a one-off check, with thinking switched off through chat_template_kwargs (left on, a 120-token cap ran out before any answer). Whether the bench runner's thinking-off switch applies to this template is unchecked. Chief's notes say Gemma's template rejects two user turns in a row."
+    },
+    {
+      "id": "lfm2.5-2.6b",
+      "name": "LFM2.5 2.6B",
+      "file": "LFM2.5-2.6B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-Q4_K_M.gguf",
+      "tier": "light",
+      "enabled": false,
+      "notes": "Cloud screen only (18 Oct): thinks unless LLAMA_ARG_THINK_BUDGET=0, fails G3/G4, passes G5. LFM Open License v1.0: free below $10M annual revenue. Revision is main, not pinned."
     }
   ]
 }
