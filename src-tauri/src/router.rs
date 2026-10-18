@@ -36,12 +36,16 @@ pub const MARGIN: f32 = 0.02;
 /// The same gap between the best GitHub view and the runner-up, and larger
 /// because the three views are closer to each other than the sources are.
 ///
-/// Measured on 24 questions (0.02 sent 3 to the wrong view, 0.04 none, 13
-/// routed) and then on 18 held-out ones (0.03 sent 1 wrong, 0.04 none, 4
-/// routed). 0.04 was chosen after the first set, and the second only confirms
-/// it did no harm; it also shows how few questions clear it, so most GitHub
-/// questions take the tool loop until the view descriptions are better.
+/// Measured with the view descriptions above on 60 questions in three sets:
+/// at 0.04, 34 were routed and none to the wrong view; at 0.03, one went
+/// wrong. The descriptions were chosen from four candidates on the same
+/// questions, so the figures flatter them a little. The rest take the tool loop.
 pub const VIEW_MARGIN: f32 = 0.04;
+
+/// The gap before a calendar question is narrowed from the week to a day.
+/// Below it the whole week is read, which is wider and never wrong. Screened
+/// on 18 questions: at 0.03, 10 named a day and none the wrong one.
+pub const RANGE_MARGIN: f32 = 0.03;
 
 /// A place an answer can be read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,21 +70,45 @@ pub enum GithubView {
 const VIEWS: [(GithubView, &str); 3] = [
     (
         GithubView::Reviewing,
-        "Pull requests other people asked me to review",
+        "Review requests: pull requests written by other people that are waiting for me to review or approve",
     ),
-    (GithubView::Open, "My own pull requests that are still open"),
+    (GithubView::Open, "My own pull requests that are not merged yet: open, in draft, or waiting for checks and reviewers"),
     (
         GithubView::Merged,
-        "Pull requests of mine that have been merged",
+        "Merged: my own pull requests that have already been merged and shipped",
+    ),
+];
+
+/// How far ahead a calendar question looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalendarRange {
+    Today,
+    Tomorrow,
+    Week,
+}
+
+/// What each range says about itself, in the order they are embedded.
+const RANGES: [(CalendarRange, &str); 3] = [
+    (
+        CalendarRange::Today,
+        "My schedule for today: what is on now, later today, this morning or this afternoon",
+    ),
+    (
+        CalendarRange::Tomorrow,
+        "My schedule for tomorrow: meetings and free time on the next day",
+    ),
+    (
+        CalendarRange::Week,
+        "My schedule for the week: what is coming up over several days, or on a named weekday",
     ),
 ];
 
 /// Where a question is read from: the source, and for GitHub which pull
-/// requests.
+/// requests, and for the calendar which days.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
     Github(GithubView),
-    Calendar,
+    Calendar(CalendarRange),
     Mail,
 }
 
@@ -179,18 +207,42 @@ fn pick_view(question: &[f32], views: &[Vec<f32>], margin: f32) -> Option<Github
     Some(VIEWS[scored[0].1].0)
 }
 
-/// The route for a question from its embedding and those of the four sources
-/// and three GitHub views.
+/// The range a calendar question names, or the week when it does not clearly
+/// name one. Unlike the other choices this one cannot be wrong by being unsure:
+/// the week contains today and tomorrow, so the answer is only wider.
+fn pick_range(question: &[f32], ranges: &[Vec<f32>], margin: f32) -> CalendarRange {
+    if ranges.len() != RANGES.len() {
+        return CalendarRange::Week;
+    }
+
+    let mut scored: Vec<(f32, usize)> = ranges
+        .iter()
+        .enumerate()
+        .map(|(index, range)| (cosine(question, range), index))
+        .collect();
+
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    if scored[0].0 - scored[1].0 < margin {
+        return CalendarRange::Week;
+    }
+
+    RANGES[scored[0].1].0
+}
+
+/// The route for a question from its embedding and those of the four sources,
+/// three GitHub views and three calendar ranges.
 fn decide(
     question: &[f32],
     sources: &[Vec<f32>],
     views: &[Vec<f32>],
+    ranges: &[Vec<f32>],
     margin: f32,
     view_margin: f32,
 ) -> Option<Route> {
     match pick(question, sources, margin)? {
         Source::GithubPullRequests => pick_view(question, views, view_margin).map(Route::Github),
-        Source::Calendar => Some(Route::Calendar),
+        Source::Calendar => Some(Route::Calendar(pick_range(question, ranges, RANGE_MARGIN))),
         Source::Mail => Some(Route::Mail),
     }
 }
@@ -208,12 +260,25 @@ pub async fn route(router: &Client, question: &str) -> Result<Option<Route>, Err
             .map(|(_, description)| description.to_string()),
     );
     inputs.extend(VIEWS.iter().map(|(_, description)| description.to_string()));
+    inputs.extend(
+        RANGES
+            .iter()
+            .map(|(_, description)| description.to_string()),
+    );
 
     let mut vectors = router.embed(&inputs).await?;
     let question = vectors.remove(0);
-    let views = vectors.split_off(CHOICES.len());
+    let mut rest = vectors.split_off(CHOICES.len());
+    let ranges = rest.split_off(VIEWS.len());
 
-    Ok(decide(&question, &vectors, &views, MARGIN, VIEW_MARGIN))
+    Ok(decide(
+        &question,
+        &vectors,
+        &rest,
+        &ranges,
+        MARGIN,
+        VIEW_MARGIN,
+    ))
 }
 
 #[cfg(test)]
@@ -290,6 +355,57 @@ mod tests {
         serde_json::json!({ "data": data }).to_string()
     }
 
+    fn ranges() -> Vec<Vec<f32>> {
+        vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+        ]
+    }
+
+    #[test]
+    fn a_calendar_question_names_its_day_or_reads_the_week() {
+        let sources = choices();
+        let calendar = |question: [f32; 4]| {
+            decide(
+                &question,
+                &sources,
+                &views(),
+                &ranges(),
+                MARGIN,
+                VIEW_MARGIN,
+            )
+        };
+
+        // Closest to the calendar source (index 1), and to the tomorrow range.
+        assert_eq!(
+            calendar([0.0, 1.0, 0.0, 0.0]),
+            Some(Route::Calendar(CalendarRange::Tomorrow))
+        );
+        // Two ranges about equally close: the week, which contains both.
+        let close = vec![
+            vec![0.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.99, 0.1, 0.0],
+            vec![0.0, 0.0, 0.0, 1.0],
+        ];
+        assert_eq!(
+            decide(
+                &[0.0, 1.0, 0.0, 0.0],
+                &sources,
+                &views(),
+                &close,
+                MARGIN,
+                VIEW_MARGIN
+            ),
+            Some(Route::Calendar(CalendarRange::Week))
+        );
+    }
+
+    #[test]
+    fn the_range_margin_is_the_measured_one() {
+        assert!((RANGE_MARGIN - 0.03).abs() < f32::EPSILON);
+    }
+
     fn views() -> Vec<Vec<f32>> {
         vec![
             vec![1.0, 0.0, 0.0, 0.0],
@@ -313,6 +429,7 @@ mod tests {
                 &[0.9, 0.1, 0.0, 0.0],
                 &sources,
                 &views(),
+                &ranges(),
                 MARGIN,
                 VIEW_MARGIN
             ),
@@ -329,6 +446,7 @@ mod tests {
                 &[1.0, 0.05, 0.0, 0.0],
                 &sources,
                 &close,
+                &ranges(),
                 MARGIN,
                 VIEW_MARGIN
             ),
@@ -336,7 +454,14 @@ mod tests {
             "two views about equally close must not pick one"
         );
         assert_eq!(
-            decide(&[1.0, 0.05, 0.0, 0.0], &sources, &close, MARGIN, 0.0),
+            decide(
+                &[1.0, 0.05, 0.0, 0.0],
+                &sources,
+                &close,
+                &ranges(),
+                MARGIN,
+                0.0
+            ),
             Some(Route::Github(GithubView::Reviewing)),
             "without the margin the same question is routed"
         );
@@ -355,6 +480,9 @@ mod tests {
                 [1.0, 0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
             ]),
         )]);
         let router = Client::with_base_url(&base_url).expect("loopback should be allowed");
@@ -363,7 +491,7 @@ mod tests {
             .await
             .expect("the stub should answer");
 
-        assert_eq!(source, Some(Route::Calendar));
+        assert_eq!(source, Some(Route::Calendar(CalendarRange::Tomorrow)));
 
         let requests = server.await.expect("the stub should finish");
         assert_eq!(requests.len(), 1);
@@ -377,7 +505,7 @@ mod tests {
         .expect("body should be JSON");
         let inputs = body["input"].as_array().expect("inputs should be a list");
 
-        assert_eq!(inputs.len(), 8);
+        assert_eq!(inputs.len(), 11);
         assert_eq!(inputs[0], "How busy is Friday?");
         assert!(inputs[2]
             .as_str()

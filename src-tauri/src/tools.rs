@@ -217,7 +217,7 @@ pub fn catalog() -> Vec<Tool> {
 /// reviews. Calendar takes the week, since nobody has chosen a day, and the
 /// clock is already in the prompt to say which day is which.
 pub fn calls_for(route: crate::router::Route) -> Vec<(&'static str, ToolCall)> {
-    use crate::router::{GithubView, Route};
+    use crate::router::{CalendarRange, GithubView, Route};
 
     let call = |id: &str, name: &str, arguments: Value| {
         ToolCall::new(
@@ -248,10 +248,18 @@ pub fn calls_for(route: crate::router::Route) -> Vec<(&'static str, ToolCall)> {
 
             vec![(label, call("routed_1", FETCH_GITHUB_PRS, arguments))]
         }
-        Route::Calendar => vec![(
-            "My calendar this week",
-            call("routed_1", FETCH_CALENDAR, json!({ "range": "week" })),
-        )],
+        Route::Calendar(range) => {
+            let (label, name) = match range {
+                CalendarRange::Today => ("My calendar today", "today"),
+                CalendarRange::Tomorrow => ("My calendar tomorrow", "tomorrow"),
+                CalendarRange::Week => ("My calendar this week", "week"),
+            };
+
+            vec![(
+                label,
+                call("routed_1", FETCH_CALENDAR, json!({ "range": name })),
+            )]
+        }
         Route::Mail => vec![(
             "My recent mail",
             call("routed_1", FETCH_RECENT_MAIL, json!({})),
