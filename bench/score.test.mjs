@@ -94,6 +94,36 @@ describe('inventedThings', () => {
   });
 });
 
+describe('inventedThings and possessives', () => {
+  it('does not call a possessive of a word the material has an invention', () => {
+    expect(inventedThings("- 17:30 Parents' evening", "17:30 Parents' evening — Year 3")).toEqual(
+      [],
+    );
+    expect(
+      inventedThings("- Review of Oakfield Primary's day", 'Oakfield Primary: Non-uniform day'),
+    ).toEqual([]);
+  });
+  it('still catches a possessive of a name the material does not have', () => {
+    expect(inventedThings("- Reply to Marcus's note", 'Mail from Priya')).toEqual([
+      "name Marcus's",
+    ]);
+  });
+});
+
+describe('inventedThings and lines that open with a time', () => {
+  const shown = '14:00 Vendor call\n14:30 Budget check-in';
+  it('does not read the verb after a time as a name', () => {
+    expect(
+      inventedThings('• 14:00: Attend vendor call\n• 14:30 Meet for the check-in', shown),
+    ).toEqual([]);
+  });
+  it('still reads a name later in the line', () => {
+    expect(inventedThings('• 14:00: Attend vendor call with Marcus', shown)).toEqual([
+      'name Marcus',
+    ]);
+  });
+});
+
 describe('isLooping', () => {
   it('fires on the third copy of a line and not the second', () => {
     expect(isLooping('- review the open pull requests\n- review the open pull requests')).toBe(

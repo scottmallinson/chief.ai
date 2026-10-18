@@ -153,10 +153,13 @@ export function inventedThings(answer, shown) {
   }
 
   for (const line of text.split('\n')) {
-    // The first word of a line (after any bullet) is skipped, and so is the
-    // word after a full stop: a capital there means nothing.
+    // The first word of a line (after any bullet or time) is skipped, and so is
+    // the word after a full stop: a capital there means nothing. A time opens an
+    // agenda line ("14:00: Attend the call") as a bullet does, and the word that
+    // follows it starts the line.
     const words = line
-      .replace(/^[\s\-*\u2022\d.)]+/, '')
+      .replace(/^\s*(?:[-*\u2022]|\d+[.)])?\s*/, '')
+      .replace(/^(?:\d{1,2}:\d{2}\s?(?:[ap]m\b)?|\d{1,2}\s?[ap]m\b)[\s:\-\u2013\u2014.)]*/i, '')
       .split(/\s+/)
       .slice(1);
     let afterStop = false;
@@ -164,7 +167,10 @@ export function inventedThings(answer, shown) {
       const clean = word.replace(/^[^A-Za-z]+|[^A-Za-z'\u2019]+$/g, '');
       if (!afterStop && /^[A-Z][a-z]{2,}/.test(clean)) {
         const key = normal(clean);
-        if (!known.has(key) && !COMMON_CAPITALISED.has(key)) found.push(`name ${clean}`);
+        // "Parents'" and "Primary's" are the words the material has, possessed.
+        const stem = key.replace(/'s?$/, '');
+        if (!known.has(key) && !known.has(stem) && !COMMON_CAPITALISED.has(key))
+          found.push(`name ${clean}`);
       }
       afterStop = /[.!?:]$/.test(word);
     }
