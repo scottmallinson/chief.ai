@@ -699,12 +699,12 @@ async fn routed(
         .rev()
         .find(|turn| turn.role == Role::User)?
         .content;
-    let source = router::route(router_client, question).await.ok()??;
+    let route = router::route(router_client, question).await.ok()??;
 
     let mut sections = Vec::new();
     let mut read = Vec::new();
 
-    let calls = tools::calls_for(source);
+    let calls = tools::calls_for(route);
     let room =
         context::DEFAULT_CEILING.saturating_sub(spent_on_turns(messages)) / calls.len() as u32;
 
@@ -2182,6 +2182,9 @@ mod orchestration_tests {
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
         ];
         let data: Vec<_> = vectors
             .iter()
@@ -2196,11 +2199,7 @@ mod orchestration_tests {
     async fn a_routed_question_is_read_in_rust_and_handed_over_as_one_turn() {
         let (router_host, router_server) = serve(vec![("HTTP/1.1 200 OK", places_on_github())]);
         let router_client = Client::with_base_url(&router_host).expect("loopback");
-        let (github_host, github_server) = serve(vec![
-            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
-            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
-            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
-        ]);
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
         let context = context_connected_to(&github_host).await;
 
         let read = routed(

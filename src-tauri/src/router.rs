@@ -33,10 +33,53 @@ pub const ROUTER_URL_VAR: &str = "CHIEF_ROUTER_URL";
 /// scores and not a confidence.
 pub const MARGIN: f32 = 0.02;
 
+/// The same gap between the best GitHub view and the runner-up, and larger
+/// because the three views are closer to each other than the sources are.
+///
+/// Measured on 24 questions (0.02 sent 3 to the wrong view, 0.04 none, 13
+/// routed) and then on 18 held-out ones (0.03 sent 1 wrong, 0.04 none, 4
+/// routed). 0.04 was chosen after the first set, and the second only confirms
+/// it did no harm; it also shows how few questions clear it, so most GitHub
+/// questions take the tool loop until the view descriptions are better.
+pub const VIEW_MARGIN: f32 = 0.04;
+
 /// A place an answer can be read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     GithubPullRequests,
+    Calendar,
+    Mail,
+}
+
+/// Which pull requests a GitHub question is about. Reading all three and
+/// leaving the model to pick put the wrong ones in front of it, so the view is
+/// chosen the same way the source is, and a question that does not clearly
+/// name one goes to the tool loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GithubView {
+    Reviewing,
+    Open,
+    Merged,
+}
+
+/// What each view says about itself, in the order they are embedded.
+const VIEWS: [(GithubView, &str); 3] = [
+    (
+        GithubView::Reviewing,
+        "Pull requests other people asked me to review",
+    ),
+    (GithubView::Open, "My own pull requests that are still open"),
+    (
+        GithubView::Merged,
+        "Pull requests of mine that have been merged",
+    ),
+];
+
+/// Where a question is read from: the source, and for GitHub which pull
+/// requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    Github(GithubView),
     Calendar,
     Mail,
 }
@@ -114,23 +157,63 @@ fn pick(question: &[f32], choices: &[Vec<f32>], margin: f32) -> Option<Source> {
     CHOICES[best.1].0
 }
 
+/// The view a GitHub question names, with the same rule as [`pick`]: the best
+/// must clearly beat the runner-up or there is no answer.
+fn pick_view(question: &[f32], views: &[Vec<f32>], margin: f32) -> Option<GithubView> {
+    if views.len() != VIEWS.len() {
+        return None;
+    }
+
+    let mut scored: Vec<(f32, usize)> = views
+        .iter()
+        .enumerate()
+        .map(|(index, view)| (cosine(question, view), index))
+        .collect();
+
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    if scored[0].0 - scored[1].0 < margin {
+        return None;
+    }
+
+    Some(VIEWS[scored[0].1].0)
+}
+
+/// The route for a question from its embedding and those of the four sources
+/// and three GitHub views.
+fn decide(
+    question: &[f32],
+    sources: &[Vec<f32>],
+    views: &[Vec<f32>],
+    margin: f32,
+    view_margin: f32,
+) -> Option<Route> {
+    match pick(question, sources, margin)? {
+        Source::GithubPullRequests => pick_view(question, views, view_margin).map(Route::Github),
+        Source::Calendar => Some(Route::Calendar),
+        Source::Mail => Some(Route::Mail),
+    }
+}
+
 /// Where this question should be read from, or `None` to use the tool loop.
 ///
-/// One request: the question and the four descriptions are embedded together.
+/// One request: the question, the four descriptions and the three GitHub views are embedded together.
 /// An unreachable or confused embedding server is an error for the caller to
 /// swallow, never a reason to fail the question.
-pub async fn route(router: &Client, question: &str) -> Result<Option<Source>, Error> {
+pub async fn route(router: &Client, question: &str) -> Result<Option<Route>, Error> {
     let mut inputs = vec![question.to_string()];
     inputs.extend(
         CHOICES
             .iter()
             .map(|(_, description)| description.to_string()),
     );
+    inputs.extend(VIEWS.iter().map(|(_, description)| description.to_string()));
 
     let mut vectors = router.embed(&inputs).await?;
     let question = vectors.remove(0);
+    let views = vectors.split_off(CHOICES.len());
 
-    Ok(pick(&question, &vectors, MARGIN))
+    Ok(decide(&question, &vectors, &views, MARGIN, VIEW_MARGIN))
 }
 
 #[cfg(test)]
@@ -207,6 +290,58 @@ mod tests {
         serde_json::json!({ "data": data }).to_string()
     }
 
+    fn views() -> Vec<Vec<f32>> {
+        vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+        ]
+    }
+
+    #[test]
+    fn the_view_margin_is_the_measured_one() {
+        // At 0.02 three of 24 questions went to the wrong view.
+        assert!((VIEW_MARGIN - 0.04).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_github_question_names_one_view_or_goes_to_the_tool_loop() {
+        let sources = choices();
+
+        assert_eq!(
+            decide(
+                &[0.9, 0.1, 0.0, 0.0],
+                &sources,
+                &views(),
+                MARGIN,
+                VIEW_MARGIN
+            ),
+            Some(Route::Github(GithubView::Reviewing))
+        );
+
+        let close = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.99, 0.1, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+        ];
+        assert_eq!(
+            decide(
+                &[1.0, 0.05, 0.0, 0.0],
+                &sources,
+                &close,
+                MARGIN,
+                VIEW_MARGIN
+            ),
+            None,
+            "two views about equally close must not pick one"
+        );
+        assert_eq!(
+            decide(&[1.0, 0.05, 0.0, 0.0], &sources, &close, MARGIN, 0.0),
+            Some(Route::Github(GithubView::Reviewing)),
+            "without the margin the same question is routed"
+        );
+    }
+
     #[tokio::test]
     async fn embeds_the_question_and_every_description_in_one_request() {
         let (base_url, server) = serve(vec![(
@@ -217,6 +352,9 @@ mod tests {
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
             ]),
         )]);
         let router = Client::with_base_url(&base_url).expect("loopback should be allowed");
@@ -225,7 +363,7 @@ mod tests {
             .await
             .expect("the stub should answer");
 
-        assert_eq!(source, Some(Source::Calendar));
+        assert_eq!(source, Some(Route::Calendar));
 
         let requests = server.await.expect("the stub should finish");
         assert_eq!(requests.len(), 1);
@@ -239,7 +377,7 @@ mod tests {
         .expect("body should be JSON");
         let inputs = body["input"].as_array().expect("inputs should be a list");
 
-        assert_eq!(inputs.len(), 5);
+        assert_eq!(inputs.len(), 8);
         assert_eq!(inputs[0], "How busy is Friday?");
         assert!(inputs[2]
             .as_str()

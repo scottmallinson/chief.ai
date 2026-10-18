@@ -209,18 +209,15 @@ pub fn catalog() -> Vec<Tool> {
     ]
 }
 
-/// The reads that answer a question routed to `source`, each with what it is
-/// called in the material the model is shown.
+/// The read that answers a question routed to `route`, with what it is called
+/// in the material the model is shown.
 ///
-/// **Broader than a model would ask for.** A model choosing its own call picks
-/// `merged` for "what did I ship" and `tomorrow` for "what is on tomorrow";
-/// with the source chosen by the router there is nobody to pick, so the
-/// arguments are the widest ones the tool accepts and the model reads the part
-/// it needs. That costs prompt, which is the first thing the experiment
-/// measures. Calendar takes the week for the same reason, and the clock is
-/// already in the prompt to say which day is which.
-pub fn calls_for(source: crate::router::Source) -> Vec<(&'static str, ToolCall)> {
-    use crate::router::Source;
+/// **Broader than a model would ask for, except where the router said.** The
+/// GitHub view is chosen by the router, so a question about reviews reads only
+/// reviews. Calendar takes the week, since nobody has chosen a day, and the
+/// clock is already in the prompt to say which day is which.
+pub fn calls_for(route: crate::router::Route) -> Vec<(&'static str, ToolCall)> {
+    use crate::router::{GithubView, Route};
 
     let call = |id: &str, name: &str, arguments: Value| {
         ToolCall::new(
@@ -232,38 +229,30 @@ pub fn calls_for(source: crate::router::Source) -> Vec<(&'static str, ToolCall)>
         )
     };
 
-    match source {
-        Source::GithubPullRequests => vec![
-            (
-                "Pull requests waiting on my review",
-                call(
-                    "routed_1",
-                    FETCH_GITHUB_PRS,
+    match route {
+        Route::Github(view) => {
+            let (label, arguments) = match view {
+                GithubView::Reviewing => (
+                    "Pull requests waiting on my review",
                     json!({ "state": "open", "whose": "reviewing" }),
                 ),
-            ),
-            (
-                "My open pull requests",
-                call(
-                    "routed_2",
-                    FETCH_GITHUB_PRS,
+                GithubView::Open => (
+                    "My open pull requests",
                     json!({ "state": "open", "whose": "mine" }),
                 ),
-            ),
-            (
-                "My merged pull requests",
-                call(
-                    "routed_3",
-                    FETCH_GITHUB_PRS,
+                GithubView::Merged => (
+                    "My merged pull requests",
                     json!({ "state": "merged", "whose": "mine" }),
                 ),
-            ),
-        ],
-        Source::Calendar => vec![(
+            };
+
+            vec![(label, call("routed_1", FETCH_GITHUB_PRS, arguments))]
+        }
+        Route::Calendar => vec![(
             "My calendar this week",
             call("routed_1", FETCH_CALENDAR, json!({ "range": "week" })),
         )],
-        Source::Mail => vec![(
+        Route::Mail => vec![(
             "My recent mail",
             call("routed_1", FETCH_RECENT_MAIL, json!({})),
         )],
