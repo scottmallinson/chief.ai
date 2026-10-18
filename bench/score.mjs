@@ -353,8 +353,9 @@ export function scoreRun(run) {
   // right tool" has no meaning there, so the tool checks are not applied and
   // the run is judged on its answer. A fixture that expects a tool and gets
   // no tools offered is marked, so the report can say how many were routed.
-  m.routed_read =
-    Boolean(key.tool) && exchanges.length > 0 && exchanges.every((e) => !e.request?.tools);
+  // A read that came back empty is answered in code and asks the model nothing,
+  // so there may be no exchange at all.
+  m.routed_read = Boolean(key.tool) && ok && exchanges.every((e) => !e.request?.tools);
 
   // Tools.
   m.tool_calls = calls.map((call) => ({ name: call.name, args: call.args, valid: call.valid }));

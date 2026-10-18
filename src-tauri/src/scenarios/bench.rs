@@ -503,6 +503,12 @@ const FIXTURES: &[(&str, &str, &str)] = &[
         "tools",
         "tomorrow's meetings: fetch_calendar, tomorrow",
     ),
+    (
+        "tool-reviews-empty",
+        "tools",
+        "reviews waiting: none, with open pull requests of my own beside them",
+    ),
+    ("tool-tomorrow-empty", "tools", "tomorrow's meetings: none"),
     ("chat-no-tool", "chat", "a question no tool fits"),
     (
         "draft-review-known",
@@ -929,6 +935,67 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
                 answer,
                 key,
                 routed,
+            }
+        }
+
+        "tool-reviews-empty" => {
+            // Nobody has asked for a review, and the user's own pull requests
+            // are right there to be mistaken for the answer.
+            let github = github_with(Github {
+                mine: search(&[pr(
+                    90,
+                    "acme/api",
+                    "Paginate the audit log",
+                    None,
+                    "2026-10-02T08:00:00Z",
+                )]),
+                ..Github::default()
+            })
+            .await;
+            let world = world(Some(&github.host), None, NOWHERE).await;
+            let context = tools::Context {
+                pool: world.ctx.pool.clone(),
+                github: world.ctx.github.clone(),
+                microsoft: world.ctx.microsoft.clone(),
+            };
+            let client = llama::Client::with_base_url(engine_url).expect("client");
+            let question = "Which pull requests are waiting for my review?";
+
+            let answer = agent::answer_for_bench(&client, &context, tier, question)
+                .await
+                .map_err(|error| error.to_string());
+            Played {
+                answer,
+                key: json!({
+                    "tool": { "name": "fetch_github_prs", "args": { "state": ["open", "all"], "whose": ["reviewing"] } },
+                    "forbid": ["Paginate the audit log"],
+                    "forbid_times": true, "forbid_numbers": true,
+                }),
+                routed: false,
+            }
+        }
+
+        "tool-tomorrow-empty" => {
+            let graph = graph_with(vec![], vec![]).await;
+            let world = world(None, Some(&graph.host), NOWHERE).await;
+            let context = tools::Context {
+                pool: world.ctx.pool.clone(),
+                github: world.ctx.github.clone(),
+                microsoft: world.ctx.microsoft.clone(),
+            };
+            let client = llama::Client::with_base_url(engine_url).expect("client");
+            let question = "What meetings do I have tomorrow?";
+
+            let answer = agent::answer_for_bench(&client, &context, tier, question)
+                .await
+                .map_err(|error| error.to_string());
+            Played {
+                answer,
+                key: json!({
+                    "tool": { "name": "fetch_calendar", "args": { "range": ["tomorrow"] } },
+                    "forbid_times": true, "forbid_numbers": true,
+                }),
+                routed: false,
             }
         }
 

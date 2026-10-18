@@ -251,6 +251,21 @@ describe('scoreRun', () => {
     expect(missed.tool_called).toBe(false);
   });
 
+  it('counts an answer written in code, with no model call at all, as a read', () => {
+    const key = { tool: { name: 'fetch_calendar', args: { range: ['tomorrow'] } } };
+    const empty = scoreRun({
+      ...run({ answer: 'Nothing found in my calendar tomorrow.', key }),
+      exchanges: [],
+    });
+
+    expect(empty.routed_read).toBe(true);
+    expect(empty.tool_called).toBeNull();
+
+    // No answer and no exchange is a run that failed, not a read.
+    const failed = scoreRun({ ...run({ answer: '', key }), exchanges: [] });
+    expect(failed.routed_read).toBe(false);
+  });
+
   it('fails a tool call when none was expected', () => {
     const response = sse({
       choices: [

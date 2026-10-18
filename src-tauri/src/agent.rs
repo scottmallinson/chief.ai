@@ -680,6 +680,9 @@ struct Routed {
     /// The line under the answer saying where it came from, composed here from
     /// what was read rather than written by the model.
     provenance: String,
+    /// The answer, when everything read came back empty: written here, because
+    /// a model handed an empty list is a model handed room to invent one.
+    nothing: Option<String>,
 }
 
 /// Route the newest question by meaning and read the source it names.
@@ -703,6 +706,7 @@ async fn routed(
 
     let mut sections = Vec::new();
     let mut read = Vec::new();
+    let mut empty = Vec::new();
 
     let calls = tools::calls_for(route);
     let room =
@@ -718,13 +722,22 @@ async fn routed(
             return None;
         }
 
+        if result["count"] == 0 {
+            empty.push(label.to_lowercase());
+        }
+
         sections.push(format!("{label}:\n{}", trim_result(result, room.max(200))));
         read.push(label.to_lowercase());
     }
 
+    // Every read came back with nothing in it, so there is nothing to write up.
+    let nothing =
+        (empty.len() == read.len()).then(|| format!("Nothing found in {}.", read.join(" or ")));
+
     Some(Routed {
         material: sections.join("\n\n"),
         provenance: format!("Read just now: {}.", read.join("; ")),
+        nothing,
     })
 }
 
@@ -805,22 +818,6 @@ pub async fn ask_agent<R: Runtime>(
         }
     }
 
-    // The engine gives its memory back when nothing is using it, so it may not
-    // be running. Starting it is a few seconds of reading weights off disk, and
-    // the window is told that is what the wait is.
-    let engine = app.state::<engine::Engine>();
-    if !engine.is_running() {
-        let _ = app.emit(
-            STREAM_EVENT,
-            StreamEvent {
-                request_id: request_id.clone(),
-                update: Update::Waking,
-            },
-        );
-    }
-
-    engine.start_and_wait(client.inner()).await?;
-
     // Some questions the tool loop has to write are ones this machine already
     // knows the facts for. Putting those facts in front of the model is the
     // difference between a standup drafted from the work log and one invented
@@ -852,6 +849,34 @@ pub async fn ask_agent<R: Runtime>(
         }
         _ => None,
     };
+
+    // **Nothing to write up is answered before the engine is started.** The read
+    // is Rust's and needs no model, so an empty one costs the router and a
+    // request, not a couple of gigabytes of weights read off disk.
+    if let Some(read) = &routed {
+        if let Some(nothing) = &read.nothing {
+            return Ok(Answer {
+                content: nothing.clone(),
+                provenance: Some(read.provenance.clone()),
+            });
+        }
+    }
+
+    // The engine gives its memory back when nothing is using it, so it may not
+    // be running. Starting it is a few seconds of reading weights off disk, and
+    // the window is told that is what the wait is.
+    let engine = app.state::<engine::Engine>();
+    if !engine.is_running() {
+        let _ = app.emit(
+            STREAM_EVENT,
+            StreamEvent {
+                request_id: request_id.clone(),
+                update: Update::Waking,
+            },
+        );
+    }
+
+    engine.start_and_wait(client.inner()).await?;
 
     let (messages, has_material, provenance) = match routed {
         Some(read) => (
@@ -919,6 +944,10 @@ pub(crate) async fn answer_for_bench(
         }
         _ => None,
     };
+    if let Some(nothing) = routed.as_ref().and_then(|read| read.nothing.clone()) {
+        return Ok(nothing);
+    }
+
     let (messages, has_material) = match routed {
         Some(read) => (with_material(messages, &read.material), true),
         None => (messages, has_material),
@@ -2227,6 +2256,54 @@ mod orchestration_tests {
 
         router_server.await.expect("the router should be asked");
         github_server.await.expect("GitHub should be read");
+    }
+
+    /// A model handed an empty list is handed room to invent one, so a read that
+    /// came back with nothing is answered by the code that read it.
+    ///
+    /// Proved by making `nothing` always `None`: the question goes on to the
+    /// model with an empty list in front of it.
+    #[tokio::test]
+    async fn a_read_that_found_nothing_is_answered_without_the_model() {
+        let (router_host, _router) = serve(vec![("HTTP/1.1 200 OK", places_on_github())]);
+        let router_client = Client::with_base_url(&router_host).expect("loopback");
+        let (github_host, _github) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            r#"{ "total_count": 0, "items": [] }"#,
+        )]);
+        let context = context_connected_to(&github_host).await;
+
+        let read = routed(
+            &[turn(Role::User, "What is waiting on me?")],
+            &context,
+            &router_client,
+            |_| {},
+        )
+        .await
+        .expect("a clear match with a working source should be routed");
+
+        let nothing = read.nothing.expect("an empty read is answered in code");
+        assert!(nothing.starts_with("Nothing found in"), "{nothing}");
+        assert!(read.provenance.starts_with("Read just now:"));
+    }
+
+    #[tokio::test]
+    async fn a_read_that_found_something_is_still_written_up_by_the_model() {
+        let (router_host, _router) = serve(vec![("HTTP/1.1 200 OK", places_on_github())]);
+        let router_client = Client::with_base_url(&router_host).expect("loopback");
+        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = context_connected_to(&github_host).await;
+
+        let read = routed(
+            &[turn(Role::User, "What is waiting on me?")],
+            &context,
+            &router_client,
+            |_| {},
+        )
+        .await
+        .expect("routed");
+
+        assert_eq!(read.nothing, None);
     }
 
     #[tokio::test]
