@@ -73,6 +73,17 @@ const SERVER_VAR: &str = "CHIEF_LLAMA_SERVER";
 /// [`Engine::start_and_wait`] cannot see.
 const GPU_VAR: &str = "CHIEF_ENGINE_GPU";
 
+/// Let a model that reasons before it answers do so. Unset, the server is
+/// started with `--reasoning-budget 0` and answers at once.
+///
+/// Chief's requests already send `enable_thinking: false`, which Qwen3's
+/// template honours. LFM2.5 does not read it: it wrote 500 tokens of reasoning
+/// before every answer and was cut off at the ceiling, so each "answer" was
+/// 51 characters. The budget is the switch the server itself applies whatever
+/// the template says. `on` (or `1`, `true`, `yes`) removes it, for measuring
+/// what the reasoning buys.
+pub(crate) const THINKING_VAR: &str = "CHIEF_ENGINE_THINKING";
+
 /// How long to wait for a freshly spawned server to start answering before
 /// giving up on it. Reading a couple of gigabytes off a cold disk is slow, and
 /// the alternative to waiting is telling the user it failed when it did not.
@@ -349,6 +360,25 @@ pub(crate) fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> 
         // llama.cpp only applies in Jinja mode.
         OsString::from("--jinja"),
     ]
+}
+
+/// The flag that stops a model reasoning before it answers, from
+/// [`THINKING_VAR`]. Anything but an explicit yes keeps it off.
+pub(crate) fn thinking_arguments(setting: Option<&OsString>) -> Vec<OsString> {
+    let allowed = setting
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "on" | "1" | "true" | "yes"
+            )
+        });
+
+    if allowed {
+        Vec::new()
+    } else {
+        vec![OsString::from("--reasoning-budget"), OsString::from("0")]
+    }
 }
 
 /// Whether the engine may put the model on a GPU, from [`GPU_VAR`].
@@ -670,6 +700,7 @@ impl Engine {
         let mut command = Command::new(server);
         command
             .args(arguments(&self.weights, port, self.tier))
+            .args(thinking_arguments(std::env::var_os(THINKING_VAR).as_ref()))
             .args(device_arguments(self.offload.load(Ordering::SeqCst)))
             .stdin(Stdio::null())
             // Read rather than inherited. A server that dies on the way up says
@@ -1189,6 +1220,18 @@ mod tests {
                 "{flag} would override the engine's own fitting: {everything:?}"
             );
         }
+    }
+
+    #[test]
+    fn stops_a_model_reasoning_before_it_answers_unless_told_to() {
+        let off = [OsString::from("--reasoning-budget"), OsString::from("0")];
+
+        assert_eq!(thinking_arguments(None), off);
+        assert_eq!(thinking_arguments(Some(&OsString::from("off"))), off);
+        // A typo must not quietly turn minutes of reasoning back on.
+        assert_eq!(thinking_arguments(Some(&OsString::from("onn"))), off);
+        assert!(thinking_arguments(Some(&OsString::from("ON"))).is_empty());
+        assert!(thinking_arguments(Some(&OsString::from("true"))).is_empty());
     }
 
     #[test]

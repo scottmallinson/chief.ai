@@ -452,6 +452,7 @@ async fn world(github: Option<&str>, graph: Option<&str>, engine: &str) -> World
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(engine).expect("client"),
             corpus,
+            short_brief_lines: 0,
         },
         root,
     }

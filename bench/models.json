@@ -70,8 +70,8 @@
       "file": "LFM2.5-2.6B-Q4_K_M.gguf",
       "url": "https://huggingface.co/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-Q4_K_M.gguf",
       "tier": "light",
-      "enabled": false,
-      "notes": "Cloud screen only (18 Oct): thinks unless LLAMA_ARG_THINK_BUDGET=0, fails G3/G4, passes G5. LFM Open License v1.0: free below $10M annual revenue. Revision is main, not pinned."
+      "enabled": true,
+      "notes": "LFM2.5 2.6B. Reasons unless the server is started with --reasoning-budget 0, which Chief now does (CHIEF_ENGINE_THINKING=on turns it back on). LFM Open License v1.0: free below $10M annual revenue. Revision is main, not pinned."
     }
   ]
 }

@@ -115,6 +115,10 @@ pub struct Context {
     pub atlassian_rest: crate::atlassian::rest::Rest,
     pub engine: llama::Client,
     pub corpus: Corpus,
+    /// A day with this many lines or fewer is written in code without asking a
+    /// model; [`SHORT_BRIEF_LINES`] outside tests. A field rather than the
+    /// constant so the tests that read the prompt can still reach the model.
+    pub short_brief_lines: usize,
 }
 
 /// What can go wrong making a brief.
@@ -181,6 +185,9 @@ pub struct Checked {
     /// Whether the brief is the one Chief wrote from the material itself,
     /// because the model's could not be trusted.
     pub fell_back: bool,
+    /// Whether there was so little to say that the brief was written from the
+    /// material without asking a model; see [`SHORT_BRIEF_LINES`].
+    pub by_code: bool,
 }
 
 /// Everything phase one found, before a model has seen any of it.
@@ -873,6 +880,7 @@ async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
 /// attend"); see [`check`] for what it does and does not look for.
 async fn render_checked(
     engine: &llama::Client,
+    short_brief_lines: usize,
     prompt: &str,
     found: &Gathered,
 ) -> Result<(String, Checked), Error> {
@@ -887,6 +895,20 @@ async fn render_checked(
         words: prompt.strip_prefix(INSTRUCTIONS).unwrap_or(prompt),
     };
 
+    // A brief this short is its own list: the model could only reword it, and
+    // every rewording measured so far that went wrong did so on a short day
+    // ("A meeting is scheduled" for a school notice). Nothing to gain, so no
+    // model is asked.
+    if lines(found).len() <= short_brief_lines {
+        return Ok((
+            plain(found),
+            Checked {
+                by_code: true,
+                ..Checked::default()
+            },
+        ));
+    }
+
     let written = render(engine, prompt).await?;
     let first = check::unsupported_by(&written, &material);
 
@@ -899,6 +921,7 @@ async fn render_checked(
         Checked {
             first,
             fell_back: true,
+            by_code: false,
         },
     ))
 }
@@ -906,30 +929,15 @@ async fn render_checked(
 /// The most lines [`plain`] writes before saying how many it left out.
 const PLAIN_LINES: usize = 6;
 
+/// A day with this many lines or fewer is written in code, not by the model.
+pub const SHORT_BRIEF_LINES: usize = 3;
+
 /// A brief written from the material with no model, in the order the prompt
 /// lists it: what is time-bound first, then what is waiting on the user.
 ///
 /// It says nothing that was not found, which is the point of it.
 fn plain(found: &Gathered) -> String {
-    let tracked = [
-        found.issues.as_slice(),
-        found.assigned.as_slice(),
-        found.jira.as_slice(),
-    ]
-    .concat();
-
-    let lines: Vec<&String> = [
-        &found.agenda,
-        &found.waiting,
-        &found.mine,
-        &found.inbox,
-        &tracked,
-        &found.pages,
-        &found.shipped,
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let lines = lines(found);
 
     let mut out: Vec<String> = lines
         .iter()
@@ -942,6 +950,30 @@ fn plain(found: &Gathered) -> String {
     }
 
     out.join("\n")
+}
+
+/// Everything found, in the order the prompt lists it.
+fn lines(found: &Gathered) -> Vec<String> {
+    let tracked = [
+        found.issues.as_slice(),
+        found.assigned.as_slice(),
+        found.jira.as_slice(),
+    ]
+    .concat();
+
+    [
+        &found.agenda,
+        &found.waiting,
+        &found.mine,
+        &found.inbox,
+        &tracked,
+        &found.pages,
+        &found.shipped,
+    ]
+    .into_iter()
+    .flatten()
+    .cloned()
+    .collect()
 }
 
 /// The line as compared for repeats: no list marker, no case, no padding.
@@ -1054,7 +1086,8 @@ pub(crate) async fn daily_brief_at(
         "- Nothing else is scheduled for today.".to_string()
     } else {
         let prompt = assemble(&found, &clock::stamp_at(&now))?;
-        let (written, outcome) = render_checked(&context.engine, &prompt, &found).await?;
+        let (written, outcome) =
+            render_checked(&context.engine, context.short_brief_lines, &prompt, &found).await?;
         checked = outcome;
         written
     };
@@ -1261,6 +1294,7 @@ pub async fn context<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Con
         atlassian: app.state::<crate::atlassian::Client>().inner().clone(),
         atlassian_rest: app.state::<crate::atlassian::rest::Rest>().inner().clone(),
         engine: app.state::<llama::Client>().inner().clone(),
+        short_brief_lines: SHORT_BRIEF_LINES,
     })
 }
 
@@ -1670,6 +1704,7 @@ mod tests {
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url("http://127.0.0.1:1").expect("client"),
             corpus,
+            short_brief_lines: 0,
         };
 
         let found = gather(&context, chrono::Local::now()).await;
@@ -1719,6 +1754,7 @@ mod tests {
                 atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
                 engine: llama::Client::with_base_url(engine_host).expect("client"),
                 corpus,
+                short_brief_lines: 0,
             },
             Scratch(root),
         )
@@ -1783,6 +1819,34 @@ mod tests {
 
     fn said(text: &str) -> String {
         events(&[delta(text)])
+    }
+
+    /// A day this short is its own list, so no model is asked and nothing can be
+    /// added to it. Measured: Llama 3.2 3B and LFM2.5 each turned a school
+    /// notice into "a meeting is scheduled".
+    ///
+    /// Proved by setting `short_brief_lines` to 0 in the render: the stub is
+    /// asked and its invented line is the brief.
+    #[tokio::test]
+    async fn a_day_with_a_few_lines_is_written_without_asking_the_model() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            said("- A meeting is scheduled with Sam\n- Shipped the loopback listener"),
+        )]);
+        let (mut context, _scratch) = ready(&host, "short-day").await;
+        context.short_brief_lines = SHORT_BRIEF_LINES;
+
+        let brief = daily_brief(&context).await.expect("a brief");
+
+        assert!(brief.checked.by_code, "{:?}", brief.checked);
+        assert!(!brief.checked.fell_back);
+        assert!(
+            brief.markdown.contains("loopback listener"),
+            "{}",
+            brief.markdown
+        );
+        assert!(!brief.markdown.contains("Sam"), "{}", brief.markdown);
+        server.abort();
     }
 
     /// A brief that names nothing the material lacks costs one call and is
@@ -2087,6 +2151,7 @@ mod tests {
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(&host).expect("client"),
             corpus: Corpus::at(root),
+            short_brief_lines: 0,
         };
 
         let error = daily_brief(&context)

@@ -293,12 +293,17 @@ export function scoreRun(run) {
 
   // What the user must not be told.
   // Free chat has no material to invent against, and its [Placeholders] are not names.
+  // A brief Chief wrote from the material itself, with no model asked, has no
+  // prompt to compare against and nothing in it that was not found.
+  const byCode = Boolean(run.check?.by_code);
   const invented =
-    ok && run.group !== 'chat' ? inventedThings(answer.replace(/\[[^\]]*\]/g, ''), shown) : [];
+    ok && run.group !== 'chat' && !byCode
+      ? inventedThings(answer.replace(/\[[^\]]*\]/g, ''), shown)
+      : [];
   const forbidden = (key.forbid ?? []).filter((term) => normal(body).includes(normal(term)));
   const stray = [];
   if (key.forbid_times) stray.push(...(body.match(TIME) ?? []).map((time) => `time ${time}`));
-  if (key.forbid_numbers)
+  if (key.forbid_numbers && !byCode)
     stray.push(
       ...(body.match(/\d+/g) ?? [])
         .filter((n) => !new RegExp(`\\b${n}\\b`).test(shown))

@@ -187,6 +187,31 @@ describe('scoreRun', () => {
     expect(m.pass).toBe(false);
   });
 
+  it('does not hold a brief written in code to a prompt no model saw', () => {
+    const m = scoreRun(
+      run({
+        answer: '- Riverside Library: Your reserved book is ready',
+        key: { must: ['reserved book'], forbid_numbers: true },
+        group: 'brief-quiet',
+        extra: { check: { by_code: true, fell_back: false, first: [] } },
+      }),
+    );
+    expect(m.invented).toEqual([]);
+    expect(m.clean).toBe(true);
+  });
+
+  it('still checks a brief written in code against what must not appear', () => {
+    const m = scoreRun(
+      run({
+        answer: '- Team meeting on Friday',
+        key: { forbid: ['meeting'] },
+        group: 'brief-quiet',
+        extra: { check: { by_code: true, fell_back: false, first: [] } },
+      }),
+    );
+    expect(m.clean).toBe(false);
+  });
+
   it('fails a missing fact and reports which one', () => {
     const m = scoreRun(run({ answer: '- hello', key: { must: ['Dentist', 'Standup'] } }));
     expect(m.facts).toBe(0);

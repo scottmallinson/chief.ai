@@ -336,6 +336,9 @@ impl Server {
         let started = Instant::now();
         let child = Command::new(&server)
             .args(&arguments)
+            .args(engine::thinking_arguments(
+                std::env::var_os(engine::THINKING_VAR).as_ref(),
+            ))
             .env(variable, search)
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(log).expect("a log file"))
@@ -422,11 +425,21 @@ fn tomorrow() -> String {
 /// where `markdown_of` put it and the loop that writes the record takes it.
 static LAST_CHECK: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
 
+/// How short a day must be to be written in code. Chief's own setting unless
+/// `CHIEF_BENCH_SHORT_BRIEF` names another, `0` to ask the model every time.
+fn short_brief_lines() -> usize {
+    std::env::var("CHIEF_BENCH_SHORT_BRIEF")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(recipe::SHORT_BRIEF_LINES)
+}
+
 fn markdown_of(brief: Result<recipe::Brief, recipe::Error>) -> Result<String, String> {
     if let Ok(brief) = &brief {
         *LAST_CHECK.lock().expect("check slot") = Some(json!({
             "first": brief.checked.first,
             "fell_back": brief.checked.fell_back,
+            "by_code": brief.checked.by_code,
         }));
     }
 
@@ -635,6 +648,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
                 connect(&world.ctx.pool, integrations::GITHUB, "me").await;
             }
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let at = if id == "em-13" { "14:10" } else { "08:00" };
             let brief = recipe::daily_brief_at(&world.ctx, clock(at)).await;
@@ -695,6 +709,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -713,6 +728,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             let graph = graph_with(vec![all_day("INSET day — school closed", &day)], vec![]).await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -736,6 +752,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -762,6 +779,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -786,6 +804,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -813,6 +832,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(Some(&github.host), None, NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -840,6 +860,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(Some(&github.host), None, NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -865,6 +886,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -894,6 +916,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -938,6 +961,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(Some(&github.host), None, NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -971,6 +995,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(Some(&github.host), None, NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
