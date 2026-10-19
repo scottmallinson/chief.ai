@@ -36,11 +36,19 @@ pub const MARGIN: f32 = 0.02;
 /// The same gap between the best GitHub view and the runner-up, and larger
 /// because the three views are closer to each other than the sources are.
 ///
-/// Measured with the view descriptions above on 60 questions in three sets:
-/// at 0.04, 34 were routed and none to the wrong view; at 0.03, one went
-/// wrong. The descriptions were chosen from four candidates on the same
-/// questions, so the figures flatter them a little. The rest take the tool loop.
-pub const VIEW_MARGIN: f32 = 0.04;
+/// Measured with the view descriptions above on 62 questions in the merged
+/// fixture set: at 0.045, 33 were routed and none to the wrong view; at 0.04
+/// one went wrong ("Which of my changes are awaiting review?", routed to review
+/// requests at 0.043 when it means the user's own pull requests). The
+/// descriptions were chosen from four candidates on the same questions, so the
+/// figures flatter them a little. The rest take the tool loop.
+///
+/// It was 0.04 against a description that put "Which pull requests of mine are
+/// still open?" at 0.039, so the most ordinary open-pull-requests question
+/// fell back to the tool loop on the third Mac batch (0 of 24 routed, where
+/// the batch before had 21 of 21). The open view now says "still open ... not
+/// merged yet", which puts that question at 0.074.
+pub const VIEW_MARGIN: f32 = 0.045;
 
 /// The gap before a calendar question is narrowed from the week to a day.
 /// Below it the whole week is read, which is wider and never wrong. Screened
@@ -72,7 +80,10 @@ const VIEWS: [(GithubView, &str); 3] = [
         GithubView::Reviewing,
         "Review requests: pull requests written by other people that are waiting for me to review or approve",
     ),
-    (GithubView::Open, "My own pull requests that are not merged yet: open, in draft, or waiting for checks and reviewers"),
+    (
+        GithubView::Open,
+        "Open: my own pull requests that are still open, in draft, or waiting for checks and reviewers, not merged yet",
+    ),
     (
         GithubView::Merged,
         "Merged: my own pull requests that have already been merged and shipped",
@@ -417,7 +428,7 @@ mod tests {
     #[test]
     fn the_view_margin_is_the_measured_one() {
         // At 0.02 three of 24 questions went to the wrong view.
-        assert!((VIEW_MARGIN - 0.04).abs() < f32::EPSILON);
+        assert!((VIEW_MARGIN - 0.045).abs() < f32::EPSILON);
     }
 
     #[test]

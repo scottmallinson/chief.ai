@@ -853,7 +853,17 @@ async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
 
     let written = break_loop(reply.content.trim());
 
-    if written.is_empty() {
+    // **The length-limit marker is not an answer either.** A model that
+    // reasons its way to the ceiling says nothing, and the stream layer
+    // appends its "[Cut short]" note to that nothing: 7 of 7 runs of LFM2.5
+    // with its reasoning left on filed the note alone as the day's brief.
+    // Trimmed, as the answer was: the marker's own leading blank lines go with
+    // the nothing in front of it.
+    let cut_marker_only = written
+        .strip_suffix(llama::ANSWER_CUT.trim())
+        .is_some_and(|body| body.trim().is_empty());
+
+    if written.is_empty() || cut_marker_only {
         return Err(Error::EmptyAnswer);
     }
 
@@ -910,6 +920,20 @@ async fn render_checked(
     }
 
     let written = render(engine, prompt).await?;
+
+    // A brief that ran into the length limit may stop halfway through a claim,
+    // and nothing can tell which. It is not used.
+    if written.ends_with(llama::ANSWER_CUT) {
+        return Ok((
+            plain(found),
+            Checked {
+                first: vec!["cut off at the length limit".to_string()],
+                fell_back: true,
+                by_code: false,
+            },
+        ));
+    }
+
     let first = check::unsupported_by(&written, &material);
 
     if first.is_empty() {
@@ -1248,13 +1272,35 @@ pub(crate) fn describe_event(event: &microsoft::Event) -> String {
             .get(0..5)
             .unwrap_or("")
     };
-    let who = if event.attendees.is_empty() {
+    // An attendee the title already names is not named again: "1:1 with Priya"
+    // with Priya invited read "1:1 with Priya with Priya" in every brief
+    // written in code.
+    let others: Vec<&str> = event
+        .attendees
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !named_in(&event.subject, name))
+        .collect();
+    let who = if others.is_empty() {
         String::new()
     } else {
-        format!(" with {}", event.attendees.join(", "))
+        format!(" with {}", others.join(", "))
     };
 
     format!("{when} {}{who}", event.subject).trim().to_string()
+}
+
+/// Whether `title` already says `name`, or any whole word of it ("Sam" for
+/// "Sam Patel"), ignoring case. Whole words only, so "Ana" is not in "banana".
+fn named_in(title: &str, name: &str) -> bool {
+    let words: Vec<String> = title
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .collect();
+
+    name.split_whitespace()
+        .filter(|part| part.chars().count() > 1)
+        .any(|part| words.contains(&part.to_lowercase()))
 }
 
 fn describe_message(message: &microsoft::MailMessage) -> String {
@@ -1467,7 +1513,7 @@ mod tests {
 
     fn gathered() -> Gathered {
         Gathered {
-            agenda: vec!["10:00 1:1 with Sam with Sam Patel".to_string()],
+            agenda: vec!["10:00 1:1 with Sam".to_string()],
             waiting: vec!["scottmallinson/chief.ai #44 — Ana asked for your review".to_string()],
             mine: vec!["scottmallinson/chief.ai #12 — Add the corpus".to_string()],
             shipped: vec!["Shipped the loopback listener".to_string()],
@@ -1616,7 +1662,43 @@ mod tests {
             all_day: false,
         };
 
-        assert_eq!(describe_event(&event), "10:00 1:1 with Sam with Sam Patel");
+        // The title already says who, so the attendee is not said again.
+        assert_eq!(describe_event(&event), "10:00 1:1 with Sam");
+    }
+
+    /// The defect: "1:1 with Priya" with Priya invited was written, in code, as
+    /// "1:1 with Priya with Priya" in every run of the calendar fixture.
+    ///
+    /// Proved by making `named_in` return false: the name is said twice.
+    #[test]
+    fn an_attendee_the_title_names_is_not_named_again_but_the_others_are() {
+        let event = |subject: &str, attendees: &[&str]| microsoft::Event {
+            subject: subject.to_string(),
+            start: "2026-08-28T09:00:00.0000000".to_string(),
+            end: "2026-08-28T09:30:00.0000000".to_string(),
+            organiser: None,
+            attendees: attendees.iter().map(|name| name.to_string()).collect(),
+            online: false,
+            all_day: false,
+        };
+
+        assert_eq!(
+            describe_event(&event("1:1 with Priya", &["Priya"])),
+            "09:00 1:1 with Priya"
+        );
+        assert_eq!(
+            describe_event(&event("Team standup", &["Priya", "Tom", "Ana"])),
+            "09:00 Team standup with Priya, Tom, Ana"
+        );
+        assert_eq!(
+            describe_event(&event("Sync with priya", &["Priya Shah", "Tom"])),
+            "09:00 Sync with priya with Tom"
+        );
+        // A name inside a longer word is not the name.
+        assert_eq!(
+            describe_event(&event("Banana review", &["Ana"])),
+            "09:00 Banana review with Ana"
+        );
     }
 
     // ---- end to end, against stub servers ----
@@ -1819,6 +1901,67 @@ mod tests {
 
     fn said(text: &str) -> String {
         events(&[delta(text)])
+    }
+
+    /// A stream that ends because the model reached its length limit.
+    fn ran_out(chunks: &[serde_json::Value]) -> String {
+        let mut all = chunks.to_vec();
+        all.push(serde_json::json!({
+            "choices": [{ "index": 0, "delta": {}, "finish_reason": "length" }],
+        }));
+        events(&all)
+    }
+
+    /// The defect the third Mac batch found: LFM2.5 with its reasoning left on
+    /// spends the whole length limit thinking and says nothing. The stream
+    /// layer then writes its "[Cut short]" marker onto an empty answer, the
+    /// marker is not empty, and the marker alone was filed as the day's brief
+    /// in 7 of 7 runs.
+    ///
+    /// Proved by deleting the `cut_marker_only` return in `render`: the marker
+    /// is the brief.
+    #[tokio::test]
+    async fn a_model_that_ran_out_before_saying_anything_leaves_no_brief() {
+        let thinking = serde_json::json!({
+            "choices": [{ "index": 0, "delta": { "reasoning_content": "Let me count" } }],
+        });
+        let (host, _server) = serve(vec![("HTTP/1.1 200 OK", ran_out(&[thinking]))]);
+        let (context, _scratch) = ready(&host, "ran-out-silent").await;
+
+        let error = daily_brief(&context).await.expect_err("nothing was said");
+
+        assert!(matches!(error, Error::EmptyAnswer), "{error:?}");
+        let date = today_date();
+        assert!(context
+            .corpus
+            .read(&format!("briefs/{date}.md"))
+            .await
+            .is_err());
+        assert_eq!(written_at(&context.pool, &date).await.expect("read"), None);
+    }
+
+    /// A brief cut off at the limit may end halfway through a claim, so it is
+    /// not used; the one written from the material is.
+    ///
+    /// Proved by deleting the `ends_with(ANSWER_CUT)` branch in
+    /// `render_checked`: the half-line and the apology are the brief.
+    #[tokio::test]
+    async fn a_brief_cut_off_at_the_length_limit_is_written_from_the_material_instead() {
+        let (host, _server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            ran_out(&[delta("- Shipped the loopback lis")]),
+        )]);
+        let (context, _scratch) = ready(&host, "ran-out-partial").await;
+
+        let brief = daily_brief(&context).await.expect("a brief");
+
+        assert!(brief.checked.fell_back, "{:?}", brief.checked);
+        assert!(
+            brief.markdown.contains("Shipped the loopback listener"),
+            "{}",
+            brief.markdown
+        );
+        assert!(!brief.markdown.contains("Cut short"), "{}", brief.markdown);
     }
 
     /// A day this short is its own list, so no model is asked and nothing can be
