@@ -79,6 +79,12 @@ describe('parseStream', () => {
 });
 
 describe('inventedThings', () => {
+  it('accepts a 12-hour time that is the 24-hour one in the material, and flags a wrong one', () => {
+    const shown = 'start 15:00 end 15:30 Quarterly planning';
+    expect(inventedThings('- Ends at 3:30 PM, starts 3:00 PM', shown)).toEqual([]);
+    expect(inventedThings('- Ends at 4:30 PM', shown)).toEqual(['time 4:30 PM']);
+  });
+
   const shown = '## Today\n- 09:00 Standup with Priya\n- acme/api #41 Retry';
   it('lets through what the material says', () => {
     expect(inventedThings('- 09:00 Standup with Priya, then #41', shown)).toEqual([]);

@@ -131,6 +131,22 @@ const COMMON_CAPITALISED = new Set([
 ]);
 
 /**
+ * Whether a 12-hour time ("3:30 PM") is the 24-hour one the material has
+ * ("15:30"). Without this a correct conversion counts as invented, and a wrong
+ * one ("4:30 PM" for 15:30) is told apart from it only by the arithmetic.
+ */
+function seenAs24Hour(time, seen) {
+  const m = /^(\d{1,2})(?::(\d{2}))?\s?([ap])m$/i.exec(time.trim());
+  if (!m) return false;
+  const hour = (Number(m[1]) % 12) + (m[3].toLowerCase() === 'p' ? 12 : 0);
+  const minutes = m[2] ?? '00';
+  return (
+    seen.includes(`${String(hour).padStart(2, '0')}:${minutes}`) ||
+    seen.includes(`${hour}:${minutes}`)
+  );
+}
+
+/**
  * Things in the answer that are not in what the model was shown: times, numbers
  * and capitalised words in the middle of a sentence (names, mostly).
  *
@@ -152,7 +168,8 @@ export function inventedThings(answer, shown) {
 
   for (const time of text.match(TIME) ?? []) {
     const bare = normal(time).replace(/\s?[ap]m$/, '');
-    if (!seen.includes(bare) && !seen.includes(normal(time))) found.push(`time ${time}`);
+    if (!seen.includes(bare) && !seen.includes(normal(time)) && !seenAs24Hour(time, seen))
+      found.push(`time ${time}`);
   }
 
   for (const number of text.match(/#\d+|\b\d{2,}\b/g) ?? []) {
