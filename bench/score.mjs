@@ -172,7 +172,15 @@ export function inventedThings(answer, shown) {
       found.push(`time ${time}`);
   }
 
+  // "17 days ago" is worked out from a date the material has, so the 17 is
+  // not in it and is not invented. Only when the material has a date to work from.
+  const age = new Set(
+    /\b\d{4}-\d{2}-\d{2}\b/.test(seen)
+      ? [...text.matchAll(/\b(\d+)\s+(?:days?|weeks?)\s+ago\b/gi)].map((m) => m[1])
+      : [],
+  );
   for (const number of text.match(/#\d+|\b\d{2,}\b/g) ?? []) {
+    if (age.has(number)) continue;
     if (!seen.includes(number.replace('#', ''))) found.push(`number ${number}`);
   }
 
@@ -181,12 +189,14 @@ export function inventedThings(answer, shown) {
     // the word after a full stop: a capital there means nothing. A time opens an
     // agenda line ("14:00: Attend the call") as a bullet does, and the word that
     // follows it starts the line.
-    const words = line
+    const all = line
       .replace(/^\s*(?:[-*\u2022]|\d+[.)])?\s*/, '')
       .replace(/^(?:\d{1,2}:\d{2}\s?(?:[ap]m\b)?|\d{1,2}\s?[ap]m\b)[\s:\-\u2013\u2014.)]*/i, '')
-      .split(/\s+/)
-      .slice(1);
-    let afterStop = false;
+      .split(/\s+/);
+    const words = all.slice(1);
+    // A one-word label ("**Plan:** Connect GitHub") is the skipped word, and
+    // what follows it starts a sentence.
+    let afterStop = /:$/.test((all[0] ?? '').replace(/[*_]+$/, ''));
     for (const word of words) {
       const clean = word.replace(/^[^A-Za-z]+|[^A-Za-z'\u2019]+$/g, '');
       if (!afterStop && /^[A-Z][a-z]{2,}/.test(clean)) {
@@ -200,7 +210,9 @@ export function inventedThings(answer, shown) {
           found.push(`name ${clean}`);
       }
       // "Dr. Smith": the full stop after a title does not end a sentence.
-      afterStop = /[.!?:]$/.test(word) && !TITLES.has(clean.toLowerCase());
+      // A bold or italic label ("**Today's plan:** Connect ...") ends in the
+      // marker, not the colon, and what follows it starts a sentence.
+      afterStop = /[.!?:]$/.test(word.replace(/[*_]+$/, '')) && !TITLES.has(clean.toLowerCase());
     }
   }
 

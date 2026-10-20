@@ -79,6 +79,18 @@ describe('parseStream', () => {
 });
 
 describe('inventedThings', () => {
+  it('does not take the word after a bold label for a name', () => {
+    const shown = 'Nothing is waiting.';
+    expect(
+      inventedThings('**What is waiting on me:** None reported.\n**Plan:** Connect GitHub', shown),
+    ).toEqual([]);
+    expect(inventedThings('We met Zorbo today', shown)).toEqual(['name Zorbo']);
+  });
+  it('reads "17 days ago" as worked out from a date, only when the material has one', () => {
+    expect(inventedThings('Updated 17 days ago', 'updated 2026-10-02')).toEqual([]);
+    expect(inventedThings('Updated 17 days ago', 'updated recently')).toEqual(['number 17']);
+    expect(inventedThings('Raised 17 PRs', 'updated 2026-10-02')).toEqual(['number 17']);
+  });
   it('accepts a 12-hour time that is the 24-hour one in the material, and flags a wrong one', () => {
     const shown = 'start 15:00 end 15:30 Quarterly planning';
     expect(inventedThings('- Ends at 3:30 PM, starts 3:00 PM', shown)).toEqual([]);
