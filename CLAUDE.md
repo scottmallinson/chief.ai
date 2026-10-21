@@ -267,10 +267,18 @@ the user to install a runtime, which is the whole reason the engine is a module 
   the CPU for the rest of the run: a machine that ran Chief on its CPU before there was a GPU build
   must go on doing so, whatever its driver does. `CHIEF_ENGINE_GPU=off` does the same from the
   start, for a driver that answers wrongly rather than failing, which nothing can detect.
-  **On Windows that is the default, and `CHIEF_ENGINE_GPU=on` opts back in.** 0.14.0 froze a Core
-  Ultra 7 268V laptop (Arc 140V, memory shared with the system) on follow-on questions until the
-  engine was kept off the GPU; Vulkan on an integrated GPU can hang the whole machine, which is not
-  a failed start, so nothing falls back. The Mac and Linux defaults are unchanged.
+  **On Windows and Linux the model runs on the CPU until the person ticks "Use graphics card" in
+  Settings.** 0.14.0 froze a Core Ultra 7 268V laptop (Arc 140V, memory shared with the system) on
+  follow-on questions; a Vulkan driver that hangs rather than fails freezes the whole machine, which
+  is not a failed start, so nothing falls back, and a trial run of the model is the hang. Nothing
+  can promise a driver is stable, so the default is the one that cannot involve it. Apple silicon
+  keeps Metal. Precedence: `CHIEF_ENGINE_GPU` (a developer override) over the Settings box
+  (`engine.use_gpu`) over the platform default. `gpu.rs` runs `llama-server --list-devices` only
+  when Settings opens, to say what the box would switch on; nothing is decided from it. **Choosing
+  between a card and integrated graphics by size or name was built and dropped**: the engine's list
+  prints no integrated/discrete flag (checked with `--verbose` on the Arc 140V laptop), so it was a
+  guess about a flag the driver already holds, and reading that flag needs Vulkan loaded in
+  Chief. llama.cpp itself uses an integrated GPU when it is the only one.
 - **ggml loads its backends from the server's own directory and the current directory — not the
   loader path.** That includes the CPU backend, which the Windows and Linux builds pick per
   instruction set at run time. So the server is started in the library directory
