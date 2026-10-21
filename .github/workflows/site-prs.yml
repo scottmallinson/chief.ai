@@ -1,0 +1,63 @@
+# Tells the website repo which pull requests are open.
+#
+# The marketing site shows a real open pull request in its picture of the app,
+# and it is a static site that makes no requests of its own, so the list has to
+# be pushed to it. This sends the current list to the site repo whenever a pull
+# request is opened, closed, reopened, edited, or switches between draft and
+# ready. The site repo writes it into a data file and Vercel redeploys: nothing
+# is rebuilt on a schedule, and nothing is stale for longer than a deploy takes.
+#
+# `pull_request_target` because a pull request from a fork has no access to
+# secrets under `pull_request`. That event is safe here only because this job
+# never checks out or runs anything from the pull request: it reads the list
+# through the API and posts it.
+#
+# SITE_DISPATCH_TOKEN is a fine-grained token (or GitHub App token) with
+# "Contents: write" on the site repo and nothing else. Without it the job
+# skips itself rather than failing every pull request.
+name: Site pull requests
+
+on:
+  pull_request_target:
+    types: [opened, reopened, closed, edited, ready_for_review, converted_to_draft]
+  workflow_dispatch:
+
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: site-prs
+  cancel-in-progress: true
+
+env:
+  SITE_REPO: scottmallinson/chief-website
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send the open pull requests to the site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$DISPATCH_TOKEN" ]; then
+            echo "SITE_DISPATCH_TOKEN is not set; nothing to send."
+            exit 0
+          fi
+
+          # Open, not draft: a draft is not waiting on anybody. Oldest first,
+          # which is the one the app would draft a review request for. Only the
+          # fields the site shows, so nothing else about a pull request is sent.
+          gh api "repos/${{ github.repository }}/pulls?state=open&per_page=100" \
+            --jq '[.[] | select(.draft == false) | {number, title, created_at}] | sort_by(.created_at)' \
+            > prs.json
+
+          jq -n --slurpfile prs prs.json \
+            '{event_type: "open-prs", client_payload: {prs: $prs[0]}}' > body.json
+
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$SITE_REPO/dispatches" \
+            --data @body.json
