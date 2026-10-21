@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.1 (2026-10-21)
+
+### Fixes
+
+- **agent:** keep the engine off the GPU by default on Windows ([927e5cf](https://github.com/scottmallinson/chief.ai/commit/927e5cf5ea6719ea2a92c646332ec3869cba0ed6))
+- **agent:** keep the embedding server off the GPU ([358469f](https://github.com/scottmallinson/chief.ai/commit/358469f8f487590caafbcb2e7d1a430fe7f494f7))
+
 ## 0.14.0 (2026-10-21)
 
 ### Features
