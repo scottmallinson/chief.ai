@@ -316,6 +316,13 @@ const GROUNDED: &[(&str, Ground)] = &[
     ("stand up", Ground::Standup),
     ("what is my standup", Ground::Standup),
     ("whats my standup", Ground::Standup),
+    // "Daily" is what some teams call the same meeting. Measured: "Draft my
+    // daily" went to the tool loop and came back "No results were found".
+    ("draft my daily", Ground::Standup),
+    ("write my daily", Ground::Standup),
+    ("draft my daily standup", Ground::Standup),
+    ("my daily standup", Ground::Standup),
+    ("daily standup", Ground::Standup),
 ];
 
 /// Which grounded question this is, if it is one.
@@ -1482,5 +1489,13 @@ mod delivery {
         let (context, _scratch, _server) = silent("nobrief").await;
 
         assert_eq!(deliver("/brief", &context, |_| {}).await, None);
+    }
+
+    #[test]
+    fn a_daily_is_a_standup_and_a_sentence_about_one_is_not() {
+        assert_eq!(ground("Draft my daily"), Some(Ground::Standup));
+        assert_eq!(ground("draft my daily standup?"), Some(Ground::Standup));
+        assert_eq!(ground("what is the daily rate for a contractor"), None);
+        assert_eq!(ground("draft my daily plan for the offsite"), None);
     }
 }
