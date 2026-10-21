@@ -152,26 +152,27 @@
           makes to a host you did not connect yourself.
         </p>
         <p class="mt-12">
-          Chief chooses the model from the machine — you do not pick one. A laptop with 16 GB of
-          memory and four or more physical cores gets the 3B; anything smaller gets Qwen3 1.7B,
-          which answers less well but answers.
+          Every machine runs the same model, Gemma 4 E2B, chosen over seven others by measurement on
+          an 8 GB Intel Mac mini. The machine decides only how large a window it reads with. A
+          second, much smaller download, an embedding model, lets Chief place a question by meaning
+          before the main model is asked; without it Chief still works, just by a slower route.
         </p>
 
         <div class="grid-table">
           <div class="grid-table-head micro">
-            <span>model</span><span>download</span><span>resident</span><span>chosen when</span>
+            <span>model</span><span>download</span><span>resident</span><span>used for</span>
           </div>
           <div class="grid-table-row">
-            <span class="mono">Llama 3.2 3B Instruct</span>
-            <span>2.0 GB</span>
-            <span>~2.4 GB</span>
-            <span>16 GB of memory and 4+ cores</span>
+            <span class="mono">Gemma 4 E2B Instruct</span>
+            <span>3.5 GB</span>
+            <span>~3.5 GB</span>
+            <span>Writing answers and briefs</span>
           </div>
           <div class="grid-table-row">
-            <span class="mono">Qwen3 1.7B</span>
-            <span>1.3 GB</span>
-            <span>~2.0 GB</span>
-            <span>Anything less</span>
+            <span class="mono">EmbeddingGemma 2</span>
+            <span>0.3 GB</span>
+            <span>~0.3 GB</span>
+            <span>Placing a question by meaning</span>
           </div>
         </div>
 

@@ -97,6 +97,8 @@ export function withoutNote(answer) {
   return answer.replace(NOTE, '').trim();
 }
 
+const TITLES = new Set(['dr', 'mr', 'mrs', 'ms', 'prof', 'st', 'jr', 'sr']);
+
 const COMMON_CAPITALISED = new Set([
   'i',
   "i'm",
@@ -129,6 +131,22 @@ const COMMON_CAPITALISED = new Set([
 ]);
 
 /**
+ * Whether a 12-hour time ("3:30 PM") is the 24-hour one the material has
+ * ("15:30"). Without this a correct conversion counts as invented, and a wrong
+ * one ("4:30 PM" for 15:30) is told apart from it only by the arithmetic.
+ */
+function seenAs24Hour(time, seen) {
+  const m = /^(\d{1,2})(?::(\d{2}))?\s?([ap])m$/i.exec(time.trim());
+  if (!m) return false;
+  const hour = (Number(m[1]) % 12) + (m[3].toLowerCase() === 'p' ? 12 : 0);
+  const minutes = m[2] ?? '00';
+  return (
+    seen.includes(`${String(hour).padStart(2, '0')}:${minutes}`) ||
+    seen.includes(`${hour}:${minutes}`)
+  );
+}
+
+/**
  * Things in the answer that are not in what the model was shown: times, numbers
  * and capitalised words in the middle of a sentence (names, mostly).
  *
@@ -140,33 +158,61 @@ const COMMON_CAPITALISED = new Set([
 export function inventedThings(answer, shown) {
   const text = withoutNote(answer);
   const seen = normal(shown);
-  const known = new Set(seen.match(/[a-z0-9]+(?:['][a-z]+)?/g) ?? []);
+  const known = new Set();
+  for (const token of seen.match(/[a-z0-9]+(?:['][a-z]+)?/g) ?? []) {
+    known.add(token);
+    // Material that says "Sam's birthday" also says "Sam".
+    if (token.endsWith("'s")) known.add(token.slice(0, -2));
+  }
   const found = [];
 
   for (const time of text.match(TIME) ?? []) {
     const bare = normal(time).replace(/\s?[ap]m$/, '');
-    if (!seen.includes(bare) && !seen.includes(normal(time))) found.push(`time ${time}`);
+    if (!seen.includes(bare) && !seen.includes(normal(time)) && !seenAs24Hour(time, seen))
+      found.push(`time ${time}`);
   }
 
+  // "17 days ago" is worked out from a date the material has, so the 17 is
+  // not in it and is not invented. Only when the material has a date to work from.
+  const age = new Set(
+    /\b\d{4}-\d{2}-\d{2}\b/.test(seen)
+      ? [...text.matchAll(/\b(\d+)\s+(?:days?|weeks?)\s+ago\b/gi)].map((m) => m[1])
+      : [],
+  );
   for (const number of text.match(/#\d+|\b\d{2,}\b/g) ?? []) {
+    if (age.has(number)) continue;
     if (!seen.includes(number.replace('#', ''))) found.push(`number ${number}`);
   }
 
   for (const line of text.split('\n')) {
-    // The first word of a line (after any bullet) is skipped, and so is the
-    // word after a full stop: a capital there means nothing.
-    const words = line
-      .replace(/^[\s\-*\u2022\d.)]+/, '')
-      .split(/\s+/)
-      .slice(1);
-    let afterStop = false;
+    // The first word of a line (after any bullet or time) is skipped, and so is
+    // the word after a full stop: a capital there means nothing. A time opens an
+    // agenda line ("14:00: Attend the call") as a bullet does, and the word that
+    // follows it starts the line.
+    const all = line
+      .replace(/^\s*(?:[-*\u2022]|\d+[.)])?\s*/, '')
+      .replace(/^(?:\d{1,2}:\d{2}\s?(?:[ap]m\b)?|\d{1,2}\s?[ap]m\b)[\s:\-\u2013\u2014.)]*/i, '')
+      .split(/\s+/);
+    const words = all.slice(1);
+    // A one-word label ("**Plan:** Connect GitHub") is the skipped word, and
+    // what follows it starts a sentence.
+    let afterStop = /:$/.test((all[0] ?? '').replace(/[*_]+$/, ''));
     for (const word of words) {
       const clean = word.replace(/^[^A-Za-z]+|[^A-Za-z'\u2019]+$/g, '');
       if (!afterStop && /^[A-Z][a-z]{2,}/.test(clean)) {
         const key = normal(clean);
-        if (!known.has(key) && !COMMON_CAPITALISED.has(key)) found.push(`name ${clean}`);
+        // "Parents'" and "Primary's" are the words the material has, possessed,
+        // and "All-day" is two words it has, joined.
+        const stem = key.replace(/'s?$/, '');
+        const joined =
+          stem.includes('-') && stem.split('-').every((part) => !part || known.has(part));
+        if (!known.has(key) && !known.has(stem) && !joined && !COMMON_CAPITALISED.has(key))
+          found.push(`name ${clean}`);
       }
-      afterStop = /[.!?:]$/.test(word);
+      // "Dr. Smith": the full stop after a title does not end a sentence.
+      // A bold or italic label ("**Today's plan:** Connect ...") ends in the
+      // marker, not the colon, and what follows it starts a sentence.
+      afterStop = /[.!?:]$/.test(word.replace(/[*_]+$/, '')) && !TITLES.has(clean.toLowerCase());
     }
   }
 
@@ -276,12 +322,17 @@ export function scoreRun(run) {
 
   // What the user must not be told.
   // Free chat has no material to invent against, and its [Placeholders] are not names.
+  // A brief Chief wrote from the material itself, with no model asked, has no
+  // prompt to compare against and nothing in it that was not found.
+  const byCode = Boolean(run.check?.by_code);
   const invented =
-    ok && run.group !== 'chat' ? inventedThings(answer.replace(/\[[^\]]*\]/g, ''), shown) : [];
+    ok && run.group !== 'chat' && !byCode
+      ? inventedThings(answer.replace(/\[[^\]]*\]/g, ''), shown)
+      : [];
   const forbidden = (key.forbid ?? []).filter((term) => normal(body).includes(normal(term)));
   const stray = [];
   if (key.forbid_times) stray.push(...(body.match(TIME) ?? []).map((time) => `time ${time}`));
-  if (key.forbid_numbers)
+  if (key.forbid_numbers && !byCode)
     stray.push(
       ...(body.match(/\d+/g) ?? [])
         .filter((n) => !new RegExp(`\\b${n}\\b`).test(shown))
@@ -342,10 +393,19 @@ export function scoreRun(run) {
   m.looped = isLooping(body);
   m.hit_length = final.finish === 'length';
 
+  // A request that offered the model no tools is one Chief answered by reading
+  // the source itself (the experimental router). "Did the model choose the
+  // right tool" has no meaning there, so the tool checks are not applied and
+  // the run is judged on its answer. A fixture that expects a tool and gets
+  // no tools offered is marked, so the report can say how many were routed.
+  // A read that came back empty is answered in code and asks the model nothing,
+  // so there may be no exchange at all.
+  m.routed_read = Boolean(key.tool) && ok && exchanges.every((e) => !e.request?.tools);
+
   // Tools.
   m.tool_calls = calls.map((call) => ({ name: call.name, args: call.args, valid: call.valid }));
   m.tool_valid = calls.length ? calls.every((call) => call.valid) : null;
-  if (key.tool) {
+  if (key.tool && !m.routed_read) {
     const wanted = calls.filter((call) => call.name === key.tool.name);
     m.tool_called = wanted.length > 0;
     m.tool_args_ok =
@@ -500,12 +560,15 @@ export function gatesFor(runs) {
   const validShare = validCalls.length
     ? validCalls.filter((call) => call.valid).length / validCalls.length
     : null;
+  const allRouted = tools.length > 0 && tools.every((run) => run.m.routed_read);
   g.G5 = {
     name: 'Tool calls are valid',
-    pass: validShare === null ? false : validShare >= 0.9,
+    pass: allRouted ? true : validShare === null ? false : validShare >= 0.9,
     detail:
       validShare === null
-        ? 'the model made no tool calls at all'
+        ? allRouted
+          ? 'not applicable: Chief read every source itself and the model was offered no tools'
+          : 'the model made no tool calls at all'
         : `${Math.round(validShare * 100)}% of ${validCalls.length} tool calls were valid`,
     evidence: tools
       .filter((run) => run.m.tool_valid === false)

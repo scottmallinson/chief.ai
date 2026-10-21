@@ -835,6 +835,20 @@ and waits until it can answer.
 - Progress is reported every few megabytes, not every chunk: a progress event per packet is
   thousands a second and tells the user nothing more.
 
+- **Both tiers run Gemma 4 E2B** (`weights::GEMMA`); the tier decides only the context window. It
+  was chosen over seven other models on the 8 GB Intel Mac mini: top score (95.4 to 96.6 over
+  four runs), no invented content on a day with nothing in it, 0 of 480 runs swapped from a clean
+  start. The pull request that made the change carries the whole benchmark record. What was not
+  measured is Apple silicon, Windows and Linux, and `tool-reviews` tool-call validity was 88%
+  (bar 90%) in one of four runs.
+- **A second, optional download: EmbeddingGemma 2 Q8_0 (`weights::EMBEDDER`, 310 MB).** It is fetched
+  after the main weights, from the same host under the same rules, and a failure never fails the
+  download the user asked for. `embedder.rs` starts it as `llama-server --embedding` on loopback
+  port 11436 and registers its address once it answers `/health`; `router::configured` reads that.
+  With no weights, no server binary or a server that will not start the router is simply off and
+  the tool loop runs as before. `CHIEF_ROUTER=off` switches it off by name; `CHIEF_ROUTER_URL`
+  still points Chief at a server of the user's own and stops `embedder` starting one.
+
 ## The design system
 
 **Chief design system 1.0 — "Instrument".** Software that will be read by a security team should

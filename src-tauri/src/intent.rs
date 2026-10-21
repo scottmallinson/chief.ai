@@ -982,6 +982,7 @@ mod delivery {
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(&host).expect("client"),
             corpus,
+            short_brief_lines: 0,
         };
 
         (context, Scratch(root), server)

@@ -30,7 +30,7 @@ use crate::llama::{self, ChatRequest, Message, Options};
 use crate::microsoft;
 use crate::retrieval;
 use crate::session::{GithubSession, OutlookSession};
-use crate::{clock, corpus, github, integrations};
+use crate::{check, clock, corpus, github, integrations};
 
 /// How long a brief may run to. Long enough for a handful of bullets and their
 /// context, short enough that a slow machine finishes it.
@@ -115,6 +115,10 @@ pub struct Context {
     pub atlassian_rest: crate::atlassian::rest::Rest,
     pub engine: llama::Client,
     pub corpus: Corpus,
+    /// A day with this many lines or fewer is written in code without asking a
+    /// model; [`SHORT_BRIEF_LINES`] outside tests. A field rather than the
+    /// constant so the tests that read the prompt can still reach the model.
+    pub short_brief_lines: usize,
 }
 
 /// What can go wrong making a brief.
@@ -165,6 +169,25 @@ pub struct Brief {
     pub markdown: String,
     /// Which sources had anything to say, for the screen and for diagnosis.
     pub sources: Vec<String>,
+    /// What checking the model's answer against the material found. Never sent
+    /// to the window; the benchmark reads it to count retries and fallbacks.
+    #[serde(skip)]
+    pub checked: Checked,
+}
+
+/// What [`check::unsupported_by`] made of the model's answer to a brief.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Checked {
+    /// What the answer said that the material does not: times, numbers and
+    /// names. Empty when it said nothing of the kind, or when no model was
+    /// asked at all.
+    pub first: Vec<String>,
+    /// Whether the brief is the one Chief wrote from the material itself,
+    /// because the model's could not be trusted.
+    pub fell_back: bool,
+    /// Whether there was so little to say that the brief was written from the
+    /// material without asking a model; see [`SHORT_BRIEF_LINES`].
+    pub by_code: bool,
 }
 
 /// Everything phase one found, before a model has seen any of it.
@@ -830,11 +853,151 @@ async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
 
     let written = break_loop(reply.content.trim());
 
-    if written.is_empty() {
+    // **The length-limit marker is not an answer either.** A model that
+    // reasons its way to the ceiling says nothing, and the stream layer
+    // appends its "[Cut short]" note to that nothing: 7 of 7 runs of LFM2.5
+    // with its reasoning left on filed the note alone as the day's brief.
+    // Trimmed, as the answer was: the marker's own leading blank lines go with
+    // the nothing in front of it.
+    let cut_marker_only = written
+        .strip_suffix(llama::ANSWER_CUT.trim())
+        .is_some_and(|body| body.trim().is_empty());
+
+    if written.is_empty() || cut_marker_only {
         return Err(Error::EmptyAnswer);
     }
 
     Ok(written)
+}
+
+/// The brief the model wrote, if it kept to the material.
+///
+/// **Whatever the model says is checked against what it was given.** A time, a
+/// number or a name that is not in the material is something it made up, and a
+/// brief with one invented meeting in it is worse than a plainer brief, because
+/// the reader plans a morning round it. So an answer that names something the
+/// material does not is not used: the brief is written from the material
+/// directly, with no model in it.
+///
+/// **There is no second attempt.** The first version asked the model again,
+/// telling it what to leave out. Of ten answers that really had invented
+/// something, none came back clean (Llama 3.2 3B and Qwen3 1.7B, five repeats
+/// each), and each retry cost another full generation on a machine where that
+/// is the expensive part. The only retries that worked were on answers the
+/// check should not have refused at all, which is a fix to the check.
+///
+/// What this cannot see is an invented claim in ordinary words ("all staff must
+/// attend"); see [`check`] for what it does and does not look for.
+async fn render_checked(
+    engine: &llama::Client,
+    short_brief_lines: usize,
+    prompt: &str,
+    found: &Gathered,
+) -> Result<(String, Checked), Error> {
+    // The prompt without its clock: a time must be somebody's, not the moment
+    // the brief happened to be written.
+    let without_clock = assemble(found, "")?;
+    let material = check::Material {
+        shown: prompt,
+        items: without_clock
+            .strip_prefix(INSTRUCTIONS)
+            .unwrap_or(&without_clock),
+        words: prompt.strip_prefix(INSTRUCTIONS).unwrap_or(prompt),
+    };
+
+    // A brief this short is its own list: the model could only reword it, and
+    // every rewording measured so far that went wrong did so on a short day
+    // ("A meeting is scheduled" for a school notice). Nothing to gain, so no
+    // model is asked.
+    if lines(found).len() <= short_brief_lines {
+        return Ok((
+            plain(found),
+            Checked {
+                by_code: true,
+                ..Checked::default()
+            },
+        ));
+    }
+
+    let written = render(engine, prompt).await?;
+
+    // A brief that ran into the length limit may stop halfway through a claim,
+    // and nothing can tell which. It is not used.
+    if written.ends_with(llama::ANSWER_CUT) {
+        return Ok((
+            plain(found),
+            Checked {
+                first: vec!["cut off at the length limit".to_string()],
+                fell_back: true,
+                by_code: false,
+            },
+        ));
+    }
+
+    let first = check::unsupported_by(&written, &material);
+
+    if first.is_empty() {
+        return Ok((written, Checked::default()));
+    }
+
+    Ok((
+        plain(found),
+        Checked {
+            first,
+            fell_back: true,
+            by_code: false,
+        },
+    ))
+}
+
+/// The most lines [`plain`] writes before saying how many it left out.
+const PLAIN_LINES: usize = 6;
+
+/// A day with this many lines or fewer is written in code, not by the model.
+pub const SHORT_BRIEF_LINES: usize = 3;
+
+/// A brief written from the material with no model, in the order the prompt
+/// lists it: what is time-bound first, then what is waiting on the user.
+///
+/// It says nothing that was not found, which is the point of it.
+fn plain(found: &Gathered) -> String {
+    let lines = lines(found);
+
+    let mut out: Vec<String> = lines
+        .iter()
+        .take(PLAIN_LINES)
+        .map(|line| format!("- {line}"))
+        .collect();
+
+    if lines.len() > PLAIN_LINES {
+        out.push(format!("- And {} more.", lines.len() - PLAIN_LINES));
+    }
+
+    out.join("\n")
+}
+
+/// Everything found, in the order the prompt lists it.
+fn lines(found: &Gathered) -> Vec<String> {
+    let tracked = [
+        found.issues.as_slice(),
+        found.assigned.as_slice(),
+        found.jira.as_slice(),
+    ]
+    .concat();
+
+    [
+        &found.agenda,
+        &found.waiting,
+        &found.mine,
+        &found.inbox,
+        &tracked,
+        &found.pages,
+        &found.shipped,
+    ]
+    .into_iter()
+    .flatten()
+    .cloned()
+    .collect()
 }
 
 /// The line as compared for repeats: no list marker, no case, no padding.
@@ -941,12 +1104,16 @@ pub(crate) async fn daily_brief_at(
     let sources = found.sources();
     let window = window_found(&mut found, &now);
 
+    let mut checked = Checked::default();
     let mut markdown = if found.is_empty() {
         // Everything on the day has been and gone. Nothing to ask a model.
         "- Nothing else is scheduled for today.".to_string()
     } else {
         let prompt = assemble(&found, &clock::stamp_at(&now))?;
-        render(&context.engine, &prompt).await?
+        let (written, outcome) =
+            render_checked(&context.engine, context.short_brief_lines, &prompt, &found).await?;
+        checked = outcome;
+        written
     };
 
     if let Some(note) = window.note() {
@@ -969,6 +1136,7 @@ pub(crate) async fn daily_brief_at(
         path,
         markdown,
         sources,
+        checked,
     })
 }
 
@@ -1104,13 +1272,35 @@ pub(crate) fn describe_event(event: &microsoft::Event) -> String {
             .get(0..5)
             .unwrap_or("")
     };
-    let who = if event.attendees.is_empty() {
+    // An attendee the title already names is not named again: "1:1 with Priya"
+    // with Priya invited read "1:1 with Priya with Priya" in every brief
+    // written in code.
+    let others: Vec<&str> = event
+        .attendees
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !named_in(&event.subject, name))
+        .collect();
+    let who = if others.is_empty() {
         String::new()
     } else {
-        format!(" with {}", event.attendees.join(", "))
+        format!(" with {}", others.join(", "))
     };
 
     format!("{when} {}{who}", event.subject).trim().to_string()
+}
+
+/// Whether `title` already says `name`, or any whole word of it ("Sam" for
+/// "Sam Patel"), ignoring case. Whole words only, so "Ana" is not in "banana".
+fn named_in(title: &str, name: &str) -> bool {
+    let words: Vec<String> = title
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .collect();
+
+    name.split_whitespace()
+        .filter(|part| part.chars().count() > 1)
+        .any(|part| words.contains(&part.to_lowercase()))
 }
 
 fn describe_message(message: &microsoft::MailMessage) -> String {
@@ -1150,6 +1340,7 @@ pub async fn context<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Con
         atlassian: app.state::<crate::atlassian::Client>().inner().clone(),
         atlassian_rest: app.state::<crate::atlassian::rest::Rest>().inner().clone(),
         engine: app.state::<llama::Client>().inner().clone(),
+        short_brief_lines: SHORT_BRIEF_LINES,
     })
 }
 
@@ -1191,6 +1382,7 @@ pub async fn todays_brief<R: tauri::Runtime>(
 
     match context.corpus.read(&path).await {
         Ok(markdown) => Ok(Some(Brief {
+            checked: Checked::default(),
             date,
             path,
             markdown,
@@ -1321,7 +1513,7 @@ mod tests {
 
     fn gathered() -> Gathered {
         Gathered {
-            agenda: vec!["10:00 1:1 with Sam with Sam Patel".to_string()],
+            agenda: vec!["10:00 1:1 with Sam".to_string()],
             waiting: vec!["scottmallinson/chief.ai #44 — Ana asked for your review".to_string()],
             mine: vec!["scottmallinson/chief.ai #12 — Add the corpus".to_string()],
             shipped: vec!["Shipped the loopback listener".to_string()],
@@ -1470,7 +1662,43 @@ mod tests {
             all_day: false,
         };
 
-        assert_eq!(describe_event(&event), "10:00 1:1 with Sam with Sam Patel");
+        // The title already says who, so the attendee is not said again.
+        assert_eq!(describe_event(&event), "10:00 1:1 with Sam");
+    }
+
+    /// The defect: "1:1 with Priya" with Priya invited was written, in code, as
+    /// "1:1 with Priya with Priya" in every run of the calendar fixture.
+    ///
+    /// Proved by making `named_in` return false: the name is said twice.
+    #[test]
+    fn an_attendee_the_title_names_is_not_named_again_but_the_others_are() {
+        let event = |subject: &str, attendees: &[&str]| microsoft::Event {
+            subject: subject.to_string(),
+            start: "2026-08-28T09:00:00.0000000".to_string(),
+            end: "2026-08-28T09:30:00.0000000".to_string(),
+            organiser: None,
+            attendees: attendees.iter().map(|name| name.to_string()).collect(),
+            online: false,
+            all_day: false,
+        };
+
+        assert_eq!(
+            describe_event(&event("1:1 with Priya", &["Priya"])),
+            "09:00 1:1 with Priya"
+        );
+        assert_eq!(
+            describe_event(&event("Team standup", &["Priya", "Tom", "Ana"])),
+            "09:00 Team standup with Priya, Tom, Ana"
+        );
+        assert_eq!(
+            describe_event(&event("Sync with priya", &["Priya Shah", "Tom"])),
+            "09:00 Sync with priya with Tom"
+        );
+        // A name inside a longer word is not the name.
+        assert_eq!(
+            describe_event(&event("Banana review", &["Ana"])),
+            "09:00 Banana review with Ana"
+        );
     }
 
     // ---- end to end, against stub servers ----
@@ -1482,7 +1710,7 @@ mod tests {
     /// it — the brief asks for a stream so that a slow answer is not mistaken
     /// for a stalled one. See `render`.
     fn answer() -> String {
-        events(&[delta("- 10:00 with Sam\n- PR #12 is waiting")])
+        events(&[delta("- Shipped the loopback listener")])
     }
 
     struct Scratch(std::path::PathBuf);
@@ -1558,6 +1786,7 @@ mod tests {
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url("http://127.0.0.1:1").expect("client"),
             corpus,
+            short_brief_lines: 0,
         };
 
         let found = gather(&context, chrono::Local::now()).await;
@@ -1607,6 +1836,7 @@ mod tests {
                 atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
                 engine: llama::Client::with_base_url(engine_host).expect("client"),
                 corpus,
+                short_brief_lines: 0,
             },
             Scratch(root),
         )
@@ -1669,6 +1899,174 @@ mod tests {
         }
     }
 
+    fn said(text: &str) -> String {
+        events(&[delta(text)])
+    }
+
+    /// A stream that ends because the model reached its length limit.
+    fn ran_out(chunks: &[serde_json::Value]) -> String {
+        let mut all = chunks.to_vec();
+        all.push(serde_json::json!({
+            "choices": [{ "index": 0, "delta": {}, "finish_reason": "length" }],
+        }));
+        events(&all)
+    }
+
+    /// The defect the third Mac batch found: LFM2.5 with its reasoning left on
+    /// spends the whole length limit thinking and says nothing. The stream
+    /// layer then writes its "[Cut short]" marker onto an empty answer, the
+    /// marker is not empty, and the marker alone was filed as the day's brief
+    /// in 7 of 7 runs.
+    ///
+    /// Proved by deleting the `cut_marker_only` return in `render`: the marker
+    /// is the brief.
+    #[tokio::test]
+    async fn a_model_that_ran_out_before_saying_anything_leaves_no_brief() {
+        let thinking = serde_json::json!({
+            "choices": [{ "index": 0, "delta": { "reasoning_content": "Let me count" } }],
+        });
+        let (host, _server) = serve(vec![("HTTP/1.1 200 OK", ran_out(&[thinking]))]);
+        let (context, _scratch) = ready(&host, "ran-out-silent").await;
+
+        let error = daily_brief(&context).await.expect_err("nothing was said");
+
+        assert!(matches!(error, Error::EmptyAnswer), "{error:?}");
+        let date = today_date();
+        assert!(context
+            .corpus
+            .read(&format!("briefs/{date}.md"))
+            .await
+            .is_err());
+        assert_eq!(written_at(&context.pool, &date).await.expect("read"), None);
+    }
+
+    /// A brief cut off at the limit may end halfway through a claim, so it is
+    /// not used; the one written from the material is.
+    ///
+    /// Proved by deleting the `ends_with(ANSWER_CUT)` branch in
+    /// `render_checked`: the half-line and the apology are the brief.
+    #[tokio::test]
+    async fn a_brief_cut_off_at_the_length_limit_is_written_from_the_material_instead() {
+        let (host, _server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            ran_out(&[delta("- Shipped the loopback lis")]),
+        )]);
+        let (context, _scratch) = ready(&host, "ran-out-partial").await;
+
+        let brief = daily_brief(&context).await.expect("a brief");
+
+        assert!(brief.checked.fell_back, "{:?}", brief.checked);
+        assert!(
+            brief.markdown.contains("Shipped the loopback listener"),
+            "{}",
+            brief.markdown
+        );
+        assert!(!brief.markdown.contains("Cut short"), "{}", brief.markdown);
+    }
+
+    /// A day this short is its own list, so no model is asked and nothing can be
+    /// added to it. Measured: Llama 3.2 3B and LFM2.5 each turned a school
+    /// notice into "a meeting is scheduled".
+    ///
+    /// Proved by setting `short_brief_lines` to 0 in the render: the stub is
+    /// asked and its invented line is the brief.
+    #[tokio::test]
+    async fn a_day_with_a_few_lines_is_written_without_asking_the_model() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            said("- A meeting is scheduled with Sam\n- Shipped the loopback listener"),
+        )]);
+        let (mut context, _scratch) = ready(&host, "short-day").await;
+        context.short_brief_lines = SHORT_BRIEF_LINES;
+
+        let brief = daily_brief(&context).await.expect("a brief");
+
+        assert!(brief.checked.by_code, "{:?}", brief.checked);
+        assert!(!brief.checked.fell_back);
+        assert!(
+            brief.markdown.contains("loopback listener"),
+            "{}",
+            brief.markdown
+        );
+        assert!(!brief.markdown.contains("Sam"), "{}", brief.markdown);
+        server.abort();
+    }
+
+    /// A brief that names nothing the material lacks costs one call and is
+    /// used as written.
+    #[tokio::test]
+    async fn a_faithful_brief_is_used_as_written_and_not_asked_for_twice() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", answer())]);
+        let (context, _scratch) = ready(&host, "faithful").await;
+
+        let brief = daily_brief(&context).await.expect("a brief");
+
+        assert_eq!(brief.checked, Checked::default());
+        assert_eq!(server.await.expect("stub").len(), 1);
+    }
+
+    /// The defect this exists for, measured on Llama 3.2 3B: given a day with
+    /// two emails and no meetings it wrote "Meeting with John Doe at 10:00".
+    /// The answer is not used, and the model is not asked again.
+    ///
+    /// Proved by making `check::unsupported_by` return nothing: the invented
+    /// meeting is filed as the brief.
+    #[tokio::test]
+    async fn a_brief_that_invents_a_meeting_is_written_from_the_material_instead() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            said("- Meeting with John Doe at 10:00\n- Shipped the loopback listener"),
+        )]);
+        let (context, _scratch) = ready(&host, "invents").await;
+
+        let brief = daily_brief(&context).await.expect("a brief");
+
+        assert!(brief.checked.fell_back, "{:?}", brief.checked);
+        assert_eq!(
+            brief.checked.first,
+            vec!["time 10:00", "name John", "name Doe"]
+        );
+        assert!(
+            brief.markdown.contains("loopback listener"),
+            "{}",
+            brief.markdown
+        );
+        assert!(!brief.markdown.contains("10:00") && !brief.markdown.contains("John"));
+        assert_eq!(server.await.expect("stub").len(), 1, "never a second call");
+    }
+
+    /// A time in the prompt's own clock is the time of nothing the user has.
+    #[tokio::test]
+    async fn the_time_the_brief_was_written_is_not_a_meeting() {
+        let (host, _server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            said("- Meeting at 06:00\n- Shipped the loopback listener"),
+        )]);
+        let (context, _scratch) = ready(&host, "clock").await;
+
+        let brief = daily_brief_at(&context, at_local("2026-10-18T06:00:00"))
+            .await
+            .expect("a brief");
+
+        assert!(brief.checked.fell_back, "{:?}", brief.checked);
+    }
+
+    #[test]
+    fn the_plain_brief_says_what_was_found_and_how_much_it_left_out() {
+        let found = Gathered {
+            agenda: vec!["09:00 Standup".to_string()],
+            waiting: (1..=7).map(|n| format!("Review #{n}")).collect(),
+            ..Gathered::default()
+        };
+
+        let plain = plain(&found);
+        let lines: Vec<&str> = plain.lines().collect();
+
+        assert_eq!(lines[0], "- 09:00 Standup", "time-bound first");
+        assert_eq!(lines.len(), PLAIN_LINES + 1);
+        assert_eq!(lines.last(), Some(&"- And 2 more."));
+    }
+
     #[tokio::test]
     async fn writes_the_brief_into_the_corpus_with_one_model_call() {
         let (host, server) = serve(vec![("HTTP/1.1 200 OK", answer())]);
@@ -1676,7 +2074,10 @@ mod tests {
 
         let brief = daily_brief(&context).await.expect("should write a brief");
 
-        assert!(brief.markdown.contains("10:00 with Sam"), "{brief:?}");
+        assert!(
+            brief.markdown.contains("Shipped the loopback listener"),
+            "{brief:?}"
+        );
         assert!(brief.path.starts_with("briefs/"), "{brief:?}");
 
         // It is in the corpus, as a file the user can open.
@@ -1893,6 +2294,7 @@ mod tests {
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(&host).expect("client"),
             corpus: Corpus::at(root),
+            short_brief_lines: 0,
         };
 
         let error = daily_brief(&context)
