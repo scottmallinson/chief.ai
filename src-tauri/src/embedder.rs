@@ -54,6 +54,12 @@ fn disabled(setting: Option<&OsString>) -> bool {
 /// The router embeds a sentence at a time, so a small window and one slot are
 /// all it needs, and they are what the benchmark measured (169 MB median, 311
 /// MB peak resident). `--host` is pinned to loopback.
+///
+/// It runs on the CPU, always. That is what was measured, a sentence through a
+/// 310 MB model is milliseconds there, and a second GPU context beside the
+/// engine's — two processes each fitting themselves into the same card's free
+/// memory — is the one thing here that buys nothing and can hang a Windows
+/// graphics driver.
 pub(crate) fn arguments(weights: &Path, port: u16) -> Vec<OsString> {
     [
         "--model",
@@ -73,6 +79,8 @@ pub(crate) fn arguments(weights: &Path, port: u16) -> Vec<OsString> {
         "512",
         "--parallel",
         "1",
+        "--device",
+        "none",
     ]
     .iter()
     .map(OsString::from)
@@ -212,6 +220,17 @@ mod tests {
 
         assert_eq!(args[port + 1], PORT.to_string());
         assert_ne!(PORT, crate::llama::DEFAULT_PORT);
+    }
+
+    #[test]
+    fn stays_off_the_gpu() {
+        let args = rendered();
+        let device = args
+            .iter()
+            .position(|a| a == "--device")
+            .expect("device is pinned");
+
+        assert_eq!(args[device + 1], "none");
     }
 
     #[test]
