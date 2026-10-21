@@ -383,6 +383,15 @@ function installBackend(setup: Setup) {
         case 'window_behaviour':
           return Promise.resolve({ tray: true, keepRunning: true, trayName: 'system tray' });
 
+        // An object, never a list: the Local model card reads `useGpu` off it.
+        case 'gpu_status':
+          return Promise.resolve({
+            useGpu: true,
+            chosen: null,
+            overridden: false,
+            summary: null,
+          });
+
         case 'launch_at_login':
           return Promise.resolve(false);
 
