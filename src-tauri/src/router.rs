@@ -1,7 +1,9 @@
 //! Choosing where an answer comes from by meaning, before the model is asked.
 //!
-//! **Experimental, and off unless `CHIEF_ROUTER_URL` names an embedding
-//! server.** A small embedding model reads the question and a one-line
+//! **On by default once the embedding model is on disk** (see
+//! [`crate::embedder`]), and off if it is not, if its server will not start, or
+//! if `CHIEF_ROUTER=off`. `CHIEF_ROUTER_URL` points Chief at an embedding
+//! server of the user's own instead. A small embedding model reads the question and a one-line
 //! description of each source, and the closest description wins. Chief then
 //! fetches that source itself and the main model only writes up what came
 //! back, with no tools on offer — so the step small models are weakest at,
@@ -145,14 +147,15 @@ const CHOICES: [(Option<Source>, &str); 4] = [
     ),
 ];
 
-/// A router pointed at the embedding server named by [`ROUTER_URL_VAR`], if
-/// there is one and it is loopback.
+/// A router pointed at the embedding server named by [`ROUTER_URL_VAR`], or
+/// else the one [`crate::embedder`] started, if there is one and it is
+/// loopback. `None` sends the question to the tool loop.
 pub fn configured() -> Option<Client> {
-    let url = std::env::var(ROUTER_URL_VAR)
+    let named = std::env::var(ROUTER_URL_VAR)
         .ok()
-        .filter(|url| !url.is_empty())?;
+        .filter(|url| !url.is_empty());
 
-    Client::with_base_url(&url).ok()
+    Client::with_base_url(&named.or_else(|| crate::embedder::url().map(str::to_string))?).ok()
 }
 
 /// Cosine similarity. Zero for a vector with no length, so a broken embedding

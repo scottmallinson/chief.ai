@@ -17,6 +17,7 @@ mod context;
 mod corpus;
 mod daemon;
 mod db;
+mod embedder;
 mod engine;
 mod facts;
 mod github;
@@ -100,6 +101,10 @@ pub fn run() {
             // first question does not wait for the weights to come off disk.
             engine::start(&app.handle().clone());
 
+            // And the small server that lets the router place a question by
+            // meaning. Absent weights or a failed start leave the router off.
+            embedder::start(&app.handle().clone());
+
             // And give its memory back when nothing is using it. A resident
             // model holds a couple of gigabytes, which on the machines Chief
             // is written for is most of the room there is.
@@ -180,7 +185,10 @@ pub fn run() {
             // The engine is our child process. Nothing else will stop it, and a
             // model left resident would hold a couple of gigabytes after the
             // window has gone.
-            RunEvent::Exit => app.state::<engine::Engine>().stop(),
+            RunEvent::Exit => {
+                app.state::<engine::Engine>().stop();
+                embedder::stop();
+            }
             // Clicking the Dock icon of an app whose window is hidden.
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => background::show(app),

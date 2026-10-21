@@ -301,7 +301,7 @@ pub(crate) fn library_path_variable() -> &'static str {
 }
 
 /// Put `directories` in front of whatever the loader already searches.
-fn library_path(directories: &[PathBuf], inherited: Option<OsString>) -> OsString {
+pub(crate) fn library_path(directories: &[PathBuf], inherited: Option<OsString>) -> OsString {
     let mut entries: Vec<OsString> = directories.iter().map(OsString::from).collect();
 
     if let Some(inherited) = inherited.filter(|value| !value.is_empty()) {
@@ -433,7 +433,7 @@ fn device_arguments(offload: bool) -> Vec<OsString> {
 /// server runs. Nothing else it does depends on the working directory — the
 /// model is passed by absolute path. macOS links its backends in, so there this
 /// finds a directory and changes nothing.
-fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
     library_dirs
         .iter()
         .find(|dir| {
@@ -455,7 +455,7 @@ fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
 /// release install and `tauri dev`. A `llama-server` on `PATH` is the last
 /// resort, so someone who already has one can work on Chief without fetching a
 /// second copy.
-fn find_server() -> Option<PathBuf> {
+pub(crate) fn find_server() -> Option<PathBuf> {
     if let Some(configured) = std::env::var_os(SERVER_VAR).map(PathBuf::from) {
         return configured.is_file().then_some(configured);
     }
@@ -491,7 +491,7 @@ fn on_path() -> bool {
 /// those the server's own `RUNPATH=$ORIGIN` resolves to a directory none of
 /// them are in, which is why the path is set explicitly here rather than left
 /// to it.
-fn library_dirs<R: Runtime>(app: &AppHandle<R>, server: Option<&Path>) -> Vec<PathBuf> {
+pub(crate) fn library_dirs<R: Runtime>(app: &AppHandle<R>, server: Option<&Path>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(resources) = app.path().resource_dir() {
@@ -1279,7 +1279,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1404,7 +1404,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1426,7 +1426,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: false,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1448,7 +1448,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: false,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1615,7 +1615,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights,
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),

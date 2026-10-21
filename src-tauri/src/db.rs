@@ -1077,19 +1077,21 @@ mod architecture_tests {
 
     /// Ingest a fixed corpus and search it, on a database of its own.
     ///
-    /// Takes the tier so the caller can say which configuration it is
-    /// exercising, and returns what came back. Nothing here reads the tier:
+    /// Takes the model so the caller can say which configuration it is
+    /// exercising, and returns what came back. Nothing here reads the model:
     /// **that is the point.** If ingestion or ranking ever started depending on
     /// the model, this function would have to change to let it, and the test
     /// below would stop compiling rather than quietly start lying.
-    async fn ingest_and_search(tier: Tier) -> (Vec<String>, Vec<String>) {
+    async fn ingest_and_search(model: weights::Model) -> (Vec<String>, Vec<String>) {
         let pool = migrated_pool().await;
-        let model = weights::for_tier(tier);
 
         // Named so a reader can see the model was actually selected, and so a
         // configuration that failed to load would be visible rather than
         // silently skipped.
-        assert!(!model.name.is_empty(), "the tier must name a model");
+        assert!(
+            !model.name.is_empty(),
+            "the configuration must name a model"
+        );
 
         for (external_id, title, summary) in [
             ("owner/repo#1", "Refactored the OAuth handler", "merged"),
@@ -1134,8 +1136,10 @@ mod architecture_tests {
     /// ```
     #[tokio::test]
     async fn swapping_the_model_changes_neither_the_rows_nor_the_ranking() {
-        let (standard_rows, standard_ranking) = ingest_and_search(Tier::Standard).await;
-        let (light_rows, light_ranking) = ingest_and_search(Tier::Light).await;
+        // Both tiers run the same model now, so the two configurations
+        // compared are two different catalogue entries instead.
+        let (standard_rows, standard_ranking) = ingest_and_search(weights::GEMMA).await;
+        let (light_rows, light_ranking) = ingest_and_search(weights::EMBEDDER).await;
 
         // The fixture has to have done something, or two empty lists match and
         // this test proves nothing at all.
@@ -1145,9 +1149,9 @@ mod architecture_tests {
             "the fixture must have matched something to rank"
         );
         assert_ne!(
-            weights::for_tier(Tier::Standard).name,
-            weights::for_tier(Tier::Light).name,
-            "the two tiers must actually be different models"
+            weights::GEMMA.name,
+            weights::EMBEDDER.name,
+            "the two configurations must actually be different models"
         );
 
         assert_eq!(
