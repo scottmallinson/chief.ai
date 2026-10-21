@@ -383,18 +383,21 @@ pub(crate) fn thinking_arguments(setting: Option<&OsString>) -> Vec<OsString> {
 
 /// Whether the engine may put the model on a GPU, from [`GPU_VAR`].
 ///
-/// Anything but an explicit no leaves it on: the bundled build decides for
-/// itself whether there is a GPU worth using, and a typo should not quietly
-/// cost somebody their graphics card.
-fn gpu_allowed(setting: Option<&OsString>) -> bool {
+/// An unset or unreadable setting means `default`, and only a plain yes or no
+/// moves it. The default is off on Windows: a Vulkan driver that hangs rather
+/// than fails freezes the whole machine, which the fallback in
+/// [`Engine::start_and_wait`] cannot see, and an integrated GPU shares the
+/// memory the rest of the system is using. `on` opts a machine back in.
+fn gpu_allowed(setting: Option<&OsString>, default: bool) -> bool {
     let Some(setting) = setting.and_then(|value| value.to_str()) else {
-        return true;
+        return default;
     };
 
-    !matches!(
-        setting.trim().to_ascii_lowercase().as_str(),
-        "off" | "0" | "false" | "no" | "cpu"
-    )
+    match setting.trim().to_ascii_lowercase().as_str() {
+        "off" | "0" | "false" | "no" | "cpu" => false,
+        "on" | "1" | "true" | "yes" | "gpu" => true,
+        _ => default,
+    }
 }
 
 /// The flags that decide where the model runs.
@@ -603,7 +606,7 @@ impl Engine {
             base_url,
             backend_dir: backend_dir(&library_dirs),
             library_dirs,
-            offload: AtomicBool::new(gpu_allowed(std::env::var_os(GPU_VAR).as_ref())),
+            offload: AtomicBool::new(gpu_allowed(std::env::var_os(GPU_VAR).as_ref(), !cfg!(windows))),
             server,
             weights: model.path(&data_dir),
             tier,
@@ -1182,17 +1185,34 @@ mod tests {
 
     #[test]
     fn leaves_the_gpu_on_unless_told_plainly_to_stop() {
-        assert!(gpu_allowed(None), "no setting is not a refusal");
+        assert!(gpu_allowed(None, true), "no setting is not a refusal");
 
         for yes in ["on", "1", "true", "gpu", "", "of"] {
             assert!(
-                gpu_allowed(Some(&OsString::from(yes))),
+                gpu_allowed(Some(&OsString::from(yes)), true),
                 "{yes:?} is not a no"
             );
         }
 
         for no in ["off", "OFF", " 0 ", "false", "no", "cpu"] {
-            assert!(!gpu_allowed(Some(&OsString::from(no))), "{no:?} is a no");
+            assert!(
+                !gpu_allowed(Some(&OsString::from(no)), true),
+                "{no:?} is a no"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_the_gpu_off_by_default_where_told_to_and_lets_a_plain_yes_override_it() {
+        assert!(!gpu_allowed(None, false));
+        assert!(!gpu_allowed(Some(&OsString::from("")), false));
+        assert!(!gpu_allowed(Some(&OsString::from("of")), false));
+
+        for yes in ["on", "ON", " 1 ", "true", "yes", "gpu"] {
+            assert!(
+                gpu_allowed(Some(&OsString::from(yes)), false),
+                "{yes:?} is a yes"
+            );
         }
     }
 
