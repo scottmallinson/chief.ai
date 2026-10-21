@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.14.0 (2026-10-21)
+
+### Features
+
+- **agent:** run Gemma 4 E2B on both tiers with the router on ([a07bcb5](https://github.com/scottmallinson/chief.ai/commit/a07bcb52ad604b858785df13572b782cae7b0a7b))
+- **agent:** write a short day's brief in code instead of asking the model ([d5f6a93](https://github.com/scottmallinson/chief.ai/commit/d5f6a93aba7db18a64cdccb167612dda1b74ce5a))
+- **agent:** check a brief against everything the material shows, not only times ([4a7a11a](https://github.com/scottmallinson/chief.ai/commit/4a7a11ace6d4e644a5914fa1090af1a5e4704d6e))
+- **agent:** answer a read that found nothing in code, before the engine starts ([2076f85](https://github.com/scottmallinson/chief.ai/commit/2076f8537ca8527d05b5e25695bdda0d5b5e6b6f))
+- **agent:** never file a brief that names a time, number or person the material lacks ([477ea7b](https://github.com/scottmallinson/chief.ai/commit/477ea7ba96dec3a1f7162724f5d0d27283545d01))
+- **agent:** route review requests and day ranges by meaning ([c14e64a](https://github.com/scottmallinson/chief.ai/commit/c14e64a77ec3c67ede2e8d705a6550a6dc650d45))
+- **agent:** pick the GitHub view by meaning when routing ([06aa136](https://github.com/scottmallinson/chief.ai/commit/06aa1367846c13731e53886c1f9be75c8133ef5e))
+- **agent:** route a question to its source by meaning, behind an env switch ([4029c16](https://github.com/scottmallinson/chief.ai/commit/4029c16f9127b3c16dcea6a0149996dba6f0caba))
+
+### Fixes
+
+- **agent:** stop filing a cut-off brief, name attendees once, route open pull requests ([43a67e6](https://github.com/scottmallinson/chief.ai/commit/43a67e65973bd04db1561225801f24d11c7cbabe))
+
 ## 0.13.2 (2026-10-16)
 
 ### Fixes
