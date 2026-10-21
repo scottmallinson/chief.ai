@@ -606,7 +606,10 @@ impl Engine {
             base_url,
             backend_dir: backend_dir(&library_dirs),
             library_dirs,
-            offload: AtomicBool::new(gpu_allowed(std::env::var_os(GPU_VAR).as_ref(), !cfg!(windows))),
+            offload: AtomicBool::new(gpu_allowed(
+                std::env::var_os(GPU_VAR).as_ref(),
+                !cfg!(windows),
+            )),
             server,
             weights: model.path(&data_dir),
             tier,
