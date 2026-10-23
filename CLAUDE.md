@@ -382,7 +382,7 @@ the user to install a runtime, which is the whole reason the engine is a module 
   `review-requested:@me`, and `assigned_issues` adds `is:issue assignee:@me`. The brief keeps them
   in separate buckets under separate headings, because a review somebody requested of you is a
   request and your own open pull request is not.
-- **The catalogue is at 596 of D2's 600 tokens, with four tools.** `fetch_work_overview` took 81 of
+- **The catalogue is at 598 of D2's 600 tokens, with four tools.** `fetch_work_overview` took 81 of
   the headroom, so the next tool or parameter has to be paid for by trimming a description. It is
   there because the questions about all of someone's work ("what should I prioritise", "what did I
   complete yesterday") are not about one tool, and routing them by meaning was measured and
@@ -400,6 +400,13 @@ the user to install a runtime, which is the whole reason the engine is a module 
 answered, failed}`, which keeps "not connected" (silent), "nothing there" (said) and "could not
   be read" (reported under `not_read`) apart. **Nothing is capped for the model's convenience.**
   A read that came back full says so under `not_shown` rather than looking complete.
+  **A period is the model's to name, and GitHub is asked with the date.** `fetch_work_overview`
+  and `fetch_github_prs` take `days`; the model reads "past month" as 30 (measured on Gemma 4 E2B
+  against the real catalogue: 30 of 30 right, and no tool call for "how do I prioritise a backlog?"),
+  the code only clamps it to 1–92, and a period lifts the per-source limit from 8 to 60. The merged
+  search carries `merged:>=DATE`, because search sorts by last update and "the latest 25, minus the
+  old ones" answered a month with whatever fitted. The result says how far back it covers
+  (`my_recently_completed_work_covers`), so "how far back did you look?" has an answer.
 - **Anything long is written a section at a time, by `sections.rs`.** One request per section and
   eight lines per request (`BATCH`), the headings written in code, so a long queue costs more short
   requests instead of one answer that hits the length ceiling. Each batch is checked: a reply that

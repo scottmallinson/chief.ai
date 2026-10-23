@@ -661,6 +661,7 @@ async fn waiting(context: &recipe::Context) -> Option<Answered> {
         &context.github,
         tools::PullRequestState::Open,
         tools::Whose::Reviewing,
+        None,
     )
     .await
     {

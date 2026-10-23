@@ -173,6 +173,8 @@ const PR_LIMIT: u8 = 25;
 struct FetchGithubPrsArgs {
     state: PullRequestState,
     whose: Whose,
+    /// How many days of merged pull requests; absent is the latest few.
+    days: Option<i64>,
 }
 
 /// The most tools that may ever be offered, and the most characters their
@@ -196,12 +198,12 @@ pub fn catalog() -> Vec<Tool> {
             description: "Fetch the user's GitHub pull requests. Call this whenever they \
              ask about pull requests, code review, or what they shipped. Use state \
              'merged' for what they shipped, and whose 'reviewing' for what is waiting \
-             on them. Covers every connected account; each pull request names the one it \
-             came from, and 'accounts' reports what was read from each."
+             on them. Covers every connected account."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "days": { "type": "integer" },
                     "state": {
                         "type": "string",
                         "enum": ["open", "closed", "merged", "all"],
@@ -252,7 +254,13 @@ pub fn catalog() -> Vec<Tool> {
             description: "The user's work now: pull requests, issues, tickets, reviews, \
                  meetings. Call to prioritise or say what they did."
                 .to_string(),
-            parameters: json!({ "type": "object", "properties": {}, "required": [] }),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "days": { "type": "integer", "description": "Days back. Default 7." },
+                },
+                "required": [],
+            }),
         }),
     ]
 }
@@ -395,7 +403,19 @@ pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
     match call.function.name.as_str() {
         FETCH_GITHUB_PRS => match parse(&call.function) {
             Ok(args) => {
-                match fetch_github_prs(&context.pool, &context.github, args.state, args.whose).await
+                let since = args.days.map(|days| {
+                    chrono::Local::now().date_naive()
+                        - chrono::Duration::days(days.clamp(1, 92) - 1)
+                });
+
+                match fetch_github_prs(
+                    &context.pool,
+                    &context.github,
+                    args.state,
+                    args.whose,
+                    since,
+                )
+                .await
                 {
                     Ok(result) => result,
                     Err(error) => json!({ "error": error.to_string() }),
@@ -416,13 +436,18 @@ pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
         },
         FETCH_WORK_OVERVIEW => {
             let today = chrono::Local::now().date_naive();
+            let days = parse_days(&call.function);
 
             crate::work::read(
                 context,
                 &crate::work::Scope {
-                    done_since: crate::work::last_week(today),
+                    done_since: today - chrono::Duration::days(days - 1),
                     day: true,
-                    limit: crate::work::MOST,
+                    limit: if days > 7 {
+                        crate::work::PERIOD
+                    } else {
+                        crate::work::MOST
+                    },
                 },
             )
             .await
@@ -436,6 +461,17 @@ pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
             "error": format!("there is no tool called '{unknown}'"),
         }),
     }
+}
+
+/// How many days of finished work the model asked for: a week unless it said,
+/// and never more than a quarter. The model reads the period out of the
+/// question ("over the past month" is 30); nothing here matches words.
+fn parse_days(function: &ToolCallFunction) -> i64 {
+    function
+        .arguments()
+        .ok()
+        .and_then(|arguments| arguments["days"].as_i64())
+        .map_or(7, |days| days.clamp(1, 92))
 }
 
 fn parse(function: &ToolCallFunction) -> Result<FetchGithubPrsArgs, String> {
@@ -479,6 +515,7 @@ pub async fn fetch_github_prs(
     github: &github::Client,
     state: PullRequestState,
     whose: Whose,
+    since: Option<chrono::NaiveDate>,
 ) -> Result<Value, github::Error> {
     let accounts = integrations::accounts(pool, integrations::GITHUB).await?;
 
@@ -490,10 +527,22 @@ pub async fn fetch_github_prs(
     for account in &accounts {
         let name = describe(account);
 
-        match GithubSession::new(pool, github, account.id)
-            .pull_requests(whose.into(), state.into(), PR_LIMIT)
-            .await
-        {
+        let session = GithubSession::new(pool, github, account.id);
+
+        // A period is asked of GitHub with the date in the search, so a month
+        // is a month rather than whichever of the latest few fall inside it.
+        let read = match since {
+            Some(since) if state == PullRequestState::Merged && whose == Whose::Mine => {
+                session.merged_since(since, 100).await
+            }
+            _ => {
+                session
+                    .pull_requests(whose.into(), state.into(), PR_LIMIT)
+                    .await
+            }
+        };
+
+        match read {
             Ok(found) => {
                 readable += 1;
                 reports.push(json!({ "account": name, "count": found.len() }));
@@ -652,6 +701,21 @@ mod tests {
             "updated_at": "2026-08-19T14:00:00Z"
         }]
     }"#;
+
+    /// The model reads the period out of the question; the code only keeps it
+    /// sane. A missing, malformed or absurd value is a week or a quarter, never
+    /// a failure of the whole tool.
+    #[test]
+    fn the_days_asked_for_are_a_week_unless_the_model_said_and_never_a_year() {
+        let days = |arguments: Value| parse_days(&call(FETCH_WORK_OVERVIEW, arguments).function);
+
+        assert_eq!(days(Value::Null), 7);
+        assert_eq!(days(json!({})), 7);
+        assert_eq!(days(json!({ "days": 30 })), 30);
+        assert_eq!(days(json!({ "days": "thirty" })), 7);
+        assert_eq!(days(json!({ "days": 0 })), 1);
+        assert_eq!(days(json!({ "days": 4000 })), 92);
+    }
 
     /// A call as it arrives from the engine: the arguments are a JSON string,
     /// not an object.
@@ -1084,6 +1148,36 @@ mod tests {
         assert!(
             request_line.contains("is%3Amerged"),
             "unexpected request: {request_line}"
+        );
+    }
+
+    /// "Merged over the past month" puts the date in the search. Without it the
+    /// answer is the latest few merges, which on a quiet week reach back a month
+    /// and on a busy one do not, and nothing says which.
+    ///
+    /// Proved by ignoring `days`: the request has no `merged:>=`.
+    #[tokio::test]
+    async fn a_period_of_merged_pull_requests_is_asked_of_github_by_date() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = connected(&host).await;
+        let since = chrono::Local::now().date_naive() - chrono::Duration::days(29);
+
+        dispatch(
+            &context,
+            &call("fetch_github_prs", json!({ "state": "merged", "days": 30 })),
+        )
+        .await;
+
+        let requests = server.await.expect("the stub should finish");
+        let (request_line, _) = crate::llama::test_support::split(&requests[0]);
+
+        assert!(
+            request_line.contains(&format!("merged%3A%3E%3D{}", since.format("%Y-%m-%d"))),
+            "the date was not part of the search: {request_line}"
+        );
+        assert!(
+            request_line.contains("per_page=100"),
+            "a month is asked for a full page: {request_line}"
         );
     }
 

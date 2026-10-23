@@ -349,6 +349,25 @@ impl<'a> GithubSession<'a> {
             .await
     }
 
+    /// The user's own pull requests merged on or after `since`.
+    pub async fn merged_since(
+        &self,
+        since: chrono::NaiveDate,
+        limit: u8,
+    ) -> Result<Vec<PullRequest>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.merged_since(&token, since, limit).await
+            })
+            .await
+    }
+
     pub async fn pull_requests(
         &self,
         involvement: github::Involvement,
