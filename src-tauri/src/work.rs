@@ -42,6 +42,16 @@ use crate::tools::{self, Context, PullRequestState, Whose};
 /// few lines at a time.
 pub const MOST: usize = 8;
 
+/// The most a question about a *period* is handed from any one source. Asked
+/// about a month, eight lines is an answer that stops at the eighth merge and
+/// says so; the person asked for the month. Each line is about 25 tokens, so
+/// this is a few seconds of prefill rather than a longer prompt than the model
+/// can read.
+pub const PERIOD: usize = 60;
+
+/// How many merged pull requests one account's search returns: GitHub's page.
+const MERGED_PAGE: u8 = 100;
+
 /// One kind of thing, read from every connected source that holds it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Part {
@@ -77,6 +87,8 @@ pub struct Work {
     pub meetings: Part,
     /// Unread mail, newest first.
     pub mail: Part,
+    /// The day `done` reaches back to, so an answer can say how far it looked.
+    pub done_since: Option<NaiveDate>,
 }
 
 /// What to read, and how much of it.
@@ -183,7 +195,7 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
     let since = scope.done_since;
     let done = part(
         vec![
-            pull_requests(context, PullRequestState::Merged, Whose::Mine, |pr| {
+            merged_pull_requests(context, since, |pr| {
                 let merged = merged_on(pr["merged_at"].as_str()?)?;
 
                 (merged >= since)
@@ -231,6 +243,7 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
         done,
         meetings,
         mail,
+        done_since: Some(since),
     }
 }
 
@@ -251,7 +264,8 @@ pub fn last_working_day(today: NaiveDate) -> NaiveDate {
 }
 
 /// The cut-off for a general look at the user's work: the last week.
-pub fn last_week(today: NaiveDate) -> NaiveDate {
+#[cfg(test)]
+fn last_week(today: NaiveDate) -> NaiveDate {
     today - Duration::days(6)
 }
 
@@ -325,7 +339,7 @@ async fn pull_requests(
     whose: Whose,
     line: impl Fn(&Value) -> Option<String>,
 ) -> Reading {
-    match tools::fetch_github_prs(&context.pool, &context.github, state, whose).await {
+    match tools::fetch_github_prs(&context.pool, &context.github, state, whose, None).await {
         Ok(read) => Reading {
             name: "GitHub",
             lines: Some(
@@ -345,6 +359,56 @@ async fn pull_requests(
                 failed: vec![error.to_string()],
             }
         }
+    }
+}
+
+/// The user's pull requests merged on or after `since`, from every GitHub
+/// account. The date is part of the search, so a month is a month however busy
+/// it was, up to the hundred a page holds.
+async fn merged_pull_requests(
+    context: &Context,
+    since: NaiveDate,
+    line: impl Fn(&Value) -> Option<String>,
+) -> Reading {
+    let accounts = match integrations::accounts(&context.pool, integrations::GITHUB).await {
+        Ok(accounts) if !accounts.is_empty() => accounts,
+        _ => return Reading::absent("GitHub"),
+    };
+
+    let mut lines = Vec::new();
+    let mut failed = Vec::new();
+    let mut answered = false;
+
+    for account in &accounts {
+        match GithubSession::new(&context.pool, &context.github, account.id)
+            .merged_since(since, MERGED_PAGE)
+            .await
+        {
+            Ok(found) => {
+                answered = true;
+                let name = account
+                    .label
+                    .clone()
+                    .or_else(|| account.identity.clone())
+                    .unwrap_or_else(|| account.account_key.clone());
+
+                lines.extend(
+                    github::as_tool_entries(&name, &found)
+                        .iter()
+                        .filter_map(&line),
+                );
+            }
+            Err(error) => {
+                eprintln!("could not read merged pull requests for the work overview: {error}");
+                failed.push(error.to_string());
+            }
+        }
+    }
+
+    Reading {
+        name: "GitHub",
+        lines: answered.then_some(lines),
+        failed,
     }
 }
 
@@ -517,6 +581,13 @@ impl Work {
 
         result.insert("read_from".to_string(), json!(sources_read));
 
+        if let (Some(since), false) = (self.done_since, self.done.read.is_empty()) {
+            result.insert(
+                "my_recently_completed_work_covers".to_string(),
+                json!(format!("{} to today", since.format("%Y-%m-%d"))),
+            );
+        }
+
         if !not_read.is_empty() {
             result.insert("not_read".to_string(), Value::Array(not_read));
         }
@@ -540,7 +611,8 @@ const HOW_TO_USE: &str = "Answer from these lines only, in plain text. To priori
     on first, then urgent or in-progress open work, mentioning a meeting that limits the time. \
     For what was done, use the completed list and its dates. A list that is empty means there is \
     nothing; one under not_read could not be read, so say that and do not guess. Say how many \
-    more are under not_shown.";
+    more are under not_shown. If my_recently_completed_work_covers is shorter than the period \
+    the user asked about, call this tool again with more days.";
 
 #[cfg(test)]
 mod tests {
@@ -743,6 +815,75 @@ mod tests {
         .expect("should store a key");
     }
 
+    /// **A month is a month.** GitHub's search sorts by last update, so "the
+    /// latest 25 merged, minus the old ones" answered a question about a month
+    /// with whatever fitted, and the follow-up "how far back did you look?" had
+    /// no honest answer. The date is now in the search, and a merge three weeks
+    /// old is kept.
+    ///
+    /// Proved by dropping the `merged:>=` qualifier from the query:
+    ///
+    /// ```text
+    /// the date was not part of the search
+    /// ```
+    #[tokio::test]
+    async fn merged_work_is_asked_of_github_from_the_date_and_a_month_back_is_kept() {
+        let today = Local::now().date_naive();
+        let since = today - Duration::days(29);
+        let merged = (Local::now() - Duration::days(21)).to_rfc3339();
+        let page = format!(
+            r#"{{ "total_count": 1, "items": [{{
+                "number": 31, "title": "Three weeks ago",
+                "repository_url": "https://api.github.com/repos/acme/api",
+                "state": "closed", "draft": false,
+                "html_url": "https://github.com/acme/api/pull/31",
+                "updated_at": "{merged}",
+                "pull_request": {{ "merged_at": "{merged}" }} }}] }}"#
+        );
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", page)]);
+        let context = Context {
+            github: github::Client::against(&host).expect("client"),
+            ..context_with_linear("http://127.0.0.1:1").await
+        };
+        integrations::save(
+            &context.pool,
+            integrations::NewAccount {
+                service: integrations::GITHUB,
+                account_key: "octocat",
+                identity: Some("octocat"),
+                credential_kind: integrations::OAUTH,
+                access_token: "gho_token",
+                refresh_token: None,
+                expires_at: None,
+                scopes: None,
+                client_id: None,
+                client_secret: None,
+            },
+        )
+        .await
+        .expect("should store a credential");
+
+        let reading = merged_pull_requests(&context, since, |pr| {
+            let day = merged_on(pr["merged_at"].as_str()?)?;
+
+            Some(describe(pr, &format!(", merged {}", when(day, today))))
+        })
+        .await;
+
+        assert_eq!(
+            reading.lines,
+            Some(vec![
+                "Three weeks ago (acme/api#31, merged 21 days ago)".to_string()
+            ])
+        );
+
+        let sent = server.await.expect("server").join("");
+        assert!(
+            sent.contains(&format!("merged%3A%3E%3D{}", since.format("%Y-%m-%d"))),
+            "the date was not part of the search: {sent}"
+        );
+    }
+
     /// **GitHub is not assumed.** A user who keeps their work in Linear and
     /// nowhere else gets an overview of it: open issues now, finished ones with
     /// when, and no mention of a GitHub they never connected. It used to answer
@@ -803,6 +944,11 @@ mod tests {
 
         let result = work.as_tool_result().expect("something was read");
         assert_eq!(result["read_from"], json!(["Linear"]));
+        assert_eq!(
+            result["my_recently_completed_work_covers"],
+            format!("{} to today", last_week(today).format("%Y-%m-%d")),
+            "the answer can say how far back it looked"
+        );
         assert!(
             !result.to_string().contains("GitHub"),
             "nothing about a tool the user does not have: {result}"
