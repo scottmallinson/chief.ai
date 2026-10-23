@@ -343,21 +343,28 @@ pub struct StandupPart {
 pub struct Standup {
     /// The sections with something in them, in the order they are said.
     pub parts: Vec<StandupPart>,
-    /// Whether any section is from the last sync because GitHub could not be
-    /// asked. The answer says so rather than passing it off as current.
+    /// Whether any section is from the last sync because nothing that holds it
+    /// could be asked. The answer says so rather than passing it off as current.
     pub from_log: bool,
     /// Whether something could not be read and there was no log to fall back
     /// on, which is a different statement from having nothing to report.
     pub unread: bool,
+    /// Whether anything that holds the user's work is connected at all.
+    pub connected: bool,
+    /// The sources that answered, for the line under the answer.
+    pub read: Vec<&'static str>,
+    /// The sources that are connected and did not answer.
+    pub missed: Vec<&'static str>,
 }
 
-/// The user's work for a standup, **live from GitHub**.
+/// The user's work for a standup, **live from whatever they have connected**.
 ///
 /// The three sections used to come from the work log. Its rows only ever grow,
 /// so a pull request that had since merged was still "open" and a review done
 /// at nine was still "waiting" at noon — the stale lines in a standup. Each
-/// section is now asked of GitHub, and only a section GitHub cannot answer
-/// falls back to the log, saying so.
+/// section is now asked of every connected source that holds it (GitHub,
+/// Linear, Jira), and only a section nothing could answer falls back to the
+/// log, saying so.
 ///
 /// **What is done reaches back to the last working day**, not seven days: a
 /// standup is yesterday and today, and a week of merges is a long answer for a
@@ -366,19 +373,32 @@ pub struct Standup {
 pub async fn standup(context: &tools::Context) -> Standup {
     let now = chrono::Local::now();
     let since = work::last_working_day(now.date_naive());
-    let read = work::read(context, since, false).await;
+    let read = work::read(
+        context,
+        &work::Scope {
+            done_since: since,
+            day: false,
+            // A standup is written a few lines at a time, so it can be all of
+            // them.
+            limit: usize::MAX,
+        },
+    )
+    .await;
 
     let (from, to) = between(&now, since, now.date_naive() + chrono::Duration::days(1));
     let mut standup = Standup {
         parts: Vec::new(),
         from_log: false,
         unread: false,
+        connected: false,
+        read: Vec::new(),
+        missed: Vec::new(),
     };
 
     for (heading, live, stored) in [
         (
             "Done",
-            read.merged,
+            read.done,
             retrieval::shipped_in_window(&context.pool, &from, &to, LOG_ENTRIES).await,
         ),
         (
@@ -392,24 +412,37 @@ pub async fn standup(context: &tools::Context) -> Standup {
             retrieval::latest_in_category(&context.pool, ingest::REVIEW, LOG_ENTRIES).await,
         ),
     ] {
-        let lines = match live {
-            work::Part::Read(lines) => lines,
-            work::Part::Unread(_) => {
-                let logged = stored
-                    .ok()
-                    .as_deref()
-                    .and_then(|hits| retrieval::to_context(hits, RETRIEVAL_CEILING))
-                    .map(|body| body.lines().map(str::to_string).collect::<Vec<_>>())
-                    .unwrap_or_default();
+        standup.connected |= !live.read.is_empty() || !live.unread.is_empty();
 
-                if logged.is_empty() {
-                    standup.unread = true;
-                } else {
-                    standup.from_log = true;
-                }
-
-                logged
+        for source in &live.read {
+            if !standup.read.contains(source) {
+                standup.read.push(source);
             }
+        }
+
+        for (source, _) in &live.unread {
+            if !standup.missed.contains(source) {
+                standup.missed.push(source);
+            }
+        }
+
+        let lines = if live.read.is_empty() {
+            let logged = stored
+                .ok()
+                .as_deref()
+                .and_then(|hits| retrieval::to_context(hits, RETRIEVAL_CEILING))
+                .map(|body| body.lines().map(str::to_string).collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            if logged.is_empty() {
+                standup.unread |= live.is_unread();
+            } else {
+                standup.from_log = true;
+            }
+
+            logged
+        } else {
+            live.lines
         };
 
         if !lines.is_empty() {
@@ -1309,11 +1342,7 @@ mod delivery {
     }
 
     fn tools_context(context: &recipe::Context) -> tools::Context {
-        tools::Context {
-            pool: context.pool.clone(),
-            github: context.github.clone(),
-            microsoft: context.microsoft.clone(),
-        }
+        tools::Context::from_recipe(context)
     }
 
     async fn log_open(context: &recipe::Context, external_id: &str, title: &str) {
@@ -1373,6 +1402,8 @@ mod delivery {
         let merged = search_result(42, "Shipped this morning", Some(merged_just_now));
         let (host, github) = serve(vec![
             ("HTTP/1.1 200 OK", open),
+            // The issues assigned to the user, which are work like any other.
+            ("HTTP/1.1 200 OK", "[]".to_string()),
             ("HTTP/1.1 200 OK", none),
             ("HTTP/1.1 200 OK", merged),
         ]);
@@ -1409,8 +1440,8 @@ mod delivery {
         let requests = github.await.expect("server");
         assert_eq!(
             requests.len(),
-            3,
-            "open, review requests and merged: three reads"
+            4,
+            "open, assigned issues, review requests and merged: four reads"
         );
     }
 

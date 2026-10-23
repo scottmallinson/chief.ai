@@ -457,16 +457,9 @@ async fn brief_if_the_day_has_none<R: Runtime>(app: &AppHandle<R>) -> bool {
     let date = now.format("%Y-%m-%d").to_string();
 
     match recipe::written_at(&pool, &date).await {
-        // Written — unless it was told about only part of the day and the
-        // clock has since moved the rest into range.
-        Ok(Some(_)) => match recipe::refresh_due(&pool, &date, &now).await {
-            Ok(true) => {}
-            Ok(false) => return false,
-            Err(error) => {
-                eprintln!("could not tell whether the brief is due a refresh: {error}");
-                return false;
-            }
-        },
+        // Written: a brief lists everything it found, so there is nothing for
+        // the clock to bring in later.
+        Ok(Some(_)) => return false,
         Ok(None) => {}
         Err(error) => {
             eprintln!("could not tell whether today has a brief: {error}");

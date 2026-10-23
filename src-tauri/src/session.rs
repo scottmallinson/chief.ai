@@ -284,6 +284,27 @@ impl<'a> AtlassianSession<'a> {
             })
             .await
     }
+
+    /// What this person resolved since `since`, on the same terms.
+    pub async fn completed(
+        &self,
+        since: chrono::NaiveDate,
+    ) -> Result<Vec<atlassian::Issue>, atlassian::Error> {
+        let token = self.session.token().await?;
+
+        self.session
+            .renewing(token, |token| async move {
+                let mcp = self.client.connect(&token).await?;
+                let mut found = Vec::new();
+
+                for site in mcp.sites().await? {
+                    found.extend(mcp.completed(&site, since).await?);
+                }
+
+                Ok(found)
+            })
+            .await
+    }
 }
 
 pub struct GithubSession<'a> {

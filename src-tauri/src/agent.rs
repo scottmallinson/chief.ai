@@ -23,6 +23,7 @@ use crate::llama::{self, ChatRequest, Client, Message, Role};
 use crate::microsoft;
 use crate::recipe;
 use crate::router;
+use crate::sections;
 use crate::tools;
 
 /// The model the engine is serving. It runs one, under the name it was given
@@ -666,52 +667,76 @@ fn standup_without_a_model(standup: &intent::Standup) -> Option<Answer> {
         return None;
     }
 
-    let content = if standup.unread {
-        "Chief could not read your work from GitHub just now and has nothing logged to fall \
-         back on. Check that GitHub is connected in Settings."
+    let missed = names(&standup.missed);
+
+    let (content, provenance) = if !standup.connected {
+        (
+            "Nothing that holds your work is connected yet, so there is nothing to put in a \
+             standup. Connect GitHub, Linear or Jira in Settings."
+                .to_string(),
+            None,
+        )
+    } else if standup.unread {
+        (
+            format!(
+                "Chief could not read your work from {missed} just now and has nothing logged \
+                 to fall back on. Check the connection in Settings."
+            ),
+            None,
+        )
     } else {
-        "Nothing to report: no pull requests merged since the last working day, none open, and \
-         no reviews waiting on you."
+        (
+            "Nothing to report: nothing finished since the last working day, nothing open, and \
+             no reviews waiting on you."
+                .to_string(),
+            Some(provenance(standup)),
+        )
     };
 
     Some(Answer {
-        content: content.to_string(),
-        provenance: (!standup.unread).then(|| JUST_READ.to_string()),
+        content,
+        provenance,
     })
 }
 
-const JUST_READ: &str = "Read from GitHub just now.";
-
-/// The pull request number a line names, for checking it was kept.
-fn number_in(line: &str) -> Option<&str> {
-    let after = &line[line.find('#')? + 1..];
-    let digits = after
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(after.len());
-
-    (digits > 0).then(|| &after[..digits])
+/// `GitHub`, `GitHub and Linear`, `GitHub, Linear and Jira`.
+fn names(sources: &[&str]) -> String {
+    match sources {
+        [] => "your tools".to_string(),
+        [only] => (*only).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
-/// The lines a written section left out.
-///
-/// A small model copying a list drops items now and then (Llama 3.2 3B kept 21
-/// of 26 lists whole), and a standup that quietly omits a pull request is wrong
-/// in the way nobody checks. Lines with no number — the log's, which this
-/// cannot test for — are not held to it.
-fn dropped<'a>(lines: &'a [String], written: &str) -> Vec<&'a String> {
-    lines
-        .iter()
-        .filter(|line| number_in(line).is_some_and(|n| !written.contains(&format!("#{n}"))))
-        .collect()
+/// The line under a standup saying where it came from, written here from what
+/// was read rather than by the model.
+fn provenance(standup: &intent::Standup) -> String {
+    let mut line = if standup.from_log {
+        format!(
+            "{} could not be reached, so some of this is from the last sync and may be out of \
+             date.",
+            names(&standup.missed)
+        )
+    } else {
+        format!("Read just now from {}.", names(&standup.read))
+    };
+
+    if !standup.from_log && !standup.missed.is_empty() {
+        line.push_str(&format!(" {} could not be read.", names(&standup.missed)));
+    }
+
+    line
 }
 
 /// Write a standup **one section at a time**.
 ///
-/// Each section is its own short request: the lines for that section and
+/// Each section is its own short request, a handful of lines at a time and
 /// nothing else. A whole standup in one request is twenty lines to copy out
 /// against a 512-token ceiling, and it was cut off part-way through. Here every
-/// request is a handful of lines and ends well inside the ceiling, the sections
-/// stream in order, and the headings are Rust's so the structure cannot drift.
+/// request ends well inside the ceiling, the sections stream in order, the
+/// headings are Rust's so the structure cannot drift, and a line the model
+/// dropped is put back. `sections::write` is where that lives; the brief
+/// writes itself the same way.
 ///
 /// The system prompt and the clock open every request unchanged, which is what
 /// lets llama.cpp reuse that prefix across the sections.
@@ -725,65 +750,56 @@ async fn write_standup<F>(
 where
     F: FnMut(Update),
 {
-    let mut written = String::new();
+    let sections: Vec<sections::Section> = standup
+        .parts
+        .iter()
+        .map(|part| sections::Section {
+            heading: part.heading.to_string(),
+            lines: part.lines.clone(),
+            worded: true,
+        })
+        .collect();
 
-    for (index, part) in standup.parts.iter().enumerate() {
-        let heading = format!(
-            "{}{}:\n",
-            if index == 0 { "" } else { "\n\n" },
-            part.heading
-        );
-        on_update(Update::Delta {
-            text: heading.clone(),
-        });
-        written.push_str(&heading);
-
-        let prompt = format!(
-            "These lines are the user's work, read just now:\n{}\n\nWrite the \"{}\" part of \
-             their standup from these lines and nothing else: one short plain sentence per \
-             line, in the first person, each starting with a dash and keeping its pull request \
-             number. Do not add items, people or dates.",
-            part.lines.join("\n"),
-            part.heading,
-        );
-        let conversation = adapter::Adapter::for_tier(tier).assemble(
-            vec![Turn {
-                role: Role::User,
-                content: prompt,
-            }],
-            &clock::present(),
-        );
-
-        let reply = client
-            .chat_stream(&ChatRequest::new(model, conversation), |token| {
-                on_update(Update::Delta {
-                    text: token.to_string(),
-                })
-            })
-            .await
-            .map_err(Error::from)?;
-
-        let text = reply.content.trim_end().to_string();
-        written.push_str(&text);
-
-        for line in dropped(&part.lines, &text) {
-            let missing = format!("\n- {line}");
+    let written = sections::write(
+        client,
+        &sections,
+        |heading| format!("{heading}:"),
+        |heading, lines| {
+            format!(
+                "These lines are the user's work, read just now:\n{lines}\n\nWrite the \
+                 \"{heading}\" part of their standup from these lines and nothing else: one \
+                 short plain sentence per line, in the first person, each starting with a dash \
+                 and keeping its pull request number or ticket key. Do not add items, people \
+                 or dates."
+            )
+        },
+        |prompt| {
+            ChatRequest::new(
+                model,
+                adapter::Adapter::for_tier(tier).assemble(
+                    vec![Turn {
+                        role: Role::User,
+                        content: prompt,
+                    }],
+                    &clock::present(),
+                ),
+            )
+        },
+        // What streamed cannot be taken back, so nothing is refused here: the
+        // dropped lines are put back instead.
+        |_, _| Vec::new(),
+        |text| {
             on_update(Update::Delta {
-                text: missing.clone(),
+                text: text.to_string(),
             });
-            written.push_str(&missing);
-        }
-    }
+        },
+    )
+    .await
+    .map_err(Error::from)?;
 
     Ok(Answer {
-        content: written,
-        provenance: Some(if standup.from_log {
-            "GitHub could not be reached, so some of this is from the last sync and may be out \
-             of date."
-                .to_string()
-        } else {
-            JUST_READ.to_string()
-        }),
+        content: written.text,
+        provenance: Some(provenance(standup)),
     })
 }
 
@@ -895,6 +911,10 @@ pub async fn ask_agent<R: Runtime>(
         pool: db::pool(&app).await?,
         github: github.inner().clone(),
         microsoft: microsoft.inner().clone(),
+        calendar: app.state::<crate::calendar::Client>().inner().clone(),
+        linear: app.state::<crate::linear::Client>().inner().clone(),
+        atlassian: app.state::<crate::atlassian::Client>().inner().clone(),
+        atlassian_rest: app.state::<crate::atlassian::rest::Rest>().inner().clone(),
     };
 
     // The daemon shares this engine. Hold the door while someone is waiting.
@@ -1496,6 +1516,10 @@ mod orchestration_tests {
             pool,
             github: github::Client::against(host).expect("should build a client"),
             microsoft: microsoft::Client::against(host).expect("should build a client"),
+            calendar: crate::calendar::Client::new().expect("should build a client"),
+            linear: crate::linear::Client::new().expect("should build a client"),
+            atlassian: crate::atlassian::Client::new().expect("should build a client"),
+            atlassian_rest: crate::atlassian::rest::Rest::new().expect("should build a client"),
         }
     }
 
@@ -1559,6 +1583,9 @@ mod orchestration_tests {
                 .collect(),
             from_log: false,
             unread: false,
+            connected: true,
+            read: vec!["GitHub", "Linear"],
+            missed: Vec::new(),
         }
     }
 
@@ -1567,26 +1594,6 @@ mod orchestration_tests {
         assert!(is_standup(&[turn(Role::User, "Draft my standup")]));
         assert!(!is_standup(&[turn(Role::User, "Tell me a joke")]));
         assert!(!is_standup(&[]));
-    }
-
-    #[test]
-    fn finds_the_pull_request_number_a_line_names() {
-        assert_eq!(number_in("Fix it (acme/api#88, draft)"), Some("88"));
-        assert_eq!(number_in("A line with no number"), None);
-        assert_eq!(number_in("Trailing hash #"), None);
-    }
-
-    #[test]
-    fn a_line_the_model_left_out_is_found() {
-        let lines = vec![
-            "Fix it (acme/api#88)".to_string(),
-            "Add it (acme/web#7)".to_string(),
-            "A logged line with no number".to_string(),
-        ];
-
-        let missing = dropped(&lines, "- Fixed the thing in acme/api #88");
-
-        assert_eq!(missing, vec![&lines[1]]);
     }
 
     /// Nothing to write is said in code. Proved by returning `None` for the
@@ -1605,18 +1612,63 @@ mod orchestration_tests {
             "{}",
             said.content
         );
-        assert_eq!(said.provenance.as_deref(), Some(JUST_READ));
+        assert_eq!(
+            said.provenance.as_deref(),
+            Some("Read just now from GitHub and Linear.")
+        );
 
         let mut unread = standup_of(&[]);
         unread.unread = true;
+        unread.missed = vec!["GitHub", "Jira"];
         let said = standup_without_a_model(&unread).expect("an unread one is said too");
-        assert!(said.content.contains("could not read"), "{}", said.content);
+        assert!(
+            said.content
+                .contains("could not read your work from GitHub and Jira"),
+            "{}",
+            said.content
+        );
         assert_eq!(
             said.provenance, None,
             "nothing was read, so nothing is cited"
         );
 
+        let mut nothing = standup_of(&[]);
+        nothing.connected = false;
+        let said = standup_without_a_model(&nothing).expect("and so is an unconnected one");
+        assert!(
+            said.content.contains("Connect GitHub, Linear or Jira"),
+            "{}",
+            said.content
+        );
+
         assert!(standup_without_a_model(&standup_of(&[("Done", &["x (o/r#1)"])])).is_none());
+    }
+
+    /// The line under a standup names the tools it was read from, and the ones
+    /// it could not read, instead of saying "GitHub" whatever the user has.
+    #[test]
+    fn a_standup_says_which_tools_it_came_from() {
+        let mut standup = standup_of(&[("Done", &["x (o/r#1)"])]);
+        assert_eq!(
+            provenance(&standup),
+            "Read just now from GitHub and Linear."
+        );
+
+        standup.read = vec!["GitHub", "Linear", "Jira"];
+        assert_eq!(
+            provenance(&standup),
+            "Read just now from GitHub, Linear and Jira."
+        );
+
+        standup.missed = vec!["Jira"];
+        standup.read = vec!["Linear"];
+        assert_eq!(
+            provenance(&standup),
+            "Read just now from Linear. Jira could not be read."
+        );
+
+        standup.from_log = true;
+        assert!(provenance(&standup).starts_with("Jira could not be reached"));
     }
 
     /// A standup is written a section at a time: one request each, carrying

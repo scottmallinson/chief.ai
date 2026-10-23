@@ -43,9 +43,11 @@ mod retrieval;
 mod router;
 #[cfg(test)]
 mod scenarios;
+mod sections;
 mod session;
 mod settings;
 mod setup;
+mod sources;
 mod sync_state;
 mod tools;
 mod watcher;

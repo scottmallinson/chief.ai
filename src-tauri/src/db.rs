@@ -207,7 +207,10 @@ CREATE TABLE IF NOT EXISTS briefs (
 /// When a brief that left meetings out is worth writing again.
 ///
 /// Nullable and absent on every brief written before this: `NULL` means "said
-/// everything it had to", which is what all of them were.
+/// everything it had to", which is what all of them were. **No longer written
+/// or read**: a brief now lists everything it found, so nothing is waiting for
+/// the clock to bring it in. The column stays, because migrations are
+/// append-only.
 const ADD_BRIEF_REFRESH: &str = r"
 ALTER TABLE briefs ADD COLUMN refresh_after TEXT;
 ";

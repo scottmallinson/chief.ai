@@ -91,7 +91,7 @@ export function normal(text) {
 const TIME = /\b\d{1,2}:\d{2}\b(?:\s?[ap]m\b)?|\b\d{1,2}\s?[ap]m\b/gi;
 
 /** Chief's own note about what it left out. Written by code, not by the model. */
-const NOTE = /^_?showing the next .*$/gim;
+const NOTE = /^_?(?:showing the next|there may be more than this).*$/gim;
 
 export function withoutNote(answer) {
   return answer.replace(NOTE, '').trim();

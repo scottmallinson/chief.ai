@@ -67,6 +67,9 @@ pub struct Issue {
     pub state: String,
     /// Linear's own scale: 0 none, 1 urgent, 4 low.
     pub priority: f64,
+    /// When it was completed, for an issue that was. Set only by
+    /// [`Client::completed`]; an open issue has none.
+    pub completed_at: Option<String>,
 }
 
 /// Who a key belongs to, so an account can name itself.
@@ -96,6 +99,27 @@ query Assigned($first: Int!) {
     orderBy: updatedAt
   ) {
     nodes { identifier title priority state { name } }
+  }
+}
+";
+
+/// What the user finished since a date.
+///
+/// `completedAt: { gte }` and not a state called "Done", for the reason
+/// [`ASSIGNED_QUERY`] gives: every workspace renames its states and none of
+/// them can rename this field. The date is one Chief formats itself.
+const COMPLETED_QUERY: &str = r"
+query Completed($first: Int!, $since: DateTimeOrDuration!) {
+  viewer { name email }
+  issues(
+    first: $first
+    filter: {
+      assignee: { isMe: { eq: true } }
+      completedAt: { gte: $since }
+    }
+    orderBy: updatedAt
+  ) {
+    nodes { identifier title priority state { name } completedAt }
   }
 }
 ";
@@ -144,6 +168,8 @@ struct IssueNode {
     priority: f64,
     #[serde(default)]
     state: Option<StateNode>,
+    #[serde(default, rename = "completedAt")]
+    completed_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,10 +224,34 @@ impl Client {
     /// second call, because a key that cannot name its owner is a key that
     /// cannot read issues either — one round trip answers both.
     pub async fn assigned(&self, key: &str) -> Result<Assigned, Error> {
-        let body = serde_json::json!({
-            "query": ASSIGNED_QUERY,
-            "variables": { "first": i32::from(READ_LIMIT) },
-        });
+        self.ask(
+            key,
+            ASSIGNED_QUERY,
+            serde_json::json!({ "first": i32::from(READ_LIMIT) }),
+        )
+        .await
+    }
+
+    /// What the key holder finished on or after `since`, an ISO date.
+    ///
+    /// The same request as [`Client::assigned`] with the other filter, so the
+    /// key is handled, and its failures reported, in exactly one place.
+    pub async fn completed(&self, key: &str, since: &str) -> Result<Assigned, Error> {
+        self.ask(
+            key,
+            COMPLETED_QUERY,
+            serde_json::json!({ "first": i32::from(READ_LIMIT), "since": since }),
+        )
+        .await
+    }
+
+    async fn ask(
+        &self,
+        key: &str,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> Result<Assigned, Error> {
+        let body = serde_json::json!({ "query": query, "variables": variables });
 
         let response = self
             .http
@@ -265,6 +315,7 @@ fn read(envelope: Envelope) -> Result<Assigned, Error> {
             title: node.title,
             state: node.state.map(|state| state.name).unwrap_or_default(),
             priority: node.priority,
+            completed_at: node.completed_at,
         })
         .collect();
 
@@ -317,6 +368,36 @@ mod tests {
         assert_eq!(found.issues.len(), 2);
         assert_eq!(found.issues[0].identifier, "REC-42");
         assert_eq!(found.issues[0].state, "In Progress");
+    }
+
+    #[tokio::test]
+    async fn reads_what_the_key_holder_finished_since_a_date() {
+        const DONE: &str = r#"{
+            "data": {
+                "viewer": { "name": "Scott Mallinson", "email": "scott@example.com" },
+                "issues": { "nodes": [
+                    { "identifier": "REC-40", "title": "Shipped it", "priority": 0,
+                      "state": { "name": "Done" }, "completedAt": "2026-10-22T09:30:00.000Z" }
+                ] }
+            }
+        }"#;
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", DONE)]);
+        let client = Client::against(&host).expect("client");
+
+        let found = client
+            .completed("lin_api_test", "2026-10-22")
+            .await
+            .expect("should read");
+
+        assert_eq!(found.issues[0].identifier, "REC-40");
+        assert_eq!(
+            found.issues[0].completed_at.as_deref(),
+            Some("2026-10-22T09:30:00.000Z")
+        );
+
+        let sent = server.await.expect("server").join("");
+        assert!(sent.contains("completedAt"), "{sent}");
+        assert!(sent.contains("2026-10-22"), "{sent}");
     }
 
     #[tokio::test]
@@ -437,6 +518,7 @@ mod tests {
             title: "Read Linear".to_string(),
             state: "In Progress".to_string(),
             priority: 2.0,
+            completed_at: None,
         };
 
         assert_eq!(describe(&issue), "REC-42 Read Linear [In Progress]");
@@ -449,6 +531,7 @@ mod tests {
             title: "Read Linear".to_string(),
             state: String::new(),
             priority: 0.0,
+            completed_at: None,
         };
 
         assert_eq!(describe(&issue), "REC-42 Read Linear");
