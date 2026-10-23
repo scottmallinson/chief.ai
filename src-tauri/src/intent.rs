@@ -21,6 +21,7 @@ use crate::ingest;
 use crate::integrations;
 use crate::recipe;
 use crate::retrieval;
+use crate::tools;
 
 /// How many entries `/log` answers with. Enough to see the shape of a week.
 const LOG_ENTRIES: i64 = 10;
@@ -588,24 +589,69 @@ async fn log(context: &recipe::Context, window: Window) -> Option<Answered> {
 
 /// The reviews somebody has asked the user for.
 ///
-/// **Read from the work log, like every other read.** This is the question the
-/// composer has offered since REC-41 and could not answer from this machine,
-/// because the ingestion pass only ever read merged work — so it went out to
-/// GitHub on every ask and came back as prose a 3B model invented over a page
-/// of search results. The pass writes `category = 'review'` rows now, and this
-/// is what reads them.
+/// **Read from GitHub as it is asked, not from the work log.** A review request
+/// closes the moment somebody reviews, merges or withdraws it, and nothing in
+/// the log hears about that: the rows only ever grow, so a request dealt with
+/// at nine still read as waiting at noon. This is one search per connected
+/// account — the same call the tool makes — and no model is involved.
+///
+/// **The log is the fallback, and says so.** With GitHub out of reach, the last
+/// sync is better than nothing, but it is not "just now", and the line under
+/// the answer stops claiming it is.
 ///
 /// No window. A review request is open until somebody deals with it, and one
 /// from three weeks ago is more of a problem than one from this morning, not
 /// less.
 async fn waiting(context: &recipe::Context) -> Option<Answered> {
+    match tools::fetch_github_prs(
+        &context.pool,
+        &context.github,
+        tools::PullRequestState::Open,
+        tools::Whose::Reviewing,
+    )
+    .await
+    {
+        Ok(read) => live_reviews(&read),
+        Err(error) => {
+            eprintln!("could not read review requests live: {error}");
+            stored_reviews(context).await
+        }
+    }
+}
+
+/// The live read, as lines. `None` for an empty one, like the stored read.
+fn live_reviews(read: &serde_json::Value) -> Option<Answered> {
+    let lines: Vec<String> = read["pull_requests"]
+        .as_array()?
+        .iter()
+        .take(usize::try_from(LOG_ENTRIES).unwrap_or(usize::MAX))
+        .map(|pr| {
+            format!(
+                "- {} ({}#{}, {})",
+                pr["title"].as_str().unwrap_or("Untitled"),
+                pr["repository"].as_str().unwrap_or("unknown"),
+                pr["number"],
+                pr["account"].as_str().unwrap_or("GitHub"),
+            )
+        })
+        .collect();
+
+    (!lines.is_empty()).then(|| Answered {
+        markdown: format!("## Waiting on you\n{}", lines.join("\n")),
+        provenance: Some("Read from GitHub just now.".to_string()),
+    })
+}
+
+/// What the last sync knew, when GitHub could not be asked.
+async fn stored_reviews(context: &recipe::Context) -> Option<Answered> {
     let hits = retrieval::latest_in_category(&context.pool, "review", LOG_ENTRIES)
         .await
         .ok()?;
 
     retrieval::to_context(&hits, RETRIEVAL_CEILING).map(|body| Answered {
         markdown: format!("## Waiting on you\n{body}"),
-        provenance: retrieval::provenance(&hits),
+        provenance: retrieval::provenance(&hits)
+            .map(|line| format!("GitHub could not be reached, so this may be out of date. {line}")),
     })
 }
 
@@ -982,6 +1028,7 @@ mod delivery {
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(&host).expect("client"),
             corpus,
+            short_brief_lines: 0,
         };
 
         (context, Scratch(root), server)
@@ -1338,6 +1385,106 @@ mod delivery {
         assert!(
             material.contains("Do not invent"),
             "and says what not to do instead: {material}"
+        );
+    }
+
+    const REVIEW_REQUESTS: &str = r#"{
+        "total_count": 1,
+        "items": [{
+            "number": 88,
+            "title": "Fresh review request",
+            "repository_url": "https://api.github.com/repos/o/r",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/o/r/pull/88",
+            "updated_at": "2026-09-02T09:00:00Z"
+        }]
+    }"#;
+
+    async fn log_review(context: &recipe::Context, external_id: &str, title: &str) {
+        work_log::upsert(
+            &context.pool,
+            work_log::WorkLogRecord {
+                timestamp: "2026-09-02T09:00:00.000Z".to_string(),
+                source: "github".to_string(),
+                category: "review".to_string(),
+                title: title.to_string(),
+                content: title.to_string(),
+                summary: Some("review requested".to_string()),
+                url: None,
+                raw_ref: None,
+                external_id: external_id.to_string(),
+                account_id: 1,
+            },
+        )
+        .await
+        .expect("should store");
+    }
+
+    /// "What is waiting on me" asks GitHub, so a request somebody has since
+    /// dealt with is not reported from a row nothing ever closes.
+    ///
+    /// Proved by making `waiting` read `stored_reviews` first:
+    ///
+    /// ```text
+    /// a review request already dealt with is still being reported
+    /// ```
+    #[tokio::test]
+    async fn waiting_reads_github_now_and_not_a_row_that_has_since_closed() {
+        let (mut context, _scratch, _model) = silent("waiting-live").await;
+        connect(&context, integrations::GITHUB).await;
+        log_review(&context, "o/r#71", "Already reviewed by someone").await;
+
+        let (host, github) = serve(vec![("HTTP/1.1 200 OK", REVIEW_REQUESTS)]);
+        context.github = github::Client::against(&host).expect("client");
+
+        let answered = answer(Intent::Waiting, &context)
+            .await
+            .expect("a review request is something to say");
+
+        assert!(
+            answered.markdown.contains("Fresh review request"),
+            "the live request should be the answer: {}",
+            answered.markdown
+        );
+        assert!(
+            !answered.markdown.contains("Already reviewed by someone"),
+            "a review request already dealt with is still being reported: {}",
+            answered.markdown
+        );
+        assert_eq!(
+            answered.provenance.as_deref(),
+            Some("Read from GitHub just now.")
+        );
+
+        let requests = github.await.expect("server");
+        assert!(
+            requests[0].contains("review-requested"),
+            "it should ask for review requests: {}",
+            requests[0]
+        );
+    }
+
+    /// With GitHub unreachable the last sync still answers, and says it is not
+    /// current.
+    #[tokio::test]
+    async fn waiting_falls_back_to_the_log_and_says_so_when_github_is_unreachable() {
+        let (context, _scratch, _model) = silent("waiting-offline").await;
+        connect(&context, integrations::GITHUB).await;
+        log_review(&context, "o/r#71", "Tighten the calendar parser").await;
+
+        let answered = answer(Intent::Waiting, &context)
+            .await
+            .expect("the stored request is better than nothing");
+
+        assert!(answered.markdown.contains("Tighten the calendar parser"));
+        assert!(
+            answered
+                .provenance
+                .as_deref()
+                .is_some_and(|line| line.starts_with("GitHub could not be reached")),
+            "{:?}",
+            answered.provenance
         );
     }
 

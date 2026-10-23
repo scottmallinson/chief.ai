@@ -277,6 +277,64 @@ fn offer_for(github: bool, microsoft: bool) -> Offer {
     }
 }
 
+/// The read that answers a question routed to `route`, with what it is called
+/// in the material the model is shown.
+///
+/// **Broader than a model would ask for, except where the router said.** The
+/// GitHub view is chosen by the router, so a question about reviews reads only
+/// reviews. Calendar takes the week, since nobody has chosen a day, and the
+/// clock is already in the prompt to say which day is which.
+pub fn calls_for(route: crate::router::Route) -> Vec<(&'static str, ToolCall)> {
+    use crate::router::{CalendarRange, GithubView, Route};
+
+    let call = |id: &str, name: &str, arguments: Value| {
+        ToolCall::new(
+            id,
+            ToolCallFunction {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+        )
+    };
+
+    match route {
+        Route::Github(view) => {
+            let (label, arguments) = match view {
+                GithubView::Reviewing => (
+                    "Pull requests waiting on my review",
+                    json!({ "state": "open", "whose": "reviewing" }),
+                ),
+                GithubView::Open => (
+                    "My open pull requests",
+                    json!({ "state": "open", "whose": "mine" }),
+                ),
+                GithubView::Merged => (
+                    "My merged pull requests",
+                    json!({ "state": "merged", "whose": "mine" }),
+                ),
+            };
+
+            vec![(label, call("routed_1", FETCH_GITHUB_PRS, arguments))]
+        }
+        Route::Calendar(range) => {
+            let (label, name) = match range {
+                CalendarRange::Today => ("My calendar today", "today"),
+                CalendarRange::Tomorrow => ("My calendar tomorrow", "tomorrow"),
+                CalendarRange::Week => ("My calendar this week", "week"),
+            };
+
+            vec![(
+                label,
+                call("routed_1", FETCH_CALENDAR, json!({ "range": name })),
+            )]
+        }
+        Route::Mail => vec![(
+            "My recent mail",
+            call("routed_1", FETCH_RECENT_MAIL, json!({})),
+        )],
+    }
+}
+
 /// A tool call the model wrote out as its answer, rather than the engine
 /// recognising it as one.
 ///
@@ -349,10 +407,13 @@ pub fn is_call_in_text(content: &str) -> bool {
 pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
     match call.function.name.as_str() {
         FETCH_GITHUB_PRS => match parse(&call.function) {
-            Ok(args) => match fetch_github_prs(context, args.state, args.whose).await {
-                Ok(result) => result,
-                Err(error) => json!({ "error": error.to_string() }),
-            },
+            Ok(args) => {
+                match fetch_github_prs(&context.pool, &context.github, args.state, args.whose).await
+                {
+                    Ok(result) => result,
+                    Err(error) => json!({ "error": error.to_string() }),
+                }
+            }
             Err(message) => json!({ "error": message }),
         },
         FETCH_CALENDAR => match parse_calendar(&call.function) {
@@ -408,12 +469,13 @@ fn describe(account: &integrations::Account) -> String {
 /// An account that will not answer is reported beside the ones that did, so a
 /// single revoked token does not cost the user the rest of the answer. Nothing
 /// readable at all is an error, which is how "Reconnect GitHub" reaches them.
-async fn fetch_github_prs(
-    context: &Context,
+pub async fn fetch_github_prs(
+    pool: &SqlitePool,
+    github: &github::Client,
     state: PullRequestState,
     whose: Whose,
 ) -> Result<Value, github::Error> {
-    let accounts = integrations::accounts(&context.pool, integrations::GITHUB).await?;
+    let accounts = integrations::accounts(pool, integrations::GITHUB).await?;
 
     let mut pull_requests = Vec::new();
     let mut reports = Vec::new();
@@ -423,7 +485,7 @@ async fn fetch_github_prs(
     for account in &accounts {
         let name = describe(account);
 
-        match GithubSession::new(&context.pool, &context.github, account.id)
+        match GithubSession::new(pool, github, account.id)
             .pull_requests(whose.into(), state.into(), PR_LIMIT)
             .await
         {

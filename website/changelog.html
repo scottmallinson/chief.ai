@@ -103,15 +103,119 @@
         Every release of Chief since the first one. The list is written from the commits at release
         time rather than by hand, so it says what actually shipped — and a release only happens when
         something a person can download has changed. Version
-        <span data-version>0.13.2</span> is current.
+        <span data-version>0.14.2</span> is current.
       </p>
 
       <div class="changelog">
+        <section class="release" id="v0-14-2">
+          <div class="release-mark">
+            <p class="release-version">0.14.2</p>
+            <p class="release-date mono">2026-10-23</p>
+            <p class="release-latest">current release</p>
+          </div>
+          <div class="release-changes">
+            <div class="release-group">
+              <p class="micro">Fixes</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">read review requests live and refresh the header sync time</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/f0e297f8a0443193592f7d127aa5a073625fdfba">f0e297f</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
+        <section class="release" id="v0-14-1">
+          <div class="release-mark">
+            <p class="release-version">0.14.1</p>
+            <p class="release-date mono">2026-10-21</p>
+          </div>
+          <div class="release-changes">
+            <div class="release-group">
+              <p class="micro">Fixes</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">keep the engine off the GPU by default on Windows</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/927e5cf5ea6719ea2a92c646332ec3869cba0ed6">927e5cf</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">keep the embedding server off the GPU</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/358469f8f487590caafbcb2e7d1a430fe7f494f7">358469f</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
+        <section class="release" id="v0-14-0">
+          <div class="release-mark">
+            <p class="release-version">0.14.0</p>
+            <p class="release-date mono">2026-10-21</p>
+          </div>
+          <div class="release-changes">
+            <div class="release-group">
+              <p class="micro">Features</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">run Gemma 4 E2B on both tiers with the router on</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/a07bcb52ad604b858785df13572b782cae7b0a7b">a07bcb5</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">write a short day's brief in code instead of asking the model</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/d5f6a93aba7db18a64cdccb167612dda1b74ce5a">d5f6a93</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">check a brief against everything the material shows, not only times</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/4a7a11ace6d4e644a5914fa1090af1a5e4704d6e">4a7a11a</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">answer a read that found nothing in code, before the engine starts</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/2076f8537ca8527d05b5e25695bdda0d5b5e6b6f">2076f85</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">never file a brief that names a time, number or person the material lacks</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/477ea7ba96dec3a1f7162724f5d0d27283545d01">477ea7b</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">route review requests and day ranges by meaning</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/c14e64a77ec3c67ede2e8d705a6550a6dc650d45">c14e64a</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">pick the GitHub view by meaning when routing</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/06aa1367846c13731e53886c1f9be75c8133ef5e">06aa136</a>
+                </li>
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">route a question to its source by meaning, behind an env switch</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/4029c16f9127b3c16dcea6a0149996dba6f0caba">4029c16</a>
+                </li>
+              </ul>
+            </div>
+            <div class="release-group">
+              <p class="micro">Fixes</p>
+              <ul class="change-list">
+                <li class="change">
+                  <span class="change-scope mono">agent</span>
+                  <span class="change-subject">stop filing a cut-off brief, name attendees once, route open pull requests</span>
+                  <a class="change-sha mono" href="https://github.com/scottmallinson/chief.ai/commit/43a67e65973bd04db1561225801f24d11c7cbabe">43a67e6</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </section>
         <section class="release" id="v0-13-2">
           <div class="release-mark">
             <p class="release-version">0.13.2</p>
             <p class="release-date mono">2026-10-16</p>
-            <p class="release-latest">current release</p>
           </div>
           <div class="release-changes">
             <div class="release-group">

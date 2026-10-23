@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 /**
  * What Chief last observed about one account.
@@ -29,6 +30,14 @@ export interface SyncState {
  */
 export function syncStatus(): Promise<SyncState[]> {
   return invoke<SyncState[]>('sync_status');
+}
+
+/**
+ * Called whenever a pass, manual or background, has finished recording.
+ * Returns a function that stops listening.
+ */
+export function onSyncStateChanged(handler: () => void) {
+  return listen<null>('sync-state-changed', () => handler());
 }
 
 /**

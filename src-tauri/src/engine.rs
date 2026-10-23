@@ -73,6 +73,17 @@ const SERVER_VAR: &str = "CHIEF_LLAMA_SERVER";
 /// [`Engine::start_and_wait`] cannot see.
 const GPU_VAR: &str = "CHIEF_ENGINE_GPU";
 
+/// Let a model that reasons before it answers do so. Unset, the server is
+/// started with `--reasoning-budget 0` and answers at once.
+///
+/// Chief's requests already send `enable_thinking: false`, which Qwen3's
+/// template honours. LFM2.5 does not read it: it wrote 500 tokens of reasoning
+/// before every answer and was cut off at the ceiling, so each "answer" was
+/// 51 characters. The budget is the switch the server itself applies whatever
+/// the template says. `on` (or `1`, `true`, `yes`) removes it, for measuring
+/// what the reasoning buys.
+pub(crate) const THINKING_VAR: &str = "CHIEF_ENGINE_THINKING";
+
 /// How long to wait for a freshly spawned server to start answering before
 /// giving up on it. Reading a couple of gigabytes off a cold disk is slow, and
 /// the alternative to waiting is telling the user it failed when it did not.
@@ -290,7 +301,7 @@ pub(crate) fn library_path_variable() -> &'static str {
 }
 
 /// Put `directories` in front of whatever the loader already searches.
-fn library_path(directories: &[PathBuf], inherited: Option<OsString>) -> OsString {
+pub(crate) fn library_path(directories: &[PathBuf], inherited: Option<OsString>) -> OsString {
     let mut entries: Vec<OsString> = directories.iter().map(OsString::from).collect();
 
     if let Some(inherited) = inherited.filter(|value| !value.is_empty()) {
@@ -351,20 +362,42 @@ pub(crate) fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> 
     ]
 }
 
+/// The flag that stops a model reasoning before it answers, from
+/// [`THINKING_VAR`]. Anything but an explicit yes keeps it off.
+pub(crate) fn thinking_arguments(setting: Option<&OsString>) -> Vec<OsString> {
+    let allowed = setting
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "on" | "1" | "true" | "yes"
+            )
+        });
+
+    if allowed {
+        Vec::new()
+    } else {
+        vec![OsString::from("--reasoning-budget"), OsString::from("0")]
+    }
+}
+
 /// Whether the engine may put the model on a GPU, from [`GPU_VAR`].
 ///
-/// Anything but an explicit no leaves it on: the bundled build decides for
-/// itself whether there is a GPU worth using, and a typo should not quietly
-/// cost somebody their graphics card.
-fn gpu_allowed(setting: Option<&OsString>) -> bool {
+/// An unset or unreadable setting means `default`, and only a plain yes or no
+/// moves it. The default is off on Windows: a Vulkan driver that hangs rather
+/// than fails freezes the whole machine, which the fallback in
+/// [`Engine::start_and_wait`] cannot see, and an integrated GPU shares the
+/// memory the rest of the system is using. `on` opts a machine back in.
+fn gpu_allowed(setting: Option<&OsString>, default: bool) -> bool {
     let Some(setting) = setting.and_then(|value| value.to_str()) else {
-        return true;
+        return default;
     };
 
-    !matches!(
-        setting.trim().to_ascii_lowercase().as_str(),
-        "off" | "0" | "false" | "no" | "cpu"
-    )
+    match setting.trim().to_ascii_lowercase().as_str() {
+        "off" | "0" | "false" | "no" | "cpu" => false,
+        "on" | "1" | "true" | "yes" | "gpu" => true,
+        _ => default,
+    }
 }
 
 /// The flags that decide where the model runs.
@@ -403,7 +436,7 @@ fn device_arguments(offload: bool) -> Vec<OsString> {
 /// server runs. Nothing else it does depends on the working directory — the
 /// model is passed by absolute path. macOS links its backends in, so there this
 /// finds a directory and changes nothing.
-fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
     library_dirs
         .iter()
         .find(|dir| {
@@ -425,7 +458,7 @@ fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
 /// release install and `tauri dev`. A `llama-server` on `PATH` is the last
 /// resort, so someone who already has one can work on Chief without fetching a
 /// second copy.
-fn find_server() -> Option<PathBuf> {
+pub(crate) fn find_server() -> Option<PathBuf> {
     if let Some(configured) = std::env::var_os(SERVER_VAR).map(PathBuf::from) {
         return configured.is_file().then_some(configured);
     }
@@ -461,7 +494,7 @@ fn on_path() -> bool {
 /// those the server's own `RUNPATH=$ORIGIN` resolves to a directory none of
 /// them are in, which is why the path is set explicitly here rather than left
 /// to it.
-fn library_dirs<R: Runtime>(app: &AppHandle<R>, server: Option<&Path>) -> Vec<PathBuf> {
+pub(crate) fn library_dirs<R: Runtime>(app: &AppHandle<R>, server: Option<&Path>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(resources) = app.path().resource_dir() {
@@ -573,7 +606,10 @@ impl Engine {
             base_url,
             backend_dir: backend_dir(&library_dirs),
             library_dirs,
-            offload: AtomicBool::new(gpu_allowed(std::env::var_os(GPU_VAR).as_ref())),
+            offload: AtomicBool::new(gpu_allowed(
+                std::env::var_os(GPU_VAR).as_ref(),
+                !cfg!(windows),
+            )),
             server,
             weights: model.path(&data_dir),
             tier,
@@ -670,6 +706,7 @@ impl Engine {
         let mut command = Command::new(server);
         command
             .args(arguments(&self.weights, port, self.tier))
+            .args(thinking_arguments(std::env::var_os(THINKING_VAR).as_ref()))
             .args(device_arguments(self.offload.load(Ordering::SeqCst)))
             .stdin(Stdio::null())
             // Read rather than inherited. A server that dies on the way up says
@@ -1151,17 +1188,34 @@ mod tests {
 
     #[test]
     fn leaves_the_gpu_on_unless_told_plainly_to_stop() {
-        assert!(gpu_allowed(None), "no setting is not a refusal");
+        assert!(gpu_allowed(None, true), "no setting is not a refusal");
 
         for yes in ["on", "1", "true", "gpu", "", "of"] {
             assert!(
-                gpu_allowed(Some(&OsString::from(yes))),
+                gpu_allowed(Some(&OsString::from(yes)), true),
                 "{yes:?} is not a no"
             );
         }
 
         for no in ["off", "OFF", " 0 ", "false", "no", "cpu"] {
-            assert!(!gpu_allowed(Some(&OsString::from(no))), "{no:?} is a no");
+            assert!(
+                !gpu_allowed(Some(&OsString::from(no)), true),
+                "{no:?} is a no"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_the_gpu_off_by_default_where_told_to_and_lets_a_plain_yes_override_it() {
+        assert!(!gpu_allowed(None, false));
+        assert!(!gpu_allowed(Some(&OsString::from("")), false));
+        assert!(!gpu_allowed(Some(&OsString::from("of")), false));
+
+        for yes in ["on", "ON", " 1 ", "true", "yes", "gpu"] {
+            assert!(
+                gpu_allowed(Some(&OsString::from(yes)), false),
+                "{yes:?} is a yes"
+            );
         }
     }
 
@@ -1189,6 +1243,18 @@ mod tests {
                 "{flag} would override the engine's own fitting: {everything:?}"
             );
         }
+    }
+
+    #[test]
+    fn stops_a_model_reasoning_before_it_answers_unless_told_to() {
+        let off = [OsString::from("--reasoning-budget"), OsString::from("0")];
+
+        assert_eq!(thinking_arguments(None), off);
+        assert_eq!(thinking_arguments(Some(&OsString::from("off"))), off);
+        // A typo must not quietly turn minutes of reasoning back on.
+        assert_eq!(thinking_arguments(Some(&OsString::from("onn"))), off);
+        assert!(thinking_arguments(Some(&OsString::from("ON"))).is_empty());
+        assert!(thinking_arguments(Some(&OsString::from("true"))).is_empty());
     }
 
     #[test]
@@ -1236,7 +1302,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1361,7 +1427,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1383,7 +1449,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: false,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1405,7 +1471,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: false,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1572,7 +1638,7 @@ mod tests {
             offload: AtomicBool::new(true),
             weights,
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),

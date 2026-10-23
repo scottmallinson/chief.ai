@@ -10,12 +10,14 @@ mod agent;
 mod atlassian;
 mod background;
 mod calendar;
+mod check;
 mod clock;
 mod connect;
 mod context;
 mod corpus;
 mod daemon;
 mod db;
+mod embedder;
 mod engine;
 mod facts;
 mod github;
@@ -37,6 +39,7 @@ mod propose;
 mod proposed;
 mod recipe;
 mod retrieval;
+mod router;
 #[cfg(test)]
 mod scenarios;
 mod session;
@@ -97,6 +100,10 @@ pub fn run() {
             // Start the model server while the window is still opening, so the
             // first question does not wait for the weights to come off disk.
             engine::start(&app.handle().clone());
+
+            // And the small server that lets the router place a question by
+            // meaning. Absent weights or a failed start leave the router off.
+            embedder::start(&app.handle().clone());
 
             // And give its memory back when nothing is using it. A resident
             // model holds a couple of gigabytes, which on the machines Chief
@@ -178,7 +185,10 @@ pub fn run() {
             // The engine is our child process. Nothing else will stop it, and a
             // model left resident would hold a couple of gigabytes after the
             // window has gone.
-            RunEvent::Exit => app.state::<engine::Engine>().stop(),
+            RunEvent::Exit => {
+                app.state::<engine::Engine>().stop();
+                embedder::stop();
+            }
             // Clicking the Dock icon of an app whose window is hidden.
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => background::show(app),

@@ -267,6 +267,10 @@ the user to install a runtime, which is the whole reason the engine is a module 
   the CPU for the rest of the run: a machine that ran Chief on its CPU before there was a GPU build
   must go on doing so, whatever its driver does. `CHIEF_ENGINE_GPU=off` does the same from the
   start, for a driver that answers wrongly rather than failing, which nothing can detect.
+  **On Windows that is the default, and `CHIEF_ENGINE_GPU=on` opts back in.** 0.14.0 froze a Core
+  Ultra 7 268V laptop (Arc 140V, memory shared with the system) on follow-on questions until the
+  engine was kept off the GPU; Vulkan on an integrated GPU can hang the whole machine, which is not
+  a failed start, so nothing falls back. The Mac and Linux defaults are unchanged.
 - **ggml loads its backends from the server's own directory and the current directory — not the
   loader path.** That includes the CPU backend, which the Windows and Linux builds pick per
   instruction set at run time. So the server is started in the library directory
@@ -834,6 +838,20 @@ and waits until it can answer.
   the engine, which would fail in a much less obvious way.
 - Progress is reported every few megabytes, not every chunk: a progress event per packet is
   thousands a second and tells the user nothing more.
+
+- **Both tiers run Gemma 4 E2B** (`weights::GEMMA`); the tier decides only the context window. It
+  was chosen over seven other models on the 8 GB Intel Mac mini: top score (95.4 to 96.6 over
+  four runs), no invented content on a day with nothing in it, 0 of 480 runs swapped from a clean
+  start. The pull request that made the change carries the whole benchmark record. What was not
+  measured is Apple silicon, Windows and Linux, and `tool-reviews` tool-call validity was 88%
+  (bar 90%) in one of four runs.
+- **A second, optional download: EmbeddingGemma 2 Q8_0 (`weights::EMBEDDER`, 310 MB).** It is fetched
+  after the main weights, from the same host under the same rules, and a failure never fails the
+  download the user asked for. `embedder.rs` starts it as `llama-server --embedding` on loopback
+  port 11436 and registers its address once it answers `/health`; `router::configured` reads that.
+  With no weights, no server binary or a server that will not start the router is simply off and
+  the tool loop runs as before. `CHIEF_ROUTER=off` switches it off by name; `CHIEF_ROUTER_URL`
+  still points Chief at a server of the user's own and stops `embedder` starting one.
 
 ## The design system
 

@@ -23,6 +23,7 @@ function run({
   response,
   group = 'brief-busy',
   fixture = 'f',
+  offered = true,
   extra = {},
 } = {}) {
   return {
@@ -38,7 +39,10 @@ function run({
     exchanges: [
       {
         status: 200,
-        request: { messages: [{ role: 'user', content: shown }] },
+        request: {
+          messages: [{ role: 'user', content: shown }],
+          ...(offered ? { tools: [{ type: 'function' }] } : {}),
+        },
         response: response ?? text(answer),
         first_ms: 100,
         total_ms: 900,
@@ -75,6 +79,24 @@ describe('parseStream', () => {
 });
 
 describe('inventedThings', () => {
+  it('does not take the word after a bold label for a name', () => {
+    const shown = 'Nothing is waiting.';
+    expect(
+      inventedThings('**What is waiting on me:** None reported.\n**Plan:** Connect GitHub', shown),
+    ).toEqual([]);
+    expect(inventedThings('We met Zorbo today', shown)).toEqual(['name Zorbo']);
+  });
+  it('reads "17 days ago" as worked out from a date, only when the material has one', () => {
+    expect(inventedThings('Updated 17 days ago', 'updated 2026-10-02')).toEqual([]);
+    expect(inventedThings('Updated 17 days ago', 'updated recently')).toEqual(['number 17']);
+    expect(inventedThings('Raised 17 PRs', 'updated 2026-10-02')).toEqual(['number 17']);
+  });
+  it('accepts a 12-hour time that is the 24-hour one in the material, and flags a wrong one', () => {
+    const shown = 'start 15:00 end 15:30 Quarterly planning';
+    expect(inventedThings('- Ends at 3:30 PM, starts 3:00 PM', shown)).toEqual([]);
+    expect(inventedThings('- Ends at 4:30 PM', shown)).toEqual(['time 4:30 PM']);
+  });
+
   const shown = '## Today\n- 09:00 Standup with Priya\n- acme/api #41 Retry';
   it('lets through what the material says', () => {
     expect(inventedThings('- 09:00 Standup with Priya, then #41', shown)).toEqual([]);
@@ -87,6 +109,53 @@ describe('inventedThings', () => {
     expect(
       inventedThings('- Mail from Oakfield Primary', 'Oakfield Primary: Non-uniform day'),
     ).toEqual([]);
+  });
+});
+
+describe('inventedThings and possessives', () => {
+  it('does not call a possessive of a word the material has an invention', () => {
+    expect(inventedThings("- 17:30 Parents' evening", "17:30 Parents' evening — Year 3")).toEqual(
+      [],
+    );
+    expect(
+      inventedThings("- Review of Oakfield Primary's day", 'Oakfield Primary: Non-uniform day'),
+    ).toEqual([]);
+  });
+  it('still catches a possessive of a name the material does not have', () => {
+    expect(inventedThings("- Reply to Marcus's note", 'Mail from Priya')).toEqual([
+      "name Marcus's",
+    ]);
+  });
+});
+
+describe('inventedThings and lines that open with a time', () => {
+  const shown = '14:00 Vendor call\n14:30 Budget check-in';
+  it('does not read the verb after a time as a name', () => {
+    expect(
+      inventedThings('• 14:00: Attend vendor call\n• 14:30 Meet for the check-in', shown),
+    ).toEqual([]);
+  });
+  it('still reads a name later in the line', () => {
+    expect(inventedThings('• 14:00: Attend vendor call with Marcus', shown)).toEqual([
+      'name Marcus',
+    ]);
+  });
+});
+
+describe('inventedThings and the names it cannot tell from the material', () => {
+  it('reads a bare name as known when the material has it possessed', () => {
+    expect(inventedThings('- Wish Sam a happy birthday', "all day Sam's birthday")).toEqual([]);
+  });
+  it('reads a hyphenated word as known when each part is', () => {
+    expect(inventedThings('- Meeting: All-day Bank holiday', 'all day Bank holiday')).toEqual([]);
+    expect(inventedThings('- With the Parent-Teacher group', 'School pick-up')).toEqual([
+      'name Parent-Teacher',
+    ]);
+  });
+  it('checks the name after a title', () => {
+    expect(inventedThings('- 11:30: Dentist with Dr. Smith', '11:30 Dentist')).toEqual([
+      'name Smith',
+    ]);
   });
 });
 
@@ -134,6 +203,31 @@ describe('scoreRun', () => {
     );
     expect(m.clean).toBe(false);
     expect(m.pass).toBe(false);
+  });
+
+  it('does not hold a brief written in code to a prompt no model saw', () => {
+    const m = scoreRun(
+      run({
+        answer: '- Riverside Library: Your reserved book is ready',
+        key: { must: ['reserved book'], forbid_numbers: true },
+        group: 'brief-quiet',
+        extra: { check: { by_code: true, fell_back: false, first: [] } },
+      }),
+    );
+    expect(m.invented).toEqual([]);
+    expect(m.clean).toBe(true);
+  });
+
+  it('still checks a brief written in code against what must not appear', () => {
+    const m = scoreRun(
+      run({
+        answer: '- Team meeting on Friday',
+        key: { forbid: ['meeting'] },
+        group: 'brief-quiet',
+        extra: { check: { by_code: true, fell_back: false, first: [] } },
+      }),
+    );
+    expect(m.clean).toBe(false);
   });
 
   it('fails a missing fact and reports which one', () => {
@@ -200,6 +294,36 @@ describe('scoreRun', () => {
     const wrong = scoreRun(run({ answer: 'ok', response: call({ range: 'fortnight' }), key }));
     expect(wrong.tool_args_ok).toBe(false);
     expect(wrong.tool_valid).toBe(false);
+  });
+
+  it('does not hold a run to the tool checks when no tools were offered', () => {
+    const key = { tool: { name: 'fetch_calendar', args: { range: ['tomorrow'] } } };
+    const read = scoreRun(run({ answer: 'ok', key, offered: false }));
+
+    expect(read.routed_read).toBe(true);
+    expect(read.tool_called).toBeNull();
+    expect(read.tool_args_ok).toBeNull();
+
+    // The same answer with tools on offer and none called is a miss, so the
+    // exemption is the router's and not a way to stop a model failing.
+    const missed = scoreRun(run({ answer: 'ok', key }));
+    expect(missed.routed_read).toBe(false);
+    expect(missed.tool_called).toBe(false);
+  });
+
+  it('counts an answer written in code, with no model call at all, as a read', () => {
+    const key = { tool: { name: 'fetch_calendar', args: { range: ['tomorrow'] } } };
+    const empty = scoreRun({
+      ...run({ answer: 'Nothing found in my calendar tomorrow.', key }),
+      exchanges: [],
+    });
+
+    expect(empty.routed_read).toBe(true);
+    expect(empty.tool_called).toBeNull();
+
+    // No answer and no exchange is a run that failed, not a read.
+    const failed = scoreRun({ ...run({ answer: '', key }), exchanges: [] });
+    expect(failed.routed_read).toBe(false);
   });
 
   it('fails a tool call when none was expected', () => {

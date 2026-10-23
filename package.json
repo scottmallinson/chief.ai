@@ -1,7 +1,7 @@
 {
   "name": "Chief",
   "private": true,
-  "version": "0.13.2",
+  "version": "0.14.2",
   "type": "module",
   "description": "A privacy-first, 100% on-device AI Chief of Staff desktop application.",
   "license": "MIT",
@@ -95,7 +95,7 @@
     "tailwindcss": "^4.0.6",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.68.0",
-    "vite": "^6.1.0",
+    "vite": "^6.4.4",
     "vitest": "^4.1.11"
   },
   "lint-staged": {

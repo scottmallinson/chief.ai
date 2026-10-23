@@ -452,6 +452,7 @@ async fn world(github: Option<&str>, graph: Option<&str>, engine: &str) -> World
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(engine).expect("client"),
             corpus,
+            short_brief_lines: 0,
         },
         root,
     }
@@ -1972,12 +1973,18 @@ mod any {
     #[tokio::test]
     async fn any_25_a_looping_model_cannot_fill_the_brief_with_one_list() {
         let github = github_with(Github {
-            mine: search(&[pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z")]),
+            mine: search(&[pr(
+                7,
+                "acme/api",
+                "Standup notes, billing and search review",
+                None,
+                "2026-10-02T08:00:00Z",
+            )]),
             ..Github::default()
         })
         .await;
         let engine = model_saying(
-            "- 10:00 Standup\n- Review the billing pull request\n- Review the search pull request\n\
+            "- Standup\n- Review the billing pull request\n- Review the search pull request\n\
              - Review the billing pull request\n- Review the search pull request\n\
              - Review the billing pull request\n- Review the search pull request",
         )

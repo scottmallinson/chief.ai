@@ -22,6 +22,7 @@ use crate::intent;
 use crate::llama::{self, ChatRequest, Client, Message, Role};
 use crate::microsoft;
 use crate::recipe;
+use crate::router;
 use crate::tools;
 
 /// The model the engine is serving. It runs one, under the name it was given
@@ -686,6 +687,93 @@ async fn grounded(messages: Vec<Turn>, pool: &sqlx::SqlitePool) -> (Vec<Turn>, b
     (grounded, true)
 }
 
+/// What the router read for a question, to put in front of the model.
+struct Routed {
+    /// The reads, labelled, ready to sit before the question.
+    material: String,
+    /// The line under the answer saying where it came from, composed here from
+    /// what was read rather than written by the model.
+    provenance: String,
+    /// The answer, when everything read came back empty: written here, because
+    /// a model handed an empty list is a model handed room to invent one.
+    nothing: Option<String>,
+}
+
+/// Route the newest question by meaning and read the source it names.
+///
+/// `None` is the tool loop, and it is the answer to everything uncertain: no
+/// router configured, a router that is down, a question it cannot place, a
+/// source that is not connected or returned an error. The question is only
+/// taken off the model's hands when the data is actually in hand.
+async fn routed(
+    messages: &[Turn],
+    context: &tools::Context,
+    router_client: &llama::Client,
+    mut on_tool: impl FnMut(&str),
+) -> Option<Routed> {
+    let question = &messages
+        .iter()
+        .rev()
+        .find(|turn| turn.role == Role::User)?
+        .content;
+    let route = router::route(router_client, question).await.ok()??;
+
+    let mut sections = Vec::new();
+    let mut read = Vec::new();
+    let mut empty = Vec::new();
+
+    let calls = tools::calls_for(route);
+    let room =
+        context::DEFAULT_CEILING.saturating_sub(spent_on_turns(messages)) / calls.len() as u32;
+
+    for (label, call) in &calls {
+        on_tool(&call.function.name);
+
+        let result = tools::dispatch(context, call).await;
+
+        // A failed read is the tool loop's to explain, not ours to paper over.
+        if result.get("error").is_some() {
+            return None;
+        }
+
+        if result["count"] == 0 {
+            empty.push(label.to_lowercase());
+        }
+
+        sections.push(format!("{label}:\n{}", trim_result(result, room.max(200))));
+        read.push(label.to_lowercase());
+    }
+
+    // Every read came back with nothing in it, so there is nothing to write up.
+    let nothing =
+        (empty.len() == read.len()).then(|| format!("Nothing found in {}.", read.join(" or ")));
+
+    Some(Routed {
+        material: sections.join("\n\n"),
+        provenance: format!("Read just now: {}.", read.join("; ")),
+        nothing,
+    })
+}
+
+/// Roughly what the transcript costs to send, for the room left to material.
+fn spent_on_turns(turns: &[Turn]) -> u32 {
+    turns
+        .iter()
+        .map(|turn| context::estimate_tokens(&turn.content))
+        .sum()
+}
+
+/// Put routed material in front of the newest question, as one user turn for
+/// the reason [`grounded`] gives.
+fn with_material(mut messages: Vec<Turn>, material: &str) -> Vec<Turn> {
+    if let Some(at) = messages.iter().rposition(|turn| turn.role == Role::User) {
+        let question = messages[at].content.clone();
+        messages[at].content = format!("{material}\n\n{question}");
+    }
+
+    messages
+}
+
 #[tauri::command]
 pub async fn ask_agent<R: Runtime>(
     app: AppHandle<R>,
@@ -744,6 +832,50 @@ pub async fn ask_agent<R: Runtime>(
         }
     }
 
+    // Some questions the tool loop has to write are ones this machine already
+    // knows the facts for. Putting those facts in front of the model is the
+    // difference between a standup drafted from the work log and one invented
+    // out of the question's own words — measured in the running app, where
+    // "Draft my standup" came back as two bullets that were themselves
+    // questions. Injected as a turn rather than folded into the system prompt:
+    // the opening is the cached prefix llama.cpp reuses, and material that
+    // changes per question does not belong in it.
+    let (messages, has_material) = grounded(messages, &context.pool).await;
+
+    // **Experimental, and off unless `CHIEF_ROUTER_URL` is set.** A question the
+    // router can place has its source read here, in Rust, and the model only
+    // writes it up with no tools on offer. Everything else, and every failure,
+    // is the tool loop below exactly as it was.
+    let routed = match router::configured() {
+        Some(router_client) if !has_material => {
+            routed(&messages, &context, &router_client, |name| {
+                let _ = app.emit(
+                    STREAM_EVENT,
+                    StreamEvent {
+                        request_id: request_id.clone(),
+                        update: Update::Tool {
+                            name: name.to_string(),
+                        },
+                    },
+                );
+            })
+            .await
+        }
+        _ => None,
+    };
+
+    // **Nothing to write up is answered before the engine is started.** The read
+    // is Rust's and needs no model, so an empty one costs the router and a
+    // request, not a couple of gigabytes of weights read off disk.
+    if let Some(read) = &routed {
+        if let Some(nothing) = &read.nothing {
+            return Ok(Answer {
+                content: nothing.clone(),
+                provenance: Some(read.provenance.clone()),
+            });
+        }
+    }
+
     // The engine gives its memory back when nothing is using it, so it may not
     // be running. Starting it is a few seconds of reading weights off disk, and
     // the window is told that is what the wait is.
@@ -760,15 +892,14 @@ pub async fn ask_agent<R: Runtime>(
 
     engine.start_and_wait(client.inner()).await?;
 
-    // Some questions the tool loop has to write are ones this machine already
-    // knows the facts for. Putting those facts in front of the model is the
-    // difference between a standup drafted from the work log and one invented
-    // out of the question's own words — measured in the running app, where
-    // "Draft my standup" came back as two bullets that were themselves
-    // questions. Injected as a turn rather than folded into the system prompt:
-    // the opening is the cached prefix llama.cpp reuses, and material that
-    // changes per question does not belong in it.
-    let (messages, has_material) = grounded(messages, &context.pool).await;
+    let (messages, has_material, provenance) = match routed {
+        Some(read) => (
+            with_material(messages, &read.material),
+            true,
+            Some(read.provenance),
+        ),
+        None => (messages, has_material, None),
+    };
 
     let conversation =
         adapter::Adapter::for_tier(engine.tier()).assemble(messages, &clock::present());
@@ -796,12 +927,14 @@ pub async fn ask_agent<R: Runtime>(
     )
     .await?;
 
-    // No provenance on the tool path. The tools reach services live, so there
+    // No provenance on the tool loop. The tools reach services live, so there
     // are no stored rows to name and no "to" that would mean anything — and a
     // footer that appeared on every answer regardless would stop being read.
+    // A routed read is the exception: Rust chose the source and read it, so it
+    // can say which, and that line is what makes a wrong route visible.
     Ok(Answer {
         content,
-        provenance: None,
+        provenance,
     })
 }
 
@@ -817,6 +950,23 @@ pub(crate) async fn answer_for_bench(
     question: &str,
 ) -> Result<String, Error> {
     let (messages, has_material) = grounded(vec![turn(Role::User, question)], &context.pool).await;
+
+    // The router, when the benchmark has started an embedding server for it.
+    let routed = match router::configured() {
+        Some(router_client) if !has_material => {
+            routed(&messages, context, &router_client, |_| {}).await
+        }
+        _ => None,
+    };
+    if let Some(nothing) = routed.as_ref().and_then(|read| read.nothing.clone()) {
+        return Ok(nothing);
+    }
+
+    let (messages, has_material) = match routed {
+        Some(read) => (with_material(messages, &read.material), true),
+        None => (messages, has_material),
+    };
+
     let conversation = adapter::Adapter::for_tier(tier).assemble(messages, &clock::present());
 
     respond_offering(
@@ -2138,6 +2288,144 @@ mod orchestration_tests {
         );
 
         github_server.await.expect("GitHub stub should finish");
+    }
+
+    /// The embedding server's reply that places a question on GitHub.
+    fn places_on_github() -> String {
+        let vectors = [
+            [0.9, 0.1, 0.1, 0.1],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        let data: Vec<_> = vectors
+            .iter()
+            .enumerate()
+            .map(|(index, embedding)| json!({ "index": index, "embedding": embedding }))
+            .collect();
+
+        json!({ "data": data }).to_string()
+    }
+
+    #[tokio::test]
+    async fn a_routed_question_is_read_in_rust_and_handed_over_as_one_turn() {
+        let (router_host, router_server) = serve(vec![("HTTP/1.1 200 OK", places_on_github())]);
+        let router_client = Client::with_base_url(&router_host).expect("loopback");
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = context_connected_to(&github_host).await;
+
+        let read = routed(
+            &[turn(Role::User, "What is waiting on me?")],
+            &context,
+            &router_client,
+            |_| {},
+        )
+        .await
+        .expect("a clear match with a working source should be routed");
+
+        assert!(read.provenance.starts_with("Read just now:"));
+
+        let turns = with_material(
+            vec![turn(Role::User, "What is waiting on me?")],
+            &read.material,
+        );
+        let users = turns.iter().filter(|turn| turn.role == Role::User).count();
+
+        assert_eq!(users, 1, "two user turns are rejected by some templates");
+        assert!(turns[0].content.ends_with("What is waiting on me?"));
+
+        router_server.await.expect("the router should be asked");
+        github_server.await.expect("GitHub should be read");
+    }
+
+    /// A model handed an empty list is handed room to invent one, so a read that
+    /// came back with nothing is answered by the code that read it.
+    ///
+    /// Proved by making `nothing` always `None`: the question goes on to the
+    /// model with an empty list in front of it.
+    #[tokio::test]
+    async fn a_read_that_found_nothing_is_answered_without_the_model() {
+        let (router_host, _router) = serve(vec![("HTTP/1.1 200 OK", places_on_github())]);
+        let router_client = Client::with_base_url(&router_host).expect("loopback");
+        let (github_host, _github) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            r#"{ "total_count": 0, "items": [] }"#,
+        )]);
+        let context = context_connected_to(&github_host).await;
+
+        let read = routed(
+            &[turn(Role::User, "What is waiting on me?")],
+            &context,
+            &router_client,
+            |_| {},
+        )
+        .await
+        .expect("a clear match with a working source should be routed");
+
+        let nothing = read.nothing.expect("an empty read is answered in code");
+        assert!(nothing.starts_with("Nothing found in"), "{nothing}");
+        assert!(read.provenance.starts_with("Read just now:"));
+    }
+
+    #[tokio::test]
+    async fn a_read_that_found_something_is_still_written_up_by_the_model() {
+        let (router_host, _router) = serve(vec![("HTTP/1.1 200 OK", places_on_github())]);
+        let router_client = Client::with_base_url(&router_host).expect("loopback");
+        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+        let context = context_connected_to(&github_host).await;
+
+        let read = routed(
+            &[turn(Role::User, "What is waiting on me?")],
+            &context,
+            &router_client,
+            |_| {},
+        )
+        .await
+        .expect("routed");
+
+        assert_eq!(read.nothing, None);
+    }
+
+    #[tokio::test]
+    async fn a_source_that_fails_to_read_is_left_to_the_tool_loop() {
+        let (router_host, _router) = serve(vec![("HTTP/1.1 200 OK", places_on_github())]);
+        let router_client = Client::with_base_url(&router_host).expect("loopback");
+        let context = context_connected_to("127.0.0.1:1").await;
+
+        let read = routed(
+            &[turn(Role::User, "What is waiting on me?")],
+            &context,
+            &router_client,
+            |_| {},
+        )
+        .await;
+
+        assert!(
+            read.is_none(),
+            "an unreadable source must fall back so the model can explain it"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_router_is_left_to_the_tool_loop() {
+        let router_client = Client::with_base_url("http://127.0.0.1:1").expect("loopback");
+        let context = context_connected_to("127.0.0.1:1").await;
+
+        assert!(routed(
+            &[turn(Role::User, "What is waiting on me?")],
+            &context,
+            &router_client,
+            |_| {}
+        )
+        .await
+        .is_none());
     }
 }
 

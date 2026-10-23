@@ -174,6 +174,7 @@ pub async fn sync_now<R: Runtime>(app: AppHandle<R>) -> Result<Pass, Error> {
     };
 
     let accounts = sync_state::all(&context.pool).await?;
+    sync_state::announce(&app);
 
     Ok(Pass {
         written: outcome.written + meetings,
@@ -304,6 +305,8 @@ async fn one_pass<R: Runtime>(app: AppHandle<R>) -> Outcome {
             Ok(recipe) => outcome.written += ingest_calendar(&recipe).await,
             Err(error) => eprintln!("the calendars could not be read: {error}"),
         }
+
+        sync_state::announce(&app);
     }
 
     outcome.yielded |= brief_if_the_day_has_none(&app).await;
@@ -1502,6 +1505,7 @@ mod calendar_tests {
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(&engine_host).expect("client"),
             corpus,
+            short_brief_lines: 0,
         };
 
         (context, Scratch(root))
