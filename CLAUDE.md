@@ -382,10 +382,29 @@ the user to install a runtime, which is the whole reason the engine is a module 
   `review-requested:@me`, and `assigned_issues` adds `is:issue assignee:@me`. The brief keeps them
   in separate buckets under separate headings, because a review somebody requested of you is a
   request and your own open pull request is not.
-- **The catalogue is at 515 of D2's 600 tokens.** REC-41 added the `whose` parameter for 71 and
-  recovered 33 by cutting redundancy from the description, so it cost 38 net. **85 tokens of
-  headroom is roughly half a parameter**, so measure before adding anything — the number is in the
-  PR each time it moves, not assumed.
+- **The catalogue is at 596 of D2's 600 tokens, with four tools.** `fetch_work_overview` took 81 of
+  the headroom, so the next tool or parameter has to be paid for by trimming a description. It is
+  there because the questions about all of someone's work ("what should I prioritise", "what did I
+  complete yesterday") are not about one tool, and routing them by meaning was measured and
+  refused: a "my work" description in the embedding router took "how do I prioritise a backlog?"
+  and "write a standup process doc" with margins of 0.09 and 0.06, a false positive nobody sees.
+  The model chooses the tool instead, which works only because the system prompt says it knows
+  nothing about their work except through the tools: with thinking off, as Chief runs it, the same
+  Gemma 4 E2B called a tool for those questions 1 time in 5 before that sentence and 15 of 15 after
+  it, and invented pull requests and meetings the other times. A joke still takes no tool call.
+- `work.rs` reads open pull requests, review requests, recent merges and today's meetings **live**,
+  as one-line strings, at most eight each. A source that cannot be read says so under `not_read`
+  rather than appearing as an empty list.
+- **A standup is read live and written a section at a time.** `intent::standup` asks GitHub for
+  the three sections (the log is only the fallback, and the answer says so), and `write_standup`
+  makes one short request per section with the headings written in code. One request for the whole
+  standup was twenty lines against the 512-token ceiling and was cut off; the sections stream in
+  order, and a line the model dropped (checked by pull request number) is put back. Done reaches
+  back to the last working day, not seven days. Nothing to write is answered in code before the
+  engine starts.
+- **Answers are plain text.** The chat draws text as it is, so `src/lib/plain-text.ts` strips
+  Markdown marks at display time, which also covers an answer still arriving; the system prompt
+  asks for plain text too, but a small model forgets.
 - `agent::Attention` counts the questions the user is waiting on. The engine decodes one request at
   a time, so the daemon reads this and steps aside rather than putting a background summary ahead of
   a person.
