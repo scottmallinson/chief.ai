@@ -1,12 +1,13 @@
 name: Pre-release
 
-# A Windows installer built from whatever commit a `prerelease-*` tag points at,
-# published as a GitHub pre-release. It never commits to main, never moves a
+# A Windows installer built from the commit that changed this file on the pull
+# request branch, published as a GitHub pre-release. It never commits to main, never moves a
 # version and never publishes as the latest release; it exists so a pull
 # request can be installed and tried before it is merged.
 on:
   push:
-    tags: ['prerelease-*']
+    branches: [claude/project-thread-oawitq]
+    paths: ['.github/workflows/prerelease.yml']
 
 permissions:
   contents: write
@@ -44,8 +45,9 @@ jobs:
           CHIEF_GITHUB_CLIENT_ID: ${{ vars.CHIEF_GITHUB_CLIENT_ID }}
           CHIEF_REQUIRE_CLIENT_ID: '1'
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Chief test build ${{ github.ref_name }}
+          tagName: prerelease-128-${{ github.run_number }}
+          commitish: ${{ github.sha }}
+          releaseName: Chief test build of pull request 128 (run ${{ github.run_number }})
           releaseBody: A Windows test build of an unmerged pull request. Not a release.
           releaseDraft: false
           prerelease: true
