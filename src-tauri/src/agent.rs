@@ -381,7 +381,21 @@ async fn respond_offering<F>(
 where
     F: FnMut(Update),
 {
-    let catalog = tools::catalog();
+    // Only the tools for services that are connected. The note about the rest
+    // goes onto the opening system message rather than in as a second one, which
+    // some chat templates refuse, and after the stable prompt so the cached
+    // prefix is untouched.
+    let offer = tools::catalog_for(&context.pool).await;
+    let catalog = offer.tools;
+
+    if offer_tools_at_first {
+        if let (Some(note), Some(opening)) = (&offer.not_connected, messages.first_mut()) {
+            if opening.role == Role::System {
+                opening.content.push_str("\n\n");
+                opening.content.push_str(note);
+            }
+        }
+    }
 
     // Whether the tool catalogue is still being offered. It stops being offered
     // for the rest of this answer the first time the engine cannot parse what
@@ -1498,6 +1512,79 @@ mod orchestration_tests {
         );
 
         server.await.expect("the stub should finish");
+    }
+
+    /// Only GitHub is connected in `context_connected_to`, so the calendar and
+    /// mail tools are neither described nor callable, and the model is told in
+    /// the system prompt why it has nothing for them.
+    #[tokio::test]
+    async fn offers_only_the_tools_of_connected_services_and_says_what_is_missing() {
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", answers())]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let context = context_connected_to("http://127.0.0.1:1").await;
+        respond(
+            &client,
+            &context,
+            MODEL,
+            asked("What is on my calendar?"),
+            |_| {},
+        )
+        .await
+        .expect("the stub should answer");
+
+        let requests = server.await.expect("the stub should finish");
+        let sent = body_of(&requests[0]);
+
+        let offered: Vec<&str> = sent["tools"]
+            .as_array()
+            .expect("tools should be sent")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect();
+        assert_eq!(offered, ["fetch_github_prs"]);
+
+        let system = sent["messages"][0]["content"]
+            .as_str()
+            .expect("the first message should be the system prompt");
+        assert!(
+            system.starts_with(SYSTEM_PROMPT),
+            "the prefix must not move"
+        );
+        assert!(system.contains("Not connected on this machine"), "{system}");
+        assert!(system.contains("Outlook calendar and mail"), "{system}");
+        assert_eq!(
+            sent["messages"].as_array().map(Vec::len),
+            Some(2),
+            "the note joins the system message rather than adding one"
+        );
+    }
+
+    /// A question that arrives with its facts is offered no tools, so there is
+    /// nothing to explain and the prompt stays as it was.
+    #[tokio::test]
+    async fn adds_no_note_when_no_tools_are_offered() {
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", answers())]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let context = context_connected_to("http://127.0.0.1:1").await;
+        respond_offering(
+            &client,
+            &context,
+            MODEL,
+            asked("Draft my standup"),
+            false,
+            |_| {},
+        )
+        .await
+        .expect("the stub should answer");
+
+        let requests = server.await.expect("the stub should finish");
+        let sent = body_of(&requests[0]);
+        let system = sent["messages"][0]["content"]
+            .as_str()
+            .expect("a system prompt");
+        assert!(!system.contains("Not connected"), "{system}");
     }
 
     #[tokio::test]
