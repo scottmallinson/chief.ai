@@ -1206,7 +1206,13 @@ mod eng {
         let outcome = daemon::run_once(&world.daemon()).await.expect("a pass");
         assert_eq!(outcome.written, 2);
 
-        let material = intent::material(intent::Ground::Standup, &world.ctx.pool).await;
+        let standup = intent::standup(&crate::tools::Context {
+            pool: world.ctx.pool.clone(),
+            github: world.ctx.github.clone(),
+            microsoft: world.ctx.microsoft.clone(),
+        })
+        .await;
+        let material = format!("{standup:?}");
 
         assert!(
             material.contains("Cache the entitlement lookup"),

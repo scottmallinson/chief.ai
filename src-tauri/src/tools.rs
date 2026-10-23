@@ -31,6 +31,7 @@ pub struct Context {
 const FETCH_GITHUB_PRS: &str = "fetch_github_prs";
 const FETCH_CALENDAR: &str = "fetch_calendar";
 const FETCH_RECENT_MAIL: &str = "fetch_recent_mail";
+const FETCH_WORK_OVERVIEW: &str = "fetch_work_overview";
 
 /// Which stretch of calendar the model is asking about.
 ///
@@ -206,6 +207,13 @@ pub fn catalog() -> Vec<Tool> {
                 "required": [],
             }),
         }),
+        Tool::function(ToolFunction {
+            name: FETCH_WORK_OVERVIEW.to_string(),
+            description: "The user's work now: pull requests, reviews waiting, \
+                 meetings. Call to prioritise or say what they did."
+                .to_string(),
+            parameters: json!({ "type": "object", "properties": {}, "required": [] }),
+        }),
     ]
 }
 
@@ -312,7 +320,14 @@ fn written_call(content: &str) -> Option<(String, Value)> {
 pub fn call_in_text(content: &str, id: &str) -> Option<ToolCall> {
     let (name, arguments) = written_call(content)?;
 
-    if ![FETCH_GITHUB_PRS, FETCH_CALENDAR, FETCH_RECENT_MAIL].contains(&name.as_str()) {
+    if ![
+        FETCH_GITHUB_PRS,
+        FETCH_CALENDAR,
+        FETCH_RECENT_MAIL,
+        FETCH_WORK_OVERVIEW,
+    ]
+    .contains(&name.as_str())
+    {
         return None;
     }
 
@@ -359,6 +374,17 @@ pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
             Ok(result) => result,
             Err(error) => json!({ "error": error.to_string() }),
         },
+        FETCH_WORK_OVERVIEW => {
+            let today = chrono::Local::now().date_naive();
+
+            crate::work::read(context, crate::work::last_week(today), true)
+                .await
+                .as_tool_result()
+                .unwrap_or_else(|| {
+                    json!({ "error": "no GitHub account or calendar is connected, so there is \
+                        nothing to read. Say so and name Settings as the fix." })
+                })
+        }
         unknown => json!({
             "error": format!("there is no tool called '{unknown}'"),
         }),
@@ -458,7 +484,10 @@ enum OutlookRead {
 }
 
 /// Read the user's calendar with their own token.
-async fn fetch_calendar(context: &Context, range: Range) -> Result<Value, microsoft::Error> {
+pub(crate) async fn fetch_calendar(
+    context: &Context,
+    range: Range,
+) -> Result<Value, microsoft::Error> {
     let (from, to) = range.window();
     let (events, accounts) = read_outlook(context, &OutlookRead::Events { from, to }).await?;
 
@@ -795,7 +824,13 @@ mod tests {
         for tool in catalog() {
             let name = tool.function.name.clone();
             assert!(
-                [FETCH_GITHUB_PRS, FETCH_CALENDAR, FETCH_RECENT_MAIL].contains(&name.as_str()),
+                [
+                    FETCH_GITHUB_PRS,
+                    FETCH_CALENDAR,
+                    FETCH_RECENT_MAIL,
+                    FETCH_WORK_OVERVIEW
+                ]
+                .contains(&name.as_str()),
                 "{name} is advertised but the dispatcher does not know it"
             );
         }
