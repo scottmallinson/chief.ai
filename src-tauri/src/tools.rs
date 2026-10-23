@@ -339,10 +339,13 @@ pub fn is_call_in_text(content: &str) -> bool {
 pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
     match call.function.name.as_str() {
         FETCH_GITHUB_PRS => match parse(&call.function) {
-            Ok(args) => match fetch_github_prs(context, args.state, args.whose).await {
-                Ok(result) => result,
-                Err(error) => json!({ "error": error.to_string() }),
-            },
+            Ok(args) => {
+                match fetch_github_prs(&context.pool, &context.github, args.state, args.whose).await
+                {
+                    Ok(result) => result,
+                    Err(error) => json!({ "error": error.to_string() }),
+                }
+            }
             Err(message) => json!({ "error": message }),
         },
         FETCH_CALENDAR => match parse_calendar(&call.function) {
@@ -398,12 +401,13 @@ fn describe(account: &integrations::Account) -> String {
 /// An account that will not answer is reported beside the ones that did, so a
 /// single revoked token does not cost the user the rest of the answer. Nothing
 /// readable at all is an error, which is how "Reconnect GitHub" reaches them.
-async fn fetch_github_prs(
-    context: &Context,
+pub async fn fetch_github_prs(
+    pool: &SqlitePool,
+    github: &github::Client,
     state: PullRequestState,
     whose: Whose,
 ) -> Result<Value, github::Error> {
-    let accounts = integrations::accounts(&context.pool, integrations::GITHUB).await?;
+    let accounts = integrations::accounts(pool, integrations::GITHUB).await?;
 
     let mut pull_requests = Vec::new();
     let mut reports = Vec::new();
@@ -413,7 +417,7 @@ async fn fetch_github_prs(
     for account in &accounts {
         let name = describe(account);
 
-        match GithubSession::new(&context.pool, &context.github, account.id)
+        match GithubSession::new(pool, github, account.id)
             .pull_requests(whose.into(), state.into(), PR_LIMIT)
             .await
         {
