@@ -654,29 +654,33 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             let brief = recipe::daily_brief_at(&world.ctx, clock(at)).await;
 
             if id == "em-13" {
-                // 14:10: the morning has gone; the window is what is next.
-                let next = ["Vendor call", "Budget check-in", "Design critique"];
+                // 14:10: the morning has gone; every meeting still to come is in.
+                let next = [
+                    "Vendor call",
+                    "Budget check-in",
+                    "Design critique",
+                    "1:1 with Sam",
+                    "Performance calibration",
+                ];
                 let forbid: Vec<&String> = all
                     .iter()
                     .filter(|name| !next.contains(&name.as_str()))
                     .collect();
                 key = json!({
                     "must": next, "order": next, "forbid": forbid,
-                    "note": "Showing the next 3 of 5 meetings still to come.",
-                    "lead_time_bound": true, "max_bullets": 5,
+                    "lead_time_bound": true,
                 });
             } else {
-                let next = &all[..3];
-                let mut must: Vec<String> = next.to_vec();
+                // Nothing is held back: every meeting is in, in the order they happen.
+                let mut must: Vec<String> = all.to_vec();
                 if id == "em-12" {
                     must.push("Retry payment webhooks".into());
                     must.push("Drop the legacy flag".into());
                     must.push("Fix focus trap in the modal".into());
                 }
                 key = json!({
-                    "must": must, "order": next, "forbid": &all[3..],
-                    "note": "Showing the next 3 of 14 meetings still to come.",
-                    "lead_time_bound": true, "max_bullets": 5,
+                    "must": must, "order": &all[..3],
+                    "lead_time_bound": true,
                 });
             }
 
@@ -1043,11 +1047,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             let world = world(Some(&github.host), None, &filler.host).await;
             daemon::run_once(&world.daemon()).await.expect("a pass");
 
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
             let answer = agent::answer_for_bench(&client, &context, tier, "Draft my standup")
                 .await
@@ -1110,11 +1110,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             })
             .await;
             let world = world(Some(&github.host), None, NOWHERE).await;
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
 
             let (question, key) = if id == "tool-open-prs" {
@@ -1167,11 +1163,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             })
             .await;
             let world = world(Some(&github.host), None, NOWHERE).await;
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
             let question = "Which pull requests are waiting for my review?";
 
@@ -1192,11 +1184,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
         "tool-tomorrow-empty" => {
             let graph = graph_with(vec![], vec![]).await;
             let world = world(None, Some(&graph.host), NOWHERE).await;
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
             let question = "What meetings do I have tomorrow?";
 
@@ -1234,11 +1222,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             )
             .await;
             let world = world(None, Some(&graph.host), NOWHERE).await;
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
             let question = "What meetings do I have tomorrow?";
 
@@ -1263,11 +1247,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
 
         "chat-no-tool" => {
             let world = world(None, None, NOWHERE).await;
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
             let answer = agent::answer_for_bench(
                 &client,

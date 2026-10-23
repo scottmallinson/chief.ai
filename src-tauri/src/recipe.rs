@@ -1,4 +1,4 @@
-//! Deterministic work, then one sentence from the model.
+//! Deterministic work, then a few sentences from the model.
 //!
 //! Small models are poor at planning and good at writing. So a recipe runs in
 //! three phases and the model is only present for the last of them:
@@ -8,13 +8,17 @@
 //!    decide to do something else.
 //! 2. **Assemble** — build one prompt, through a [`crate::context::Budget`] that
 //!    refuses to go over rather than letting the engine truncate.
-//! 3. **Render** — exactly one call, no tools. If a recipe needs two calls it is
-//!    two recipes.
+//! 3. **Render** — one short call per part of the brief, no tools. The parts and
+//!    their headings are Rust's; the model words a few lines at a time.
 //!
 //! That third rule is the one worth defending. An agent loop asked to compose a
 //! brief will call a tool, narrate, call another, and arrive somewhere unrepeatable
-//! forty seconds later. The same brief assembled in Rust and written once is the
-//! same brief every morning, and the only part that varies is the prose.
+//! forty seconds later. The same brief assembled in Rust and written part by part
+//! is the same brief every morning, and the only part that varies is the prose.
+//! It used to be one call for the whole day, which meant a small model chose
+//! five things to say and the rest of the day went unmentioned; a brief is now
+//! complete, and several short calls are how a small model writes a long list
+//! without being cut off or dropping lines.
 //!
 //! There is one recipe. The shape above is documented rather than abstracted
 //! into a trait, for the reason [`crate::oauth::Provider`] gives about flows: an
@@ -30,7 +34,7 @@ use crate::llama::{self, ChatRequest, Message, Options};
 use crate::microsoft;
 use crate::retrieval;
 use crate::session::{GithubSession, OutlookSession};
-use crate::{check, clock, corpus, github, integrations};
+use crate::{check, clock, corpus, github, integrations, sections};
 
 /// How long a brief may run to. Long enough for a handful of bullets and their
 /// context, short enough that a slow machine finishes it.
@@ -45,50 +49,28 @@ const BRIEF_TOKENS: u32 = 500;
 /// looped in 40 runs. `break_loop` is the real guard; this is only the nudge.
 const BRIEF_REPEAT_PENALTY: f32 = 1.05;
 
-/// A line this long, written this many times, is a loop and not a list.
-const LOOP_MIN_CHARS: usize = 12;
-const LOOP_REPEATS: usize = 3;
-
-/// How many of anything is gathered for one brief.
-pub(crate) const PER_SOURCE: u8 = 10;
+/// How many of anything is gathered for one brief, from each source.
+///
+/// Every line gathered is in the brief. If a source returns exactly this many
+/// it may have had more, and the brief says so in words rather than passing the
+/// newest few off as everything.
+pub(crate) const PER_SOURCE: u8 = 25;
 
 /// How many meetings are gathered for one day.
 ///
-/// **Higher than [`PER_SOURCE`] because a calendar is the one source that is
-/// not a queue.** A review request or an unread message can wait and the
-/// newest ten are the ones worth having; a meeting happens at its time, and a
-/// manager's day of back-to-back calls is routinely more than ten. Graph
-/// returns them in start order, so the cap used to cut off the whole afternoon
-/// without a word. Twenty is about 280 prompt tokens at the most, which is the
-/// price of the brief not being blind to half the day.
+/// **A calendar is the one source that is not a queue.** A review request or an
+/// unread message can wait and the newest are the ones worth having; a meeting
+/// happens at its time, and a manager's day of back-to-back calls is routinely
+/// more than ten. Graph returns them in start order, so a low cap used to cut
+/// off the whole afternoon without a word.
 pub(crate) const CALENDAR_LIMIT: u8 = 20;
 
-/// How many meetings one brief is told about: the next three that have not
-/// finished, plus anything lasting the day.
-///
-/// **A brief is a window onto the day, not the whole of it.** Handed fourteen
-/// meetings, Qwen3 1.7B wrote fourteen bullets and dropped every review and
-/// pull request, and on real data thirteen pull-request bullets; it ignores
-/// "at most five" (EM-12). Prompt reading is the slow part on a small machine
-/// — 15 tokens a second for it on the 8 GB Intel Mac — so a shorter prompt is
-/// also a faster brief. What was held back is said in words by the code, never
-/// by the model, and the brief is written again as the window moves (see
-/// [`Window::refresh_at`]).
-pub(crate) const AGENDA_WINDOW: usize = 3;
-
-/// How many of each queue — reviews waiting, own pull requests, assigned
-/// work, mail — one brief is told about. Queues do not move with the clock, so
-/// what is held back is counted in the brief and left to a question.
-pub(crate) const QUEUE_WINDOW: usize = 3;
+/// A day with this many lines or fewer is written in code, not by the model.
+pub const SHORT_BRIEF_LINES: usize = 3;
 
 /// A meeting that began this recently is still the one being sat in, and stays
-/// in the window. Events carry no end time here, so this stands in for one.
+/// in the brief. Events carry no end time here, so this stands in for one.
 const MEETING_RUNS: chrono::Duration = chrono::Duration::minutes(30);
-
-/// The least time between two rewrites of the same day's brief. A model call
-/// costs a slow machine up to a minute, so a day of back-to-back meetings must
-/// not become a rewrite at each one.
-const REFRESH_FLOOR: chrono::Duration = chrono::Duration::minutes(30);
 
 /// Where the corpus keeps files that are loaded whatever the question.
 ///
@@ -121,6 +103,38 @@ pub struct Context {
     pub short_brief_lines: usize,
 }
 
+/// The sources the readers below need, and nothing else.
+///
+/// Implemented by this module's [`Context`] and by `tools::Context`, so the
+/// brief and the questions about "my work" read Linear, Jira and the
+/// subscribed calendars through the same code. A second copy of the Atlassian
+/// route choice, which already has a bug behind it, is not worth having.
+pub(crate) trait Reach {
+    fn pool(&self) -> &SqlitePool;
+    fn calendar(&self) -> &crate::calendar::Client;
+    fn linear(&self) -> &crate::linear::Client;
+    fn atlassian(&self) -> &crate::atlassian::Client;
+    fn atlassian_rest(&self) -> &crate::atlassian::rest::Rest;
+}
+
+impl Reach for Context {
+    fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+    fn calendar(&self) -> &crate::calendar::Client {
+        &self.calendar
+    }
+    fn linear(&self) -> &crate::linear::Client {
+        &self.linear
+    }
+    fn atlassian(&self) -> &crate::atlassian::Client {
+        &self.atlassian
+    }
+    fn atlassian_rest(&self) -> &crate::atlassian::rest::Rest {
+        &self.atlassian_rest
+    }
+}
+
 /// What can go wrong making a brief.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -134,8 +148,6 @@ pub enum Error {
          on yet. Check the network connection; it will try again."
     )]
     NothingReachable,
-    #[error("the model gave no answer, so no brief was written")]
-    EmptyAnswer,
     #[error(
         "today's brief has been edited since Chief wrote it, so it has been left alone. \
          Delete or rename {path} to have a fresh one written."
@@ -367,35 +379,24 @@ async fn gather(context: &Context, now: chrono::DateTime<chrono::Local>) -> Gath
     found
 }
 
-/// What a brief was told about, and what it was not.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Window {
-    /// Meetings that have already finished, left out as no longer news.
-    passed: usize,
-    /// Meetings still to come that did not fit, in the order they happen.
-    later: usize,
-    /// How many were in the window, for "the next 3 of 14".
-    shown: usize,
-    /// Queues cut to [`QUEUE_WINDOW`], as a heading and how many were left out.
-    held: Vec<(&'static str, usize)>,
-    /// When the window will have moved far enough to be worth writing again.
-    /// `None` when nothing was held back that the clock will bring in.
-    refresh_at: Option<chrono::DateTime<chrono::Local>>,
-}
-
-/// The time an agenda line starts, as minutes after midnight. `None` for an
-/// all-day line or one with no time on it.
+/// The time an agenda line starts. `None` for an all-day line or one with no
+/// time on it.
 fn starts_at(line: &str) -> Option<chrono::NaiveTime> {
     chrono::NaiveTime::parse_from_str(line.get(0..5)?, "%H:%M").ok()
 }
 
-/// Cut what a brief is told down to what is worth a bullet *now*.
+/// The meetings still worth listing: everything lasting the day, and every
+/// timed meeting that has not finished.
 ///
 /// Pure, and given the clock, so "at 14:10 the morning has gone" is tested
 /// without waiting for it. `agenda` must already be in the order the day
-/// happens, as [`tidy_agenda`] leaves it.
-fn window_found(found: &mut Gathered, now: &chrono::DateTime<chrono::Local>) -> Window {
-    let mut window = Window::default();
+/// happens, as [`tidy_agenda`] leaves it. **Nothing else is left out**: a
+/// meeting that has finished is no longer news, but one still to come is
+/// listed however many there are.
+pub(crate) fn still_to_come(
+    agenda: Vec<String>,
+    now: &chrono::DateTime<chrono::Local>,
+) -> Vec<String> {
     // Subtracting from a time wraps past midnight, which would put 09:00 in the
     // past at 00:01. The day starts at midnight, so the cutoff cannot go before it.
     let cutoff = now
@@ -406,101 +407,17 @@ fn window_found(found: &mut Gathered, now: &chrono::DateTime<chrono::Local>) -> 
             chrono::NaiveTime::MIN + since_midnight.max(chrono::Duration::zero())
         });
 
-    // An event with no time lasts the day and is always in, outside the count.
-    let (all_day, timed): (Vec<_>, Vec<_>) = std::mem::take(&mut found.agenda)
+    // An event with no time lasts the day and is always in.
+    agenda
         .into_iter()
-        .partition(|line| starts_at(line).is_none());
-
-    let (upcoming, passed): (Vec<_>, Vec<_>) = timed
-        .into_iter()
-        .partition(|line| starts_at(line).is_some_and(|start| start >= cutoff));
-
-    window.passed = passed.len();
-    window.shown = upcoming.len().min(AGENDA_WINDOW);
-    window.later = upcoming.len() - window.shown;
-
-    // Written again when the last meeting in the window starts — by then the
-    // first have gone — but never sooner than the floor after this write.
-    if window.later > 0 {
-        window.refresh_at = upcoming
-            .get(window.shown - 1)
-            .and_then(|line| starts_at(line))
-            .and_then(|start| {
-                now.date_naive()
-                    .and_time(start)
-                    .and_local_timezone(chrono::Local)
-                    .single()
-            })
-            .map(|start| start.max(*now + REFRESH_FLOOR));
-    }
-
-    found.agenda = all_day
-        .into_iter()
-        .chain(upcoming.into_iter().take(AGENDA_WINDOW))
-        .collect();
-
-    for (label, queue) in [
-        ("waiting on your review", &mut found.waiting),
-        ("of your open pull requests", &mut found.mine),
-        ("unread messages", &mut found.inbox),
-        ("assigned to you", &mut found.assigned),
-        ("assigned to you in Jira", &mut found.jira),
-        ("GitHub issues assigned to you", &mut found.issues),
-    ] {
-        if queue.len() > QUEUE_WINDOW {
-            window.held.push((label, queue.len() - QUEUE_WINDOW));
-            queue.truncate(QUEUE_WINDOW);
-        }
-    }
-
-    // Recent work is background for the bullets above, not a queue to clear.
-    found.shipped.truncate(QUEUE_WINDOW);
-
-    window
-}
-
-impl Window {
-    /// The line appended under a brief that left something out, or `None` when
-    /// it left nothing out. **Written here, not by the model**: a model asked
-    /// to say what it was not shown invents the number.
-    fn note(&self) -> Option<String> {
-        let mut sentences = Vec::new();
-
-        if self.later > 0 {
-            sentences.push(format!(
-                "Showing the next {} of {} meetings still to come.",
-                self.shown,
-                self.shown + self.later
-            ));
-        }
-
-        if !self.held.is_empty() {
-            let left_out = self
-                .held
-                .iter()
-                .map(|(label, count)| format!("{count} more {label}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            sentences.push(format!("Not listed: {left_out}."));
-        }
-
-        if sentences.is_empty() {
-            return None;
-        }
-
-        if self.refresh_at.is_some() {
-            sentences.push("Chief adds the rest of the meetings as the day goes.".to_string());
-        }
-
-        Some(format!("_{}_", sentences.join(" ")))
-    }
+        .filter(|line| starts_at(line).map_or(true, |start| start >= cutoff))
+        .collect()
 }
 
 /// Put an agenda in the order the day happens, without repeats, and no longer
 /// than [`CALENDAR_LIMIT`]. Lines start with the time, so text order is time
 /// order; a day-long event has no time and goes first.
-fn tidy_agenda(agenda: &mut Vec<String>) {
+pub(crate) fn tidy_agenda(agenda: &mut Vec<String>) {
     agenda.sort_by_key(|line| (!line.starts_with(ALL_DAY), line.clone()));
     agenda.dedup();
     agenda.truncate(usize::from(CALENDAR_LIMIT));
@@ -515,7 +432,7 @@ const ALL_DAY: &str = "all day";
 /// the same rule every other source in `gather` follows: a brief with the
 /// calendar and no mail is worth having.
 pub(crate) async fn subscribed_events_at(
-    context: &Context,
+    context: &impl Reach,
     now: chrono::DateTime<chrono::Local>,
 ) -> Vec<microsoft::Event> {
     read_subscriptions_at(context, now)
@@ -530,11 +447,11 @@ pub(crate) async fn subscribed_events_at(
 /// The difference between "nothing today" and "could not be read" is what lets
 /// a caller that keeps a copy decide whether to trust an empty list.
 pub(crate) async fn read_subscriptions_at(
-    context: &Context,
+    context: &impl Reach,
     now: chrono::DateTime<chrono::Local>,
 ) -> Vec<(i64, Option<Vec<microsoft::Event>>)> {
     let Ok(accounts) =
-        crate::integrations::accounts(&context.pool, crate::integrations::CALENDAR).await
+        crate::integrations::accounts(context.pool(), crate::integrations::CALENDAR).await
     else {
         return Vec::new();
     };
@@ -547,13 +464,13 @@ pub(crate) async fn read_subscriptions_at(
 
     for account in accounts {
         let Ok(Some(credentials)) =
-            crate::integrations::credentials(&context.pool, account.id).await
+            crate::integrations::credentials(context.pool(), account.id).await
         else {
             continue;
         };
 
         match context
-            .calendar
+            .calendar()
             .events(&credentials.access_token, midnight, end, offset)
             .await
         {
@@ -620,14 +537,17 @@ async fn assigned_issues(context: &Context) -> Vec<String> {
 /// for the wording, with nothing joining them, left the branch itself free to
 /// be deleted.
 #[derive(Debug, PartialEq, Eq)]
-enum Route {
+pub(crate) enum Route {
     /// Atlassian's REST API, with HTTP Basic over the pasted token.
     Rest { site: String, email: String },
     /// The MCP server, over the client this account registered for itself.
     Mcp,
 }
 
-fn route(account: &integrations::Account, credentials: &integrations::Credentials) -> Route {
+pub(crate) fn route(
+    account: &integrations::Account,
+    credentials: &integrations::Credentials,
+) -> Route {
     if credentials.kind != crate::integrations::API_KEY {
         return Route::Mcp;
     }
@@ -732,316 +652,212 @@ async fn background(context: &Context) -> Vec<(String, String)> {
     loaded
 }
 
-/// Phase two: one prompt, and never more than the budget allows.
+impl Gathered {
+    /// The brief's parts, in the order they are written: what is time-bound
+    /// first, then what other people are waiting on, then the rest.
+    fn sections(&self) -> Vec<(&'static str, Vec<String>)> {
+        // The trackers share a heading, for the reason `Gathered::jira` gives.
+        let tracked = [
+            self.issues.as_slice(),
+            self.assigned.as_slice(),
+            self.jira.as_slice(),
+        ]
+        .concat();
+
+        [
+            ("Today's meetings", self.agenda.clone()),
+            (
+                "Waiting on you — somebody has asked for your review",
+                self.waiting.clone(),
+            ),
+            ("Your open pull requests", self.mine.clone()),
+            ("Assigned to you and not finished", tracked),
+            ("Unread mail", self.inbox.clone()),
+            ("Pages you have been writing", self.pages.clone()),
+            ("Recently logged work", self.shipped.clone()),
+        ]
+        .into_iter()
+        .filter(|(_, lines)| !lines.is_empty())
+        .collect()
+    }
+
+    /// The parts that came back as full as a read can be, so there may be more
+    /// behind them. Said in the brief in words, because the alternative is a
+    /// list that looks complete and is not.
+    fn possibly_more(&self) -> Vec<&'static str> {
+        let full = usize::from(PER_SOURCE);
+
+        [
+            ("meetings", self.agenda.len() >= usize::from(CALENDAR_LIMIT)),
+            ("review requests", self.waiting.len() >= full),
+            ("open pull requests", self.mine.len() >= full),
+            ("GitHub issues", self.issues.len() >= full),
+            ("Linear issues", self.assigned.len() >= full),
+            ("Jira issues", self.jira.len() >= full),
+            ("unread mail", self.inbox.len() >= full),
+        ]
+        .into_iter()
+        .filter_map(|(label, full)| full.then_some(label))
+        .collect()
+    }
+
+    /// Every line, in the order they are written.
+    fn every_line(&self) -> usize {
+        self.sections().iter().map(|(_, lines)| lines.len()).sum()
+    }
+}
+
+/// What the model is asked to do with one part of the day.
 ///
-/// The order is load-bearing twice over. The instructions and the background go
-/// first because they change least, and llama.cpp reuses the cached prefix of a
-/// prompt it has already seen — a brief regenerated an hour later pays prefill
-/// only on what actually moved. And when the budget runs out it runs out at the
-/// bottom, which is where the least important material is.
-fn assemble(found: &Gathered, present: &str) -> Result<String, Error> {
+/// Rigidly shaped on purpose. A 3B model given "write a brief" writes an essay;
+/// given a few lines, a named order and nothing else to say, it writes bullets.
+const INSTRUCTIONS: &str = "\
+You are Chief, an AI chief of staff. Write one part of the user's brief for today \
+from the lines below, and from nothing else.
+
+Rules:
+- One short bullet per line given, in the order given, each starting with a dash.
+- Name people, pull requests, tickets and times exactly as they appear below.
+- State only what the lines say. Do not guess, do not invent numbers, and do not \
+add or leave out anything.
+- No preamble, no sign-off, no headings. Bullets only.";
+
+/// The instructions, the clock and the background: what every request of one
+/// brief starts with.
+///
+/// **First and unchanged from one request to the next**, because llama.cpp
+/// reuses the cached prefix of a prompt it has already seen, so each part after
+/// the first pays prefill only for its own lines. Built through a
+/// [`Budget`], so background that does not fit is skipped rather than ending
+/// the brief — the calendar matters more than the writing-style notes.
+///
+/// `present` is the clock, or nothing when the same text is wanted without it.
+fn prefix(found: &Gathered, present: &str) -> Result<String, Error> {
     let mut budget = Budget::new();
     let mut prompt = String::new();
 
-    let mut push = |budget: &mut Budget, name: &str, block: &str| -> bool {
-        if budget.add(name, block).is_err() {
-            return false;
+    let mut push = |budget: &mut Budget, name: &str, block: &str| {
+        if budget.add(name, block).is_ok() {
+            prompt.push_str(block);
+            prompt.push_str("\n\n");
         }
-        prompt.push_str(block);
-        prompt.push_str("\n\n");
-        true
     };
 
     push(&mut budget, "instructions", INSTRUCTIONS);
     push(&mut budget, "clock", present);
 
     for (path, text) in &found.background {
-        // A background file that does not fit is skipped rather than ending the
-        // brief: the calendar matters more than the writing-style notes.
         push(&mut budget, path, &format!("## {path}\n{text}"));
     }
 
-    // The two trackers, under the heading they share. Built here rather than
-    // in `gather` so `Gathered::sources` can still say which of them answered.
-    let tracked = [
-        found.issues.as_slice(),
-        found.assigned.as_slice(),
-        found.jira.as_slice(),
-    ]
-    .concat();
-
-    for (heading, items) in [
-        ("Today's meetings", &found.agenda),
-        (
-            "Waiting on you — somebody has asked for your review",
-            &found.waiting,
-        ),
-        ("Your open pull requests", &found.mine),
-        ("Unread mail", &found.inbox),
-        ("Assigned to you and not finished", &tracked),
-        ("Pages you have been writing", &found.pages),
-        ("Recently logged work", &found.shipped),
-    ] {
-        if items.is_empty() {
-            continue;
-        }
-
-        let block = format!(
-            "## {heading}\n{}",
-            items
-                .iter()
-                .map(|item| format!("- {item}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-
-        push(&mut budget, heading, &block);
-    }
-
-    Ok(prompt.trim_end().to_string())
+    Ok(prompt)
 }
 
-/// What the model is asked to do with all of it.
-///
-/// Rigidly shaped on purpose. A 3B model given "write a brief" writes an essay;
-/// given a fixed number of bullets and a named order it writes a brief.
-const INSTRUCTIONS: &str = "\
-You are Chief, an AI chief of staff. Write the user's brief for today from the \
-material below, and from nothing else.
+/// One request: the prefix, then the part's own lines.
+fn part_prompt(prefix: &str, heading: &str, lines: &str) -> String {
+    let lines = lines
+        .lines()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
-Rules:
-- At most five bullets. Fewer if there is less to say.
-- Lead with whatever is time-bound: a meeting happens whether or not it is read about.
-- Name people and pull requests exactly as they appear below.
-- State only what the material says. Do not guess, and do not invent numbers.
-- No preamble, no sign-off, no headings. Bullets only.";
-
-/// Phase three: exactly one call, no tools.
-///
-/// **Streamed, even though nobody is watching it arrive.** The engine client
-/// bounds a request by silence rather than by a deadline, precisely so a slow
-/// answer is not cut off — but on a non-streamed request there is nothing to
-/// hear until the whole answer is ready, so the inactivity timeout becomes a
-/// deadline for the entire generation. That is the failure `SILENCE_TIMEOUT`
-/// was written to avoid, and the brief was the one call still exposed to it:
-/// the longest generation Chief makes, and reported as "the model engine
-/// stopped responding part-way through the answer" when nothing had gone
-/// wrong except that a small model was still working. Measured on Llama 3.2
-/// 1B, where a cold brief takes longer than the ninety seconds allowed.
-///
-/// The tokens are dropped. Nothing here has anywhere to put them — a brief is
-/// written to a file, not to a transcript — so this asks for a stream to be
-/// timed correctly rather than to show progress. See REC-65.
-async fn render(engine: &llama::Client, prompt: &str) -> Result<String, Error> {
-    let request = ChatRequest::new(crate::agent::DEFAULT_MODEL, vec![Message::user(prompt)])
-        .with_options(
-            Options::new()
-                .with_answer_length(BRIEF_TOKENS)
-                .with_repeat_penalty(BRIEF_REPEAT_PENALTY),
-        );
-
-    let reply = engine.chat_stream(&request, |_| {}).await?;
-
-    // **Whatever arrived is not necessarily a brief.** A stream that stopped
-    // part-way comes back as the words received with an apology stapled on,
-    // which is right for somebody reading along and wrong for a file standing
-    // in for the whole day: written, and recorded, the day counts as briefed
-    // and nothing tries again. The same goes for an answer of nothing.
-    if reply.content.ends_with(llama::ANSWER_INTERRUPTED) {
-        return Err(Error::Engine(llama::Error::Interrupted));
-    }
-
-    let written = break_loop(reply.content.trim());
-
-    // **The length-limit marker is not an answer either.** A model that
-    // reasons its way to the ceiling says nothing, and the stream layer
-    // appends its "[Cut short]" note to that nothing: 7 of 7 runs of LFM2.5
-    // with its reasoning left on filed the note alone as the day's brief.
-    // Trimmed, as the answer was: the marker's own leading blank lines go with
-    // the nothing in front of it.
-    let cut_marker_only = written
-        .strip_suffix(llama::ANSWER_CUT.trim())
-        .is_some_and(|body| body.trim().is_empty());
-
-    if written.is_empty() || cut_marker_only {
-        return Err(Error::EmptyAnswer);
-    }
-
-    Ok(written)
+    format!("{prefix}## {heading}\n{lines}")
 }
 
-/// The brief the model wrote, if it kept to the material.
+/// Phase three: a short call for each part of the day, no tools.
+///
+/// **Not streamed to anyone, but streamed.** The engine client bounds a request
+/// by silence rather than by a deadline, precisely so a slow answer is not cut
+/// off — but on a non-streamed request there is nothing to hear until the whole
+/// answer is ready, so the inactivity timeout becomes a deadline for the entire
+/// generation. That is the failure `SILENCE_TIMEOUT` was written to avoid, and
+/// it is why `sections::write` streams even though nobody is watching. See
+/// REC-65.
+fn request(prompt: String) -> ChatRequest {
+    ChatRequest::new(crate::agent::DEFAULT_MODEL, vec![Message::user(prompt)]).with_options(
+        Options::new()
+            .with_answer_length(BRIEF_TOKENS)
+            .with_repeat_penalty(BRIEF_REPEAT_PENALTY),
+    )
+}
+
+/// The brief, written a part at a time.
 ///
 /// **Whatever the model says is checked against what it was given.** A time, a
-/// number or a name that is not in the material is something it made up, and a
+/// number or a name that is not in the lines is something it made up, and a
 /// brief with one invented meeting in it is worse than a plainer brief, because
-/// the reader plans a morning round it. So an answer that names something the
-/// material does not is not used: the brief is written from the material
-/// directly, with no model in it.
+/// the reader plans a morning round it. So a part whose answer names something
+/// the lines do not is not used: that part is written from its lines directly,
+/// with no model in it.
 ///
 /// **There is no second attempt.** The first version asked the model again,
 /// telling it what to leave out. Of ten answers that really had invented
 /// something, none came back clean (Llama 3.2 3B and Qwen3 1.7B, five repeats
 /// each), and each retry cost another full generation on a machine where that
-/// is the expensive part. The only retries that worked were on answers the
-/// check should not have refused at all, which is a fix to the check.
+/// is the expensive part.
 ///
-/// What this cannot see is an invented claim in ordinary words ("all staff must
-/// attend"); see [`check`] for what it does and does not look for.
-async fn render_checked(
+/// **Nothing is left out.** A part is asked about eight lines at a time so that
+/// no request can run into the length limit, and any line the answer does not
+/// mention is added back as it was found. What this cannot see is an invented
+/// claim in ordinary words ("all staff must attend"); see [`check`] for what it
+/// does and does not look for.
+async fn write_checked(
     engine: &llama::Client,
     short_brief_lines: usize,
-    prompt: &str,
     found: &Gathered,
+    present: &str,
 ) -> Result<(String, Checked), Error> {
-    // The prompt without its clock: a time must be somebody's, not the moment
-    // the brief happened to be written.
-    let without_clock = assemble(found, "")?;
-    let material = check::Material {
-        shown: prompt,
-        items: without_clock
-            .strip_prefix(INSTRUCTIONS)
-            .unwrap_or(&without_clock),
-        words: prompt.strip_prefix(INSTRUCTIONS).unwrap_or(prompt),
-    };
+    let with_clock = prefix(found, present)?;
+    let without_clock = prefix(found, "")?;
+    let by_code = found.every_line() <= short_brief_lines;
 
-    // A brief this short is its own list: the model could only reword it, and
-    // every rewording measured so far that went wrong did so on a short day
-    // ("A meeting is scheduled" for a school notice). Nothing to gain, so no
-    // model is asked.
-    if lines(found).len() <= short_brief_lines {
-        return Ok((
-            plain(found),
-            Checked {
-                by_code: true,
-                ..Checked::default()
-            },
-        ));
-    }
-
-    let written = render(engine, prompt).await?;
-
-    // A brief that ran into the length limit may stop halfway through a claim,
-    // and nothing can tell which. It is not used.
-    if written.ends_with(llama::ANSWER_CUT) {
-        return Ok((
-            plain(found),
-            Checked {
-                first: vec!["cut off at the length limit".to_string()],
-                fell_back: true,
-                by_code: false,
-            },
-        ));
-    }
-
-    let first = check::unsupported_by(&written, &material);
-
-    if first.is_empty() {
-        return Ok((written, Checked::default()));
-    }
-
-    Ok((
-        plain(found),
-        Checked {
-            first,
-            fell_back: true,
-            by_code: false,
-        },
-    ))
-}
-
-/// The most lines [`plain`] writes before saying how many it left out.
-const PLAIN_LINES: usize = 6;
-
-/// A day with this many lines or fewer is written in code, not by the model.
-pub const SHORT_BRIEF_LINES: usize = 3;
-
-/// A brief written from the material with no model, in the order the prompt
-/// lists it: what is time-bound first, then what is waiting on the user.
-///
-/// It says nothing that was not found, which is the point of it.
-fn plain(found: &Gathered) -> String {
-    let lines = lines(found);
-
-    let mut out: Vec<String> = lines
-        .iter()
-        .take(PLAIN_LINES)
-        .map(|line| format!("- {line}"))
-        .collect();
-
-    if lines.len() > PLAIN_LINES {
-        out.push(format!("- And {} more.", lines.len() - PLAIN_LINES));
-    }
-
-    out.join("\n")
-}
-
-/// Everything found, in the order the prompt lists it.
-fn lines(found: &Gathered) -> Vec<String> {
-    let tracked = [
-        found.issues.as_slice(),
-        found.assigned.as_slice(),
-        found.jira.as_slice(),
-    ]
-    .concat();
-
-    [
-        &found.agenda,
-        &found.waiting,
-        &found.mine,
-        &found.inbox,
-        &tracked,
-        &found.pages,
-        &found.shipped,
-    ]
-    .into_iter()
-    .flatten()
-    .cloned()
-    .collect()
-}
-
-/// The line as compared for repeats: no list marker, no case, no padding.
-fn loop_key(line: &str) -> String {
-    line.trim()
-        .trim_start_matches(['-', '*', '•', ' '])
-        .to_lowercase()
-}
-
-/// Whether the model circled: one substantial line written three or more times.
-fn is_looping(text: &str) -> bool {
-    let mut counts = std::collections::HashMap::new();
-    text.lines().map(loop_key).any(|key| {
-        if key.chars().count() < LOOP_MIN_CHARS {
-            return false;
-        }
-        let seen = counts.entry(key).or_insert(0usize);
-        *seen += 1;
-        *seen >= LOOP_REPEATS
-    })
-}
-
-/// A brief with its loop taken out.
-///
-/// A small model that cannot stop listing the same items runs to the length
-/// limit and leaves one good copy of each, then the same lines again, then an
-/// apology. Rejecting that would retry on every pass and loop again on a slow
-/// machine, so instead each line is kept once, in order, and the length-limit
-/// marker is dropped: the model did not run out of things to say, it ran out of
-/// new ones. A brief that never loops is returned exactly as written.
-fn break_loop(text: &str) -> String {
-    if !is_looping(text) {
-        return text.to_string();
-    }
-    let body = text.strip_suffix(llama::ANSWER_CUT).unwrap_or(text);
-    let mut seen = std::collections::HashSet::new();
-    let kept: Vec<&str> = body
-        .lines()
-        .filter(|line| {
-            let key = loop_key(line);
-            key.chars().count() < LOOP_MIN_CHARS || seen.insert(key)
+    // A part of a line is its own list: the model could only reword it, and
+    // every rewording measured so far that went wrong did so on a short one
+    // ("A meeting is scheduled" for a school notice). A day this short is
+    // written whole in code, and asks no model.
+    let sections: Vec<sections::Section> = found
+        .sections()
+        .into_iter()
+        .map(|(heading, lines)| sections::Section {
+            worded: !by_code && lines.len() > 1,
+            heading: heading.to_string(),
+            lines,
         })
         .collect();
-    kept.join("\n").trim().to_string()
+
+    let written = sections::write(
+        engine,
+        &sections,
+        |heading| format!("## {heading}"),
+        |heading, lines| part_prompt(&with_clock, heading, lines),
+        request,
+        |answer, lines| {
+            let items = lines.join("\n");
+            // The prompt without its clock: a time must be somebody's, not the
+            // moment the brief happened to be written.
+            let shown = part_prompt(&without_clock, "", &items);
+            let words = shown.strip_prefix(INSTRUCTIONS).unwrap_or(&shown);
+
+            check::unsupported_by(
+                answer,
+                &check::Material {
+                    shown: &shown,
+                    items: &items,
+                    words,
+                },
+            )
+        },
+        |_| {},
+    )
+    .await?;
+
+    let checked = Checked {
+        first: written.refused.clone(),
+        fell_back: !written.refused.is_empty(),
+        by_code: written.requests == 0,
+    };
+
+    Ok((written.text, checked))
 }
 
 /// Make today's brief and write it into the corpus.
@@ -1102,22 +918,34 @@ pub(crate) async fn daily_brief_at(
     // **The sources are named before anything is cut**, so a calendar whose
     // meetings have all finished still counts as having answered.
     let sources = found.sources();
-    let window = window_found(&mut found, &now);
+    let possibly_more = found.possibly_more();
+    found.agenda = still_to_come(std::mem::take(&mut found.agenda), &now);
 
     let mut checked = Checked::default();
     let mut markdown = if found.is_empty() {
         // Everything on the day has been and gone. Nothing to ask a model.
         "- Nothing else is scheduled for today.".to_string()
     } else {
-        let prompt = assemble(&found, &clock::stamp_at(&now))?;
-        let (written, outcome) =
-            render_checked(&context.engine, context.short_brief_lines, &prompt, &found).await?;
+        let (written, outcome) = write_checked(
+            &context.engine,
+            context.short_brief_lines,
+            &found,
+            &clock::stamp_at(&now),
+        )
+        .await?;
         checked = outcome;
         written
     };
 
-    if let Some(note) = window.note() {
-        markdown = format!("{markdown}\n\n{note}");
+    // **Written here, not by the model**: a model asked to say what it was not
+    // shown invents the number.
+    if !possibly_more.is_empty() {
+        markdown = format!(
+            "{markdown}\n\nThere may be more than this: Chief read the newest {} of each, and \
+             that many came back for {}.",
+            PER_SOURCE,
+            possibly_more.join(", ")
+        );
     }
 
     // A brief the user has touched is theirs. The corpus is offered as a folder
@@ -1129,7 +957,7 @@ pub(crate) async fn daily_brief_at(
     }
 
     context.corpus.write(&path, &markdown).await?;
-    record(&context.pool, &date, &sources, window.refresh_at).await?;
+    record(&context.pool, &date, &sources).await?;
 
     Ok(Brief {
         date,
@@ -1168,23 +996,16 @@ async fn edited_by_hand(context: &Context, date: &str, path: &str) -> bool {
 }
 
 /// Note that a brief was written, and from what.
-async fn record(
-    pool: &SqlitePool,
-    date: &str,
-    sources: &[String],
-    refresh_at: Option<chrono::DateTime<chrono::Local>>,
-) -> Result<(), Error> {
+async fn record(pool: &SqlitePool, date: &str, sources: &[String]) -> Result<(), Error> {
     sqlx::query(
-        "INSERT INTO briefs (date, generated_at, sources, refresh_after)
-         VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?2, ?3)
+        "INSERT INTO briefs (date, generated_at, sources)
+         VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?2)
          ON CONFLICT (date) DO UPDATE
             SET generated_at = excluded.generated_at,
-                sources = excluded.sources,
-                refresh_after = excluded.refresh_after",
+                sources = excluded.sources",
     )
     .bind(date)
     .bind(sources.join(", "))
-    .bind(refresh_at.map(|at| at.to_rfc3339()))
     .execute(pool)
     .await
     .map_err(|error| Error::Storage(crate::db::Error::Sqlx(error)))?;
@@ -1199,30 +1020,6 @@ pub async fn written_at(pool: &SqlitePool, date: &str) -> Result<Option<String>,
         .fetch_optional(pool)
         .await
         .map_err(crate::db::Error::Sqlx)
-}
-
-/// Whether the day's brief has left meetings out that the clock has since
-/// brought into the window.
-///
-/// `false` for a day with no brief, and for one that left nothing the clock
-/// would bring in — the daemon asks [`written_at`] about the first, and a
-/// brief that said everything has nothing to be refreshed for.
-pub async fn refresh_due(
-    pool: &SqlitePool,
-    date: &str,
-    now: &chrono::DateTime<chrono::Local>,
-) -> Result<bool, crate::db::Error> {
-    let due: Option<Option<String>> =
-        sqlx::query_scalar("SELECT refresh_after FROM briefs WHERE date = ?1")
-            .bind(date)
-            .fetch_optional(pool)
-            .await
-            .map_err(crate::db::Error::Sqlx)?;
-
-    Ok(due
-        .flatten()
-        .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok())
-        .is_some_and(|at| at <= *now))
 }
 
 /// Today, as the date a brief is filed under.
@@ -1303,7 +1100,7 @@ fn named_in(title: &str, name: &str) -> bool {
         .any(|part| words.contains(&part.to_lowercase()))
 }
 
-fn describe_message(message: &microsoft::MailMessage) -> String {
+pub(crate) fn describe_message(message: &microsoft::MailMessage) -> String {
     let from = message.from.as_deref().unwrap_or("someone");
 
     format!("{from}: {}", message.subject)
@@ -1407,103 +1204,92 @@ mod tests {
             .expect("an unambiguous local time")
     }
 
-    /// **The queues are cut and the cut is counted.** A brief handed thirteen
-    /// pull requests wrote thirteen bullets; a count the model is asked to
-    /// state is a count it invents, so the code states it.
+    /// **Nothing is cut.** A brief used to hold three of each queue and say
+    /// "Not listed: 4 more waiting on your review"; the reader wanted the
+    /// overview, not a count of what was withheld.
     ///
-    /// Proved by setting `QUEUE_WINDOW` to 20:
+    /// Proved by truncating each part to three lines in `Gathered::sections`:
     ///
     /// ```text
-    /// reviews waiting are cut to the window
+    /// every review is listed
     /// ```
     #[test]
-    fn a_long_queue_is_cut_to_the_window_and_the_cut_is_counted() {
-        let mut found = Gathered {
+    fn a_long_queue_is_listed_in_full() {
+        let found = Gathered {
             waiting: (0..7).map(|n| format!("repo #{n} — review")).collect(),
             mine: (0..4).map(|n| format!("repo #{n} — mine")).collect(),
             ..Gathered::default()
         };
 
-        let window = window_found(&mut found, &at_local("2026-10-06T09:00:00"));
+        let sections = found.sections();
+        let lines = |heading: &str| {
+            sections
+                .iter()
+                .find(|(title, _)| title.starts_with(heading))
+                .map(|(_, lines)| lines.len())
+        };
 
-        assert_eq!(
-            found.waiting.len(),
-            QUEUE_WINDOW,
-            "reviews waiting are cut to the window"
-        );
-        assert_eq!(found.mine.len(), QUEUE_WINDOW);
-        assert_eq!(
-            window.note().as_deref(),
-            Some("_Not listed: 4 more waiting on your review, 1 more of your open pull requests._")
-        );
-        assert_eq!(window.refresh_at, None, "queues do not move with the clock");
+        assert_eq!(lines("Waiting on you"), Some(7), "every review is listed");
+        assert_eq!(lines("Your open pull requests"), Some(4));
     }
 
+    /// A read that came back as full as it can be may have had more behind it,
+    /// and the brief says so in words rather than looking complete.
     #[test]
-    fn a_brief_that_left_nothing_out_says_nothing_about_it() {
-        let mut found = gathered();
-        let window = window_found(&mut found, &at_local("2026-10-06T08:00:00"));
+    fn a_read_that_came_back_full_is_said_to_be_possibly_incomplete() {
+        let found = Gathered {
+            waiting: (0..usize::from(PER_SOURCE))
+                .map(|n| format!("repo #{n} — review"))
+                .collect(),
+            mine: vec!["repo #1 — mine".to_string()],
+            ..Gathered::default()
+        };
 
-        assert_eq!(window.note(), None);
-        assert_eq!(window.refresh_at, None);
+        assert_eq!(found.possibly_more(), ["review requests"]);
+        assert!(gathered().possibly_more().is_empty());
+    }
+
+    /// Every meeting still to come is listed however many there are; only one
+    /// that has finished is left out.
+    #[test]
+    fn every_meeting_still_to_come_is_listed_and_only_finished_ones_are_not() {
+        let agenda: Vec<String> = [
+            "all day Bank holiday",
+            "09:00 Standup",
+            "11:00 Planning",
+            "13:00 Review",
+            "14:00 1:1",
+            "15:00 Retro",
+            "16:00 Demo",
+        ]
+        .map(String::from)
+        .to_vec();
+
+        let kept = still_to_come(agenda, &at_local("2026-10-06T13:20:00"));
+
+        assert_eq!(
+            kept,
+            [
+                "all day Bank holiday",
+                "13:00 Review",
+                "14:00 1:1",
+                "15:00 Retro",
+                "16:00 Demo"
+            ],
+            "a meeting that began twenty minutes ago is the one being sat in"
+        );
     }
 
     /// Subtracting half an hour from 00:01 wraps to 23:31, which put the whole
     /// day in the past. ANY-02 caught it; this keeps it caught at the source.
     #[test]
     fn the_start_of_the_day_does_not_wrap_into_the_night_before() {
-        let mut found = Gathered {
-            agenda: vec!["09:00 Planning".to_string()],
-            ..Gathered::default()
-        };
-
-        let window = window_found(&mut found, &at_local("2026-10-06T00:01:00"));
-
-        assert_eq!(window.passed, 0);
-        assert_eq!(found.agenda, vec!["09:00 Planning".to_string()]);
-    }
-
-    /// A rewrite is never due sooner than the floor, however close the next
-    /// meeting: a slow machine must not rewrite at every one.
-    #[test]
-    fn a_rewrite_is_never_scheduled_inside_the_floor() {
-        let mut found = Gathered {
-            agenda: ["10:00 A", "10:05 B", "10:10 C", "11:00 D"]
-                .map(String::from)
-                .to_vec(),
-            ..Gathered::default()
-        };
-        let now = at_local("2026-10-06T09:55:00");
-
-        let window = window_found(&mut found, &now);
-
-        assert_eq!(window.later, 1);
-        assert_eq!(window.refresh_at, Some(now + REFRESH_FLOOR));
-    }
-
-    #[test]
-    fn a_brief_that_does_not_loop_is_returned_exactly_as_written() {
-        let text = "- Review the billing pull request\n- Review the billing pull request\n- ok";
-        assert_eq!(super::break_loop(text), text);
-    }
-
-    #[test]
-    fn a_loop_is_cut_to_one_copy_of_each_line_and_loses_its_apology() {
-        let looped = format!(
-            "- Fix the login bug today\n- Ship the release notes\n- Fix the login bug today\n\
-             - Ship the release notes\n- Fix the login bug today{}",
-            crate::llama::ANSWER_CUT
+        let kept = still_to_come(
+            vec!["09:00 Planning".to_string()],
+            &at_local("2026-10-06T00:01:00"),
         );
-        assert_eq!(
-            super::break_loop(&looped),
-            "- Fix the login bug today\n- Ship the release notes"
-        );
-    }
 
-    #[test]
-    fn short_lines_and_headings_are_never_treated_as_a_loop() {
-        let text = "## Today\n- ok\n- ok\n- ok\n- ok";
-        assert_eq!(super::break_loop(text), text);
+        assert_eq!(kept, vec!["09:00 Planning".to_string()]);
     }
 
     use super::*;
@@ -1529,72 +1315,94 @@ mod tests {
         }
     }
 
+    /// Everything gathered is written somewhere, under a heading of its own.
     #[test]
-    fn the_prompt_carries_every_source_that_had_something() {
-        let prompt = assemble(&gathered(), PRESENT).expect("should assemble");
+    fn every_source_that_had_something_has_a_part() {
+        let found = gathered();
+        let written: String = found
+            .sections()
+            .iter()
+            .flat_map(|(_, lines)| lines.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        assert!(prompt.contains("1:1 with Sam"), "{prompt}");
-        assert!(prompt.contains("#12"), "{prompt}");
-        assert!(prompt.contains("Dana Reid"), "{prompt}");
-        assert!(prompt.contains("Shipped the loopback listener"), "{prompt}");
-        assert!(prompt.contains("Sam owns auth."), "{prompt}");
+        assert!(written.contains("1:1 with Sam"), "{written}");
+        assert!(written.contains("#12"), "{written}");
+        assert!(written.contains("Dana Reid"), "{written}");
+        assert!(
+            written.contains("Shipped the loopback listener"),
+            "{written}"
+        );
+        assert!(written.contains("Tenant migration runbook"), "{written}");
+        assert!(
+            prefix(&found, PRESENT)
+                .expect("a prefix")
+                .contains("Sam owns auth."),
+            "the background rides in every request"
+        );
     }
 
     #[test]
-    fn a_source_with_nothing_in_it_takes_no_room_at_all() {
+    fn a_source_with_nothing_in_it_takes_no_part_at_all() {
         let mut sparse = gathered();
         sparse.inbox.clear();
         sparse.waiting.clear();
 
-        let prompt = assemble(&sparse, PRESENT).expect("should assemble");
+        let headings: Vec<&str> = sparse.sections().iter().map(|(title, _)| *title).collect();
 
-        assert!(!prompt.contains("Unread mail"), "{prompt}");
-        assert!(!prompt.contains("Pull requests waiting"), "{prompt}");
+        assert!(!headings.contains(&"Unread mail"), "{headings:?}");
+        assert!(
+            !headings
+                .iter()
+                .any(|title| title.starts_with("Waiting on you")),
+            "{headings:?}"
+        );
     }
 
     #[test]
     fn the_stable_material_comes_first_so_the_prefix_can_be_reused() {
         // llama.cpp reuses the cached prefix of a prompt it has seen. The
-        // instructions never change and the agenda changes hourly, so this
-        // order is what makes a regenerated brief cheap.
-        let prompt = assemble(&gathered(), PRESENT).expect("should assemble");
+        // instructions never change and the lines change hourly, so this order
+        // is what makes every part after the first, and a regenerated brief,
+        // cheap.
+        let found = gathered();
+        let head = prefix(&found, PRESENT).expect("a prefix");
+        let prompt = part_prompt(&head, "Today's meetings", "10:00 1:1 with Sam");
+
+        assert!(prompt.starts_with(&head), "{prompt}");
 
         let instructions = prompt.find("You are Chief").expect("instructions");
         let background = prompt.find("Sam owns auth").expect("background");
-        let agenda = prompt.find("Today's meetings").expect("agenda");
+        let lines = prompt.find("1:1 with Sam").expect("the part's own lines");
 
         assert!(instructions < background, "{prompt}");
-        assert!(background < agenda, "{prompt}");
+        assert!(background < lines, "{prompt}");
     }
 
     #[test]
-    fn the_prompt_stays_inside_the_budget_however_much_was_gathered() {
+    fn the_prefix_stays_inside_the_budget_however_much_background_there_is() {
         let mut flood = gathered();
-        flood.agenda = (0..500).map(|n| format!("a meeting number {n}")).collect();
-        flood.inbox = (0..500).map(|n| format!("a message number {n}")).collect();
+        flood.background = (0..50)
+            .map(|n| (format!("context/agents/{n}.md"), "word ".repeat(2000)))
+            .collect();
 
-        let prompt = assemble(&flood, PRESENT).expect("an over-full gather still assembles");
+        let head = prefix(&flood, PRESENT).expect("an over-full gather still builds a prefix");
 
         assert!(
-            context::estimate_tokens(&prompt) <= context::DEFAULT_CEILING,
-            "the prompt is {} tokens, over the {} ceiling",
-            context::estimate_tokens(&prompt),
+            context::estimate_tokens(&head) <= context::DEFAULT_CEILING,
+            "the prefix is {} tokens, over the {} ceiling",
+            context::estimate_tokens(&head),
             context::DEFAULT_CEILING
         );
-
-        // And it kept the part that matters rather than the part that arrived
-        // first alphabetically.
-        assert!(
-            prompt.contains("You are Chief"),
-            "instructions must survive"
-        );
+        assert!(head.contains("You are Chief"), "instructions must survive");
     }
 
     #[test]
     fn the_instructions_pin_the_shape_a_small_model_needs() {
         // A 3B model given "write a brief" writes an essay.
-        assert!(INSTRUCTIONS.contains("At most five bullets"));
+        assert!(INSTRUCTIONS.contains("One short bullet per line"));
         assert!(INSTRUCTIONS.contains("Do not guess"));
+        assert!(INSTRUCTIONS.contains("leave out"));
     }
 
     #[test]
@@ -1637,17 +1445,18 @@ mod tests {
     /// merge two lists of the same thing.
     #[test]
     fn both_trackers_land_under_one_heading() {
-        let prompt = assemble(&gathered(), PRESENT).expect("should assemble");
+        let sections = gathered().sections();
+        let tracked: Vec<_> = sections
+            .iter()
+            .filter(|(title, _)| *title == "Assigned to you and not finished")
+            .collect();
 
-        assert_eq!(
-            prompt
-                .matches("## Assigned to you and not finished")
-                .count(),
-            1,
-            "{prompt}"
-        );
-        assert!(prompt.contains("REC-42"), "{prompt}");
-        assert!(prompt.contains("PROJ-7"), "{prompt}");
+        assert_eq!(tracked.len(), 1, "{sections:?}");
+
+        let lines = tracked[0].1.join("\n");
+        assert!(lines.contains("REC-42"), "{lines}");
+        assert!(lines.contains("PROJ-7"), "{lines}");
+        assert!(lines.contains("#3"), "{lines}");
     }
 
     #[test]
@@ -1708,9 +1517,12 @@ mod tests {
 
     /// What the stub engine writes back, in the shape `llama-server` streams
     /// it — the brief asks for a stream so that a slow answer is not mistaken
-    /// for a stalled one. See `render`.
+    /// for a stalled one. See `sections::write`. It words both lines `ready`
+    /// logs, so nothing needs putting back.
     fn answer() -> String {
-        events(&[delta("- Shipped the loopback listener")])
+        events(&[delta(
+            "- Shipped the loopback listener\n- Merged the planner",
+        )])
     }
 
     struct Scratch(std::path::PathBuf);
@@ -1811,19 +1623,29 @@ mod tests {
         corpus.ensure_shape().await.expect("should create");
         corpus::reindex(&pool, &corpus).await.expect("should index");
 
-        work_log::insert(
-            &pool,
-            work_log::NewWorkLogEntry {
-                source: "github".to_string(),
-                content: "Merged the loopback listener".to_string(),
-                summary: Some("Shipped the loopback listener".to_string()),
-                timestamp: None,
-                account_id: None,
-                external_id: None,
-            },
-        )
-        .await
-        .expect("should log");
+        // Two lines, so the part is worded by the model and not written whole in
+        // code; a part of one line is its own list.
+        for (content, summary) in [
+            (
+                "Merged the loopback listener",
+                "Shipped the loopback listener",
+            ),
+            ("Merged the planner", "Merged the planner"),
+        ] {
+            work_log::insert(
+                &pool,
+                work_log::NewWorkLogEntry {
+                    source: "github".to_string(),
+                    content: content.to_string(),
+                    summary: Some(summary.to_string()),
+                    timestamp: None,
+                    account_id: None,
+                    external_id: None,
+                },
+            )
+            .await
+            .expect("should log");
+        }
 
         (
             Context {
@@ -1916,35 +1738,35 @@ mod tests {
     /// spends the whole length limit thinking and says nothing. The stream
     /// layer then writes its "[Cut short]" marker onto an empty answer, the
     /// marker is not empty, and the marker alone was filed as the day's brief
-    /// in 7 of 7 runs.
+    /// in 7 of 7 runs. The part is now written from its lines instead.
     ///
-    /// Proved by deleting the `cut_marker_only` return in `render`: the marker
+    /// Proved by deleting `unfinished ||` from `sections::write`: the marker
     /// is the brief.
     #[tokio::test]
-    async fn a_model_that_ran_out_before_saying_anything_leaves_no_brief() {
+    async fn a_model_that_ran_out_before_saying_anything_is_replaced_by_the_material() {
         let thinking = serde_json::json!({
             "choices": [{ "index": 0, "delta": { "reasoning_content": "Let me count" } }],
         });
         let (host, _server) = serve(vec![("HTTP/1.1 200 OK", ran_out(&[thinking]))]);
         let (context, _scratch) = ready(&host, "ran-out-silent").await;
 
-        let error = daily_brief(&context).await.expect_err("nothing was said");
+        let brief = daily_brief(&context).await.expect("a brief");
 
-        assert!(matches!(error, Error::EmptyAnswer), "{error:?}");
-        let date = today_date();
-        assert!(context
-            .corpus
-            .read(&format!("briefs/{date}.md"))
-            .await
-            .is_err());
-        assert_eq!(written_at(&context.pool, &date).await.expect("read"), None);
+        assert!(brief.checked.fell_back, "{:?}", brief.checked);
+        assert!(
+            brief.markdown.contains("Shipped the loopback listener")
+                && brief.markdown.contains("Merged the planner"),
+            "{}",
+            brief.markdown
+        );
+        assert!(!brief.markdown.contains("Cut short"), "{}", brief.markdown);
     }
 
     /// A brief cut off at the limit may end halfway through a claim, so it is
     /// not used; the one written from the material is.
     ///
-    /// Proved by deleting the `ends_with(ANSWER_CUT)` branch in
-    /// `render_checked`: the half-line and the apology are the brief.
+    /// Proved by deleting `unfinished ||` from `sections::write`: the half-line and
+    /// the apology are the brief.
     #[tokio::test]
     async fn a_brief_cut_off_at_the_length_limit_is_written_from_the_material_instead() {
         let (host, _server) = serve(vec![(
@@ -2051,24 +1873,81 @@ mod tests {
         assert!(brief.checked.fell_back, "{:?}", brief.checked);
     }
 
-    #[test]
-    fn the_plain_brief_says_what_was_found_and_how_much_it_left_out() {
+    /// **A long day is written in full.** It used to be five bullets, and when
+    /// the model's were refused, six lines and "And 2 more". Nothing is
+    /// summed up now.
+    ///
+    /// Proved by truncating the lines of each part to six in `sections::write`:
+    ///
+    /// ```text
+    /// every review is in the brief: Review #7
+    /// ```
+    #[tokio::test]
+    async fn a_long_day_is_written_in_full_and_never_summed_up_as_and_n_more() {
+        let (host, _server) = serve(vec![("HTTP/1.1 200 OK", said("- ok"))]);
+        let engine = llama::Client::with_base_url(&host).expect("client");
         let found = Gathered {
             agenda: vec!["09:00 Standup".to_string()],
             waiting: (1..=7).map(|n| format!("Review #{n}")).collect(),
             ..Gathered::default()
         };
 
-        let plain = plain(&found);
-        let lines: Vec<&str> = plain.lines().collect();
+        let (written, checked) = write_checked(&engine, 0, &found, PRESENT)
+            .await
+            .expect("a brief");
 
-        assert_eq!(lines[0], "- 09:00 Standup", "time-bound first");
-        assert_eq!(lines.len(), PLAIN_LINES + 1);
-        assert_eq!(lines.last(), Some(&"- And 2 more."));
+        for n in 1..=7 {
+            assert!(
+                written.contains(&format!("Review #{n}")),
+                "every review is in the brief: Review #{n}\n{written}"
+            );
+        }
+        assert!(written.contains("09:00 Standup"), "{written}");
+        assert!(!written.contains("more"), "{written}");
+        assert!(written.starts_with("## Today's meetings\n"), "{written}");
+        assert!(!checked.fell_back, "{checked:?}");
+    }
+
+    /// More lines than one request carries are asked about in turn, each with
+    /// its own lines, under one heading.
+    #[tokio::test]
+    async fn a_part_longer_than_one_request_is_asked_in_pieces() {
+        let (host, server) = serve(vec![
+            ("HTTP/1.1 200 OK", said("- first")),
+            ("HTTP/1.1 200 OK", said("- second")),
+        ]);
+        let engine = llama::Client::with_base_url(&host).expect("client");
+        let found = Gathered {
+            waiting: (1..=11).map(|n| format!("Review #{n}")).collect(),
+            ..Gathered::default()
+        };
+
+        let (written, _) = write_checked(&engine, 0, &found, PRESENT)
+            .await
+            .expect("a brief");
+
+        let requests = server.await.expect("stub");
+        assert_eq!(requests.len(), 2, "eleven lines are two requests");
+        assert!(
+            requests[0].contains("Review #8") && !requests[0].contains("Review #9"),
+            "the first request carries the first eight"
+        );
+        assert!(
+            requests[1].contains("Review #9") && !requests[1].contains("Review #8"),
+            "the second carries the rest"
+        );
+        assert_eq!(
+            written.matches("## ").count(),
+            1,
+            "one heading for one part: {written}"
+        );
+        for n in 1..=11 {
+            assert!(written.contains(&format!("Review #{n}")), "{written}");
+        }
     }
 
     #[tokio::test]
-    async fn writes_the_brief_into_the_corpus_with_one_model_call() {
+    async fn writes_the_brief_into_the_corpus_one_call_for_each_worded_part() {
         let (host, server) = serve(vec![("HTTP/1.1 200 OK", answer())]);
         let (context, _scratch) = ready(&host, "writes").await;
 
@@ -2086,9 +1965,9 @@ mod tests {
             brief.markdown
         );
 
-        // Exactly one call. A recipe that needs two is two recipes.
+        // One part of two lines is one short call.
         let requests = server.await.expect("the stub should finish");
-        assert_eq!(requests.len(), 1, "one model call per recipe");
+        assert_eq!(requests.len(), 1, "one model call for one part");
     }
 
     /// The defect REC-64 is about, guarded where it actually happened.
@@ -2176,10 +2055,11 @@ mod tests {
         let again = daily_brief(&context).await.expect("second");
 
         assert_eq!(first.path, again.path, "the same day is the same file");
-        assert_eq!(
-            context.corpus.read(&again.path).await.expect("read"),
-            "- a later brief",
-            "a brief is what today looks like now, not a history of it"
+        let filed = context.corpus.read(&again.path).await.expect("read");
+        assert_eq!(filed, again.markdown);
+        assert!(
+            filed.contains("a later brief") && !filed.contains(&first.markdown),
+            "a brief is what today looks like now, not a history of it: {filed}"
         );
 
         let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM briefs")
@@ -2244,10 +2124,12 @@ mod tests {
         daily_brief(&context).await.expect("first");
         let again = daily_brief(&context).await.expect("should replace its own");
 
-        assert_eq!(
-            context.corpus.read(&again.path).await.expect("read"),
-            "- a later brief"
-        );
+        assert!(context
+            .corpus
+            .read(&again.path)
+            .await
+            .expect("read")
+            .contains("a later brief"));
     }
 
     #[tokio::test]

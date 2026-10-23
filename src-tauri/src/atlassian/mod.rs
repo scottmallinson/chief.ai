@@ -204,6 +204,18 @@ pub const READ_LIMIT: u8 = 25;
 /// every site renames its workflow states and none of them can rename this.
 const ASSIGNED_JQL: &str = "assignee = currentUser() AND resolution = EMPTY ORDER BY updated DESC";
 
+/// What this person finished since a date: the other half of the same
+/// question, and for the same reason by `resolutiondate` and not by a status.
+///
+/// Built from a constant and a date Chief formats itself, never from anything
+/// the user typed. Shared with the token path.
+pub(crate) fn completed_jql(since: chrono::NaiveDate) -> String {
+    format!(
+        "assignee = currentUser() AND resolutiondate >= \"{}\" ORDER BY resolutiondate DESC",
+        since.format("%Y-%m-%d")
+    )
+}
+
 /// What can go wrong reading Atlassian.
 ///
 /// **No variant carries a token, a code or a verifier.** These strings reach
@@ -419,6 +431,9 @@ pub struct Issue {
     pub status: String,
     /// Where to open it, when the site is known.
     pub url: Option<String>,
+    /// When it was resolved, as Jira wrote it. Set only by the reads that ask
+    /// for finished work; an open issue has none.
+    pub resolved: Option<String>,
 }
 
 /// A sign-in in flight.
@@ -1178,14 +1193,27 @@ impl Mcp<'_> {
     /// The JQL is [`ASSIGNED_JQL`] — a constant, built here, containing
     /// nothing the user typed.
     pub async fn assigned(&self, site: &Site) -> Result<Vec<Issue>, Error> {
+        self.search(site, ASSIGNED_JQL).await
+    }
+
+    /// What this person resolved on one site since `since`.
+    pub async fn completed(
+        &self,
+        site: &Site,
+        since: chrono::NaiveDate,
+    ) -> Result<Vec<Issue>, Error> {
+        self.search(site, &completed_jql(since)).await
+    }
+
+    async fn search(&self, site: &Site, jql: &str) -> Result<Vec<Issue>, Error> {
         let result = self
             .call(
                 SEARCH_JIRA,
                 serde_json::json!({
                     "cloudId": site.id,
-                    "jql": ASSIGNED_JQL,
+                    "jql": jql,
                     "maxResults": READ_LIMIT,
-                    "fields": ["summary", "status"],
+                    "fields": ["summary", "status", "resolutiondate"],
                 }),
             )
             .await?;
@@ -1236,11 +1264,17 @@ fn issues(value: &serde_json::Value, site: &Site) -> Vec<Issue> {
             let url = (!site.url.is_empty())
                 .then(|| format!("{}/browse/{key}", site.url.trim_end_matches('/')));
 
+            let resolved = fields
+                .and_then(|fields| fields.get("resolutiondate"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+
             Some(Issue {
                 key,
                 summary,
                 status,
                 url,
+                resolved,
             })
         })
         .collect()
@@ -2241,6 +2275,7 @@ mod tests {
             summary: "Migrate the tenant".to_string(),
             status: "In Review".to_string(),
             url: None,
+            resolved: None,
         };
 
         assert_eq!(describe(&issue), "PROJ-7 Migrate the tenant [In Review]");
