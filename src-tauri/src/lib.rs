@@ -21,6 +21,7 @@ mod embedder;
 mod engine;
 mod facts;
 mod github;
+mod gpu;
 mod ical;
 mod ingest;
 mod integrations;
@@ -140,6 +141,8 @@ pub fn run() {
             background::close_window,
             background::set_keep_running,
             background::window_behaviour,
+            gpu::gpu_status,
+            gpu::set_use_gpu,
             login::launch_at_login,
             login::set_launch_at_login,
             connect::add_calendar,

@@ -267,10 +267,20 @@ the user to install a runtime, which is the whole reason the engine is a module 
   the CPU for the rest of the run: a machine that ran Chief on its CPU before there was a GPU build
   must go on doing so, whatever its driver does. `CHIEF_ENGINE_GPU=off` does the same from the
   start, for a driver that answers wrongly rather than failing, which nothing can detect.
-  **On Windows that is the default, and `CHIEF_ENGINE_GPU=on` opts back in.** 0.14.0 froze a Core
-  Ultra 7 268V laptop (Arc 140V, memory shared with the system) on follow-on questions until the
-  engine was kept off the GPU; Vulkan on an integrated GPU can hang the whole machine, which is not
-  a failed start, so nothing falls back. The Mac and Linux defaults are unchanged.
+  **On Windows the engine is asked which devices it sees, and only a dedicated card is used.**
+  0.14.0 froze a Core Ultra 7 268V laptop (Arc 140V, memory shared with the system) on follow-on
+  questions; Vulkan on an integrated GPU can hang the whole machine, which is not a failed start,
+  so nothing falls back and a trial run of the model is the hang. `gpu.rs` runs
+  `llama-server --list-devices` once per launch (tens of milliseconds, no model loaded) and
+  classifies each device: NVIDIA by name, anything else only if it reports at least 4 GB and less
+  than 40% of the machine's memory, because an integrated GPU reports a slice of system RAM (18 GB
+  of 32 GB on that laptop). `list-devices` prints no integrated/discrete flag, so this is a
+  heuristic, and it errs towards the CPU: a large card in a small machine loses speed, which the
+  switch gives back, where a hang loses work. The card is named with `--device` so an integrated
+  GPU beside it is left alone. Anything unclear — no answer in 15 seconds, a failed start, wording
+  it cannot read — is the CPU. Precedence: `CHIEF_ENGINE_GPU` (a developer override) over the
+  "Use graphics card" switch in Settings (`engine.use_gpu`) over detection. Mac and Linux do not
+  look and are unchanged: Metal is integrated by design and fine.
 - **ggml loads its backends from the server's own directory and the current directory — not the
   loader path.** That includes the CPU backend, which the Windows and Linux builds pick per
   instruction set at run time. So the server is started in the library directory

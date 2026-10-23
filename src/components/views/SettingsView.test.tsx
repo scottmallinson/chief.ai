@@ -98,6 +98,9 @@ function connected(accounts: unknown[], reconnected = false) {
 /** What `window_behaviour` answers on a machine with a tray and a choice made. */
 const KEEPS_RUNNING = { tray: true, keepRunning: true, trayName: 'system tray' };
 
+/** What `gpu_status` answers while Chief is deciding for itself. */
+const GPU_AUTOMATIC = { useGpu: false, chosen: null, overridden: false, summary: null };
+
 function answering(value: unknown, syncStates: unknown[] = [], registrations = BUILT_IN) {
   invoke.mockImplementation((command: string) => {
     if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
@@ -107,6 +110,7 @@ function answering(value: unknown, syncStates: unknown[] = [], registrations = B
     if (command === 'sign_in_registrations') return Promise.resolve(registrations);
     if (command === 'window_behaviour') return Promise.resolve(KEEPS_RUNNING);
     if (command === 'launch_at_login') return Promise.resolve(false);
+    if (command === 'gpu_status') return Promise.resolve(GPU_AUTOMATIC);
     if (command === 'finish_login') {
       return Promise.resolve(connected(Array.isArray(value) ? value : []));
     }
@@ -1031,6 +1035,7 @@ describe('SettingsView', () => {
         if (command === 'sync_status') return Promise.resolve([]);
         if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
         if (command === 'window_behaviour') return Promise.resolve(behaviour);
+        if (command === 'gpu_status') return Promise.resolve(GPU_AUTOMATIC);
         return Promise.resolve([]);
       });
     }
@@ -1112,6 +1117,81 @@ describe('SettingsView', () => {
       render(<SettingsView />);
 
       expect(await screen.findByText('no autostart directory')).toBeInTheDocument();
+    });
+  });
+
+  describe('the graphics card', () => {
+    function deciding(status: unknown) {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'gpu_status') return Promise.resolve(status);
+        if (command === 'set_use_gpu') return Promise.resolve(null);
+        if (command === 'window_behaviour') return Promise.resolve(KEEPS_RUNNING);
+        if (command === 'launch_at_login') return Promise.resolve(false);
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
+        return Promise.resolve([]);
+      });
+    }
+
+    it('says what Chief found and why it chose', async () => {
+      deciding({
+        ...GPU_AUTOMATIC,
+        summary:
+          'Found Intel(R) Arc(TM) 140V GPU, which shares memory with the rest of the computer.',
+      });
+
+      render(<SettingsView />);
+
+      expect(
+        await screen.findByText(/Arc\(TM\) 140V GPU, which shares memory/),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: 'Use graphics card' })).not.toBeChecked();
+    });
+
+    it('asks for the card when the box is ticked', async () => {
+      deciding(GPU_AUTOMATIC);
+
+      render(<SettingsView />);
+
+      await userEvent.click(await screen.findByRole('checkbox', { name: 'Use graphics card' }));
+
+      expect(invoke).toHaveBeenCalledWith('set_use_gpu', { enabled: true });
+    });
+
+    it('lets Chief decide again once a choice has been made', async () => {
+      deciding({ ...GPU_AUTOMATIC, chosen: true, useGpu: true });
+
+      render(<SettingsView />);
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Let Chief decide' }));
+
+      expect(invoke).toHaveBeenCalledWith('set_use_gpu', { enabled: null });
+    });
+
+    it('offers no way back while nothing has been chosen', async () => {
+      deciding(GPU_AUTOMATIC);
+
+      render(<SettingsView />);
+
+      await screen.findByRole('checkbox', { name: 'Use graphics card' });
+      expect(screen.queryByRole('button', { name: 'Let Chief decide' })).not.toBeInTheDocument();
+    });
+
+    it('locks the box when the environment decides', async () => {
+      deciding({ ...GPU_AUTOMATIC, overridden: true });
+
+      render(<SettingsView />);
+
+      expect(await screen.findByRole('checkbox', { name: 'Use graphics card' })).toBeDisabled();
+    });
+
+    it('shows no box rather than crash on an answer of the wrong shape', async () => {
+      deciding([]);
+
+      render(<SettingsView />);
+
+      await screen.findByText('Local model');
+      expect(screen.queryByRole('checkbox', { name: 'Use graphics card' })).not.toBeInTheDocument();
     });
   });
 });
