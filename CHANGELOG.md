@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.2 (2026-10-23)
+
+### Fixes
+
+- **agent:** read review requests live and refresh the header sync time ([f0e297f](https://github.com/scottmallinson/chief.ai/commit/f0e297f8a0443193592f7d127aa5a073625fdfba))
+
 ## 0.14.1 (2026-10-21)
 
 ### Fixes
