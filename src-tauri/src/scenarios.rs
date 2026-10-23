@@ -537,88 +537,88 @@ mod em {
         (subjects, world, engine)
     }
 
-    /// EM-01. A manager's day is mostly meetings, and the brief is a window
-    /// onto it. At 08:00 the model is told about the next three, in the order
-    /// they happen, and the brief says in words that eleven more are coming.
-    /// It used to be told about all fourteen and wrote fourteen bullets.
+    /// Everything the model was asked across a brief, as one string.
+    fn every_prompt(engine: &Mock) -> String {
+        engine
+            .requests()
+            .iter()
+            .map(|seen| seen.body.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// EM-01. A manager's day is mostly meetings, and the brief says all of
+    /// them, in the order they happen. It used to be told about the next three
+    /// and say "Showing the next 3 of 14", which left the reader to ask for the
+    /// rest. Fourteen lines are two short requests, not one long one.
+    ///
+    /// Proved by holding the agenda to its first three in `still_to_come`:
+    ///
+    /// ```text
+    /// "Sprint planning" is in the brief
+    /// ```
     #[tokio::test]
-    async fn em_01_a_full_day_of_meetings_reaches_the_brief_three_at_a_time() {
+    async fn em_01_a_full_day_of_meetings_reaches_the_brief_in_full_and_in_order() {
         let (subjects, world, engine) = full_day().await;
 
         let brief = recipe::daily_brief_at(&world.ctx, local(&format!("{}T08:00:00", today())))
             .await
             .expect("a brief");
-        let prompt = engine.last_prompt();
 
-        for (_, subject, _) in &subjects[..3] {
-            assert!(prompt.contains(subject), "{subject:?} is next:\n{prompt}");
-        }
-        for (_, subject, _) in &subjects[3..] {
+        let mut last = 0;
+        for (_, subject, _) in &subjects {
+            let at = brief
+                .markdown
+                .find(subject)
+                .unwrap_or_else(|| panic!("{subject:?} is in the brief:\n{}", brief.markdown));
             assert!(
-                !prompt.contains(subject),
-                "{subject:?} is beyond the window and would crowd out the reviews:\n{prompt}"
+                at >= last,
+                "meetings must stay in the order they happen:\n{}",
+                brief.markdown
             );
+            last = at;
         }
-
-        let first = prompt.find("Team standup").expect("first meeting");
-        let third = prompt.find("1:1 with Tom").expect("third meeting");
-        assert!(first < third, "meetings must stay in the order they happen");
 
         assert!(
-            brief
-                .markdown
-                .contains("Showing the next 3 of 14 meetings still to come."),
-            "the brief says what it left out, in the code's own words:\n{}",
+            !brief.markdown.contains("Showing the next") && !brief.markdown.contains("Not listed"),
+            "nothing is withheld, so nothing is counted as withheld:\n{}",
             brief.markdown
         );
+        assert_eq!(
+            engine.count(),
+            2,
+            "fourteen lines are two requests of eight"
+        );
+        let prompts = every_prompt(&engine);
+        assert!(prompts.contains("Team standup") && prompts.contains("Performance calibration"));
     }
 
-    /// EM-13. As the clock moves the window moves with it: at 14:10 the
-    /// morning has gone and the afternoon is what the brief is about. The
-    /// daemon asks `refresh_due` and writes the brief again.
+    /// EM-13. As the clock moves, what has finished drops out and everything
+    /// still to come stays: at 14:10 the morning has gone and the afternoon is
+    /// the brief.
     #[tokio::test]
-    async fn em_13_the_window_moves_as_the_day_goes() {
-        let (subjects, world, engine) = full_day().await;
+    async fn em_13_what_has_finished_drops_out_as_the_day_goes() {
+        let (_, world, _engine) = full_day().await;
         let day = today();
-
-        recipe::daily_brief_at(&world.ctx, local(&format!("{day}T08:00:00")))
-            .await
-            .expect("the morning brief");
-
-        let pool = &world.ctx.pool;
-        let morning = local(&format!("{day}T08:00:00"));
-        assert!(
-            !recipe::refresh_due(pool, &day, &morning)
-                .await
-                .expect("read"),
-            "nothing has moved yet"
-        );
-
-        // 09:30 is when the third meeting in the window starts.
-        let due = local(&format!("{day}T09:30:00"));
-        assert!(
-            recipe::refresh_due(pool, &day, &due).await.expect("read"),
-            "the window has moved and the brief should be written again"
-        );
 
         let brief = recipe::daily_brief_at(&world.ctx, local(&format!("{day}T14:10:00")))
             .await
             .expect("the afternoon brief");
-        let prompt = engine.last_prompt();
 
-        assert!(prompt.contains("Vendor call"), "{prompt}");
-        assert!(prompt.contains("Budget check-in"), "{prompt}");
-        assert!(prompt.contains("Design critique"), "{prompt}");
+        for subject in [
+            "Vendor call",
+            "Budget check-in",
+            "Design critique",
+            "1:1 with Sam",
+            "Performance calibration",
+        ] {
+            assert!(brief.markdown.contains(subject), "{}", brief.markdown);
+        }
         assert!(
-            !prompt.contains("Team standup") && !prompt.contains("Sprint planning"),
-            "the morning has gone:\n{prompt}"
-        );
-        assert!(
-            brief.markdown.contains("Showing the next 3 of 5"),
-            "{}",
+            !brief.markdown.contains("Team standup") && !brief.markdown.contains("Sprint planning"),
+            "the morning has gone:\n{}",
             brief.markdown
         );
-        let _ = subjects;
     }
 
     /// EM-14. When the last meeting has finished there is nothing to ask a
@@ -634,12 +634,6 @@ mod em {
 
         assert_eq!(engine.count(), 0, "the model was asked about an empty day");
         assert!(brief.markdown.contains("Nothing else is scheduled"));
-        assert!(
-            !recipe::refresh_due(&world.ctx.pool, &day, &local(&format!("{day}T23:00:00")))
-                .await
-                .expect("read"),
-            "a finished day has nothing to refresh for"
-        );
     }
 
     /// EM-02. A review somebody asked for and a pull request the manager opened
@@ -678,7 +672,7 @@ mod em {
         let world = world(Some(&github.host), None, &engine.host).await;
 
         let brief = dawn_brief(&world.ctx).await.expect("a brief");
-        let prompt = engine.last_prompt();
+        let prompt = world.ctx.corpus.read(&brief.path).await.expect("filed");
 
         let waiting = prompt.find("Waiting on you").expect("waiting heading");
         let own = prompt.find("Your open pull requests").expect("own heading");
@@ -872,7 +866,8 @@ mod em {
 
         let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
-        assert!(engine.last_prompt().contains("Retry payment webhooks"));
+        let written = world.ctx.corpus.read(&brief.path).await.expect("filed");
+        assert!(written.contains("Retry payment webhooks"), "{written}");
         assert_eq!(brief.sources, ["review requests"]);
     }
 
@@ -891,8 +886,8 @@ mod em {
         let engine = model_saying("- ok").await;
         let world = world(None, Some(&graph.host), &engine.host).await;
 
-        dawn_brief(&world.ctx).await.expect("a brief");
-        let prompt = engine.last_prompt();
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
+        let prompt = world.ctx.corpus.read(&brief.path).await.expect("filed");
 
         assert!(prompt.contains("Can we move our 1:1?"));
         assert!(!prompt.contains("Already read this"));
@@ -1039,7 +1034,7 @@ mod par {
         let world = world(None, Some(&graph.host), &engine.host).await;
 
         let brief = dawn_brief(&world.ctx).await.expect("a brief");
-        let prompt = engine.last_prompt();
+        let prompt = world.ctx.corpus.read(&brief.path).await.expect("filed");
 
         assert!(prompt.contains("breakfast club") && prompt.contains("Dentist"));
         assert!(prompt.contains("Non-uniform day"));
@@ -1062,8 +1057,8 @@ mod par {
         let engine = model_saying("- ok").await;
         let world = world(None, Some(&graph.host), &engine.host).await;
 
-        dawn_brief(&world.ctx).await.expect("a brief");
-        let prompt = engine.last_prompt();
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
+        let prompt = world.ctx.corpus.read(&brief.path).await.expect("filed");
 
         assert!(prompt.contains("INSET day"), "{prompt}");
         assert!(
@@ -1117,10 +1112,12 @@ mod par {
         let engine = model_saying("- ok").await;
         let world = world(None, Some(&graph.host), &engine.host).await;
 
-        dawn_brief(&world.ctx).await.expect("a brief");
-        assert!(engine
-            .last_prompt()
-            .contains("🎒 Réunion Maïté & Zoë’s café ☕"));
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
+        let written = world.ctx.corpus.read(&brief.path).await.expect("filed");
+        assert!(
+            written.contains("🎒 Réunion Maïté & Zoë’s café ☕"),
+            "{written}"
+        );
 
         // Now so many that the budget has to cut: every line is multi-byte.
         let flood: Vec<Value> = (0..400)
@@ -1206,12 +1203,7 @@ mod eng {
         let outcome = daemon::run_once(&world.daemon()).await.expect("a pass");
         assert_eq!(outcome.written, 2);
 
-        let standup = intent::standup(&crate::tools::Context {
-            pool: world.ctx.pool.clone(),
-            github: world.ctx.github.clone(),
-            microsoft: world.ctx.microsoft.clone(),
-        })
-        .await;
+        let standup = intent::standup(&crate::tools::Context::from_recipe(&world.ctx)).await;
         let material = format!("{standup:?}");
 
         assert!(
@@ -1239,10 +1231,10 @@ mod eng {
 
         let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
+        let written = world.ctx.corpus.read(&brief.path).await.expect("filed");
         assert!(
-            engine.last_prompt().contains("Timeouts on bulk export"),
-            "an assigned issue was fetched and then dropped:\n{}",
-            engine.last_prompt()
+            written.contains("Timeouts on bulk export"),
+            "an assigned issue was fetched and then dropped:\n{written}"
         );
         assert_eq!(
             brief.sources,
@@ -1272,7 +1264,8 @@ mod eng {
 
         let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
-        assert!(engine.last_prompt().contains("Paginate the audit log"));
+        let written = world.ctx.corpus.read(&brief.path).await.expect("filed");
+        assert!(written.contains("Paginate the audit log"), "{written}");
         assert_eq!(brief.sources, ["pull requests"]);
     }
 
@@ -1368,11 +1361,7 @@ mod eng {
 
         let engine = model_saying("- ok").await;
         let world = world(Some(NOWHERE), None, &engine.host).await;
-        let context = crate::tools::Context {
-            pool: world.ctx.pool.clone(),
-            github: world.ctx.github.clone(),
-            microsoft: world.ctx.microsoft.clone(),
-        };
+        let context = crate::tools::Context::from_recipe(&world.ctx);
         let call = ToolCall::new(
             "call_1",
             ToolCallFunction {
@@ -1412,6 +1401,12 @@ mod any {
                 meeting(
                     "New Year's Eve dinner",
                     &at(day, "23:45"),
+                    &at(day, "23:59"),
+                    &[],
+                ),
+                meeting(
+                    "Fireworks on the roof",
+                    &at(day, "23:55"),
                     &at(day, "23:59"),
                     &[],
                 ),
@@ -1468,6 +1463,12 @@ mod any {
                     "First day back planning",
                     &at("2027-01-01", "09:00"),
                     &at("2027-01-01", "10:00"),
+                    &[],
+                ),
+                meeting(
+                    "New year lunch",
+                    &at("2027-01-01", "12:00"),
+                    &at("2027-01-01", "13:00"),
                     &[],
                 ),
             ],
@@ -1583,7 +1584,16 @@ mod any {
     #[tokio::test]
     async fn any_05_an_engine_that_is_down_writes_no_brief_and_marks_no_day() {
         let github = github_with(Github {
-            mine: search(&[pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z")]),
+            mine: search(&[
+                pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z"),
+                pr(
+                    8,
+                    "acme/api",
+                    "Something else",
+                    None,
+                    "2026-10-02T08:00:00Z",
+                ),
+            ]),
             ..Github::default()
         })
         .await;
@@ -1604,35 +1614,52 @@ mod any {
     }
 
     /// ANY-06. A model that answers with nothing is not a brief. An empty file
-    /// recorded as today's brief would stand for the whole day.
+    /// recorded as today's brief would stand for the whole day, so the lines
+    /// themselves are filed instead.
     #[tokio::test]
     async fn any_06_an_empty_answer_is_not_filed_as_the_brief() {
         let github = github_with(Github {
-            mine: search(&[pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z")]),
+            mine: search(&[
+                pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z"),
+                pr(
+                    8,
+                    "acme/api",
+                    "Something else",
+                    None,
+                    "2026-10-02T08:00:00Z",
+                ),
+            ]),
             ..Github::default()
         })
         .await;
         let engine = model_saying("   \n  ").await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        let result = dawn_brief(&world.ctx).await;
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
-        assert!(result.is_err(), "a blank brief was accepted: {result:?}");
-        assert_eq!(
-            recipe::written_at(&world.ctx.pool, &recipe::today_date())
-                .await
-                .expect("read"),
-            None
+        let written = world.ctx.corpus.read(&brief.path).await.expect("filed");
+        assert!(
+            written.contains("Something") && written.contains("Something else"),
+            "a blank answer replaced the material: {written}"
         );
     }
 
     /// ANY-07. The power goes while the model is writing. Half an answer plus
-    /// an apology is not the day's brief, and the day must stay open so the
-    /// next pass writes a whole one.
+    /// an apology is not the day's brief: the lines as found are filed in its
+    /// place, so nothing half-said stands for the day.
     #[tokio::test]
     async fn any_07_an_answer_cut_off_by_a_power_cut_is_not_filed_as_the_brief() {
         let github = github_with(Github {
-            mine: search(&[pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z")]),
+            mine: search(&[
+                pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z"),
+                pr(
+                    8,
+                    "acme/api",
+                    "Something else",
+                    None,
+                    "2026-10-02T08:00:00Z",
+                ),
+            ]),
             ..Github::default()
         })
         .await;
@@ -1641,19 +1668,16 @@ mod any {
             mock(|_| Reply::Torn(sse("- 10:00 stand").replace("data: [DONE]\n\n", ""))).await;
         let world = world(Some(&github.host), None, &engine.host).await;
 
-        let result = dawn_brief(&world.ctx).await;
+        let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
-        let path = format!("briefs/{}.md", recipe::today_date());
-        let written = world.ctx.corpus.read(&path).await;
+        let written = world.ctx.corpus.read(&brief.path).await.expect("filed");
         assert!(
-            result.is_err() && written.is_err(),
-            "a half-written brief was kept as the day's: {result:?} / {written:?}"
+            !written.contains("10:00 stand"),
+            "half an answer was kept as the day's: {written}"
         );
-        assert_eq!(
-            recipe::written_at(&world.ctx.pool, &recipe::today_date())
-                .await
-                .expect("read"),
-            None
+        assert!(
+            written.contains("Something") && written.contains("Something else"),
+            "{written}"
         );
     }
 
@@ -1684,27 +1708,33 @@ mod any {
         let engine = model_saying("- you merged #12").await;
         let world = world(Some(NOWHERE), None, &engine.host).await;
 
-        work_log::upsert(
-            &world.ctx.pool,
-            work_log::WorkLogRecord {
-                timestamp: "2026-10-01T16:00:00Z".into(),
-                source: "github".into(),
-                category: crate::ingest::SHIPPED.into(),
-                title: "acme/api #12: Add rate limiting".into(),
-                content: "Merged pull request #12".into(),
-                summary: Some("merged".into()),
-                url: None,
-                raw_ref: None,
-                external_id: "acme/api#12".into(),
-                account_id: 1,
-            },
-        )
-        .await
-        .expect("stored");
+        for (number, title) in [(12, "Add rate limiting"), (13, "Add caching")] {
+            work_log::upsert(
+                &world.ctx.pool,
+                work_log::WorkLogRecord {
+                    timestamp: "2026-10-01T16:00:00Z".into(),
+                    source: "github".into(),
+                    category: crate::ingest::SHIPPED.into(),
+                    title: format!("acme/api #{number}: {title}"),
+                    content: format!("Merged pull request #{number}"),
+                    summary: Some("merged".into()),
+                    url: None,
+                    raw_ref: None,
+                    external_id: format!("acme/api#{number}"),
+                    account_id: 1,
+                },
+            )
+            .await
+            .expect("stored");
+        }
 
         let brief = dawn_brief(&world.ctx).await.expect("a brief");
 
-        assert!(engine.last_prompt().contains("Add rate limiting"));
+        let written = world.ctx.corpus.read(&brief.path).await.expect("filed");
+        assert!(
+            written.contains("#12") && written.contains("Add caching"),
+            "{written}"
+        );
         assert_eq!(brief.sources, ["work log"]);
     }
 
@@ -1820,7 +1850,16 @@ mod any {
     #[tokio::test]
     async fn any_12_a_brief_the_user_edited_survives_the_next_pass() {
         let github = github_with(Github {
-            mine: search(&[pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z")]),
+            mine: search(&[
+                pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z"),
+                pr(
+                    8,
+                    "acme/api",
+                    "Something else",
+                    None,
+                    "2026-10-02T08:00:00Z",
+                ),
+            ]),
             ..Github::default()
         })
         .await;
@@ -1846,11 +1885,13 @@ mod any {
         );
     }
 
-    /// ANY-13. One brief makes one model call, however many sources there are
-    /// and however full they are. That is the performance promise: a brief
-    /// costs a single prompt, and the prompt stays inside the budget.
+    /// ANY-13. However full the sources are, every request the brief makes is
+    /// short and inside the budget. The brief is written a section at a time,
+    /// eight lines to a request, so a long queue costs more requests rather
+    /// than one prompt that no longer fits; the cached prefix keeps each of
+    /// them cheap.
     #[tokio::test]
-    async fn any_13_a_brief_is_one_model_call_inside_the_budget() {
+    async fn any_13_a_long_brief_is_many_short_calls_each_inside_the_budget() {
         let day = today();
         let events: Vec<Value> = (0..60)
             .map(|n| {
@@ -1891,12 +1932,21 @@ mod any {
 
         dawn_brief(&world.ctx).await.expect("a brief");
 
-        assert_eq!(engine.count(), 1, "one model call per brief");
-        assert!(
-            crate::context::estimate_tokens(&engine.last_prompt())
-                <= crate::context::DEFAULT_CEILING,
-            "the prompt is over the budget"
-        );
+        assert!(engine.count() > 1, "a long queue is written in pieces");
+        for seen in engine.requests() {
+            let body: Value = serde_json::from_str(&seen.body).expect("json");
+            let prompt = body["messages"]
+                .as_array()
+                .expect("messages")
+                .iter()
+                .map(|message| message["content"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                crate::context::estimate_tokens(&prompt) <= crate::context::DEFAULT_CEILING,
+                "a request is over the budget"
+            );
+        }
     }
 
     /// ANY-14. Questions a user would plausibly type in each persona's words:
@@ -1979,13 +2029,16 @@ mod any {
     #[tokio::test]
     async fn any_25_a_looping_model_cannot_fill_the_brief_with_one_list() {
         let github = github_with(Github {
-            mine: search(&[pr(
-                7,
-                "acme/api",
-                "Standup notes, billing and search review",
-                None,
-                "2026-10-02T08:00:00Z",
-            )]),
+            mine: search(&[
+                pr(7, "acme/api", "Standup notes", None, "2026-10-02T08:00:00Z"),
+                pr(
+                    8,
+                    "acme/api",
+                    "Billing and search",
+                    None,
+                    "2026-10-02T08:00:00Z",
+                ),
+            ]),
             ..Github::default()
         })
         .await;
@@ -2027,7 +2080,16 @@ mod any {
     #[tokio::test]
     async fn any_24_the_brief_request_switches_thinking_off_and_stays_mild() {
         let github = github_with(Github {
-            mine: search(&[pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z")]),
+            mine: search(&[
+                pr(7, "acme/api", "Something", None, "2026-10-02T08:00:00Z"),
+                pr(
+                    8,
+                    "acme/api",
+                    "Something else",
+                    None,
+                    "2026-10-02T08:00:00Z",
+                ),
+            ]),
             ..Github::default()
         })
         .await;

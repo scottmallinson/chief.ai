@@ -392,16 +392,29 @@ the user to install a runtime, which is the whole reason the engine is a module 
   nothing about their work except through the tools: with thinking off, as Chief runs it, the same
   Gemma 4 E2B called a tool for those questions 1 time in 5 before that sentence and 15 of 15 after
   it, and invented pull requests and meetings the other times. A joke still takes no tool call.
-- `work.rs` reads open pull requests, review requests, recent merges and today's meetings **live**,
-  as one-line strings, at most eight each. A source that cannot be read says so under `not_read`
-  rather than appearing as an empty list.
-- **A standup is read live and written a section at a time.** `intent::standup` asks GitHub for
-  the three sections (the log is only the fallback, and the answer says so), and `write_standup`
-  makes one short request per section with the headings written in code. One request for the whole
-  standup was twenty lines against the 512-token ceiling and was cut off; the sections stream in
-  order, and a line the model dropped (checked by pull request number) is put back. Done reaches
-  back to the last working day, not seven days. Nothing to write is answered in code before the
-  engine starts.
+- `work.rs` reads someone's work **live, from every source they have connected**, and none of them
+  is special. GitHub pull requests and issues, Linear and Jira issues (open and recently
+  completed), today's Outlook and subscribed-calendar meetings and unread mail all arrive as
+  one-line strings under the same keys, so a user with only Linear gets the same answer shape as
+  one with only GitHub. `sources.rs` is the readers: each returns `Found{items, connected,
+answered, failed}`, which keeps "not connected" (silent), "nothing there" (said) and "could not
+  be read" (reported under `not_read`) apart. **Nothing is capped for the model's convenience.**
+  A read that came back full says so under `not_shown` rather than looking complete.
+- **Anything long is written a section at a time, by `sections.rs`.** One request per section and
+  eight lines per request (`BATCH`), the headings written in code, so a long queue costs more short
+  requests instead of one answer that hits the length ceiling. Each batch is checked: a reply that
+  names what its lines do not (`check::unsupported_by`), is empty, or was cut off is replaced by
+  the lines themselves, and a line the model dropped (found by its pull request number, issue key
+  or time) is put back. A part of one line is written in code without asking the model. The daily
+  brief and the standup both go through it, which is why `Not listed: 3 more…` no longer exists
+  and why the brief takes several short requests where it used to take one; the shared prefix is
+  cached by llama.cpp, so the extra requests are cheap. The old scheduled refresh (`refresh_after`,
+  `refresh_due`) is gone with the window it served: the brief lists the rest of the day, and
+  meetings that have finished drop out when it is next read.
+- **A standup is read live and not tied to GitHub.** `intent::standup` takes whatever sources are
+  connected (the log is only the fallback when none could be read, and the answer says so), and
+  `write_standup` uses the section writer. Done reaches back to the last working day, not seven
+  days. Nothing to write is answered in code before the engine starts.
 - **Answers are plain text.** The chat draws text as it is, so `src/lib/plain-text.ts` strips
   Markdown marks at display time, which also covers an answer still arriving; the system prompt
   asks for plain text too, but a small model forgets.

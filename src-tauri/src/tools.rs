@@ -24,6 +24,46 @@ pub struct Context {
     pub pool: SqlitePool,
     pub github: github::Client,
     pub microsoft: microsoft::Client,
+    /// The rest are read only for the questions about all of someone's work,
+    /// which may live in a tracker that is not GitHub.
+    pub calendar: crate::calendar::Client,
+    pub linear: crate::linear::Client,
+    pub atlassian: crate::atlassian::Client,
+    pub atlassian_rest: crate::atlassian::rest::Rest,
+}
+
+impl Context {
+    /// The same sources a recipe reads, for the code that has one in hand.
+    #[cfg(test)]
+    pub fn from_recipe(context: &crate::recipe::Context) -> Self {
+        Self {
+            pool: context.pool.clone(),
+            github: context.github.clone(),
+            microsoft: context.microsoft.clone(),
+            calendar: context.calendar.clone(),
+            linear: context.linear.clone(),
+            atlassian: context.atlassian.clone(),
+            atlassian_rest: context.atlassian_rest.clone(),
+        }
+    }
+}
+
+impl crate::recipe::Reach for Context {
+    fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+    fn calendar(&self) -> &crate::calendar::Client {
+        &self.calendar
+    }
+    fn linear(&self) -> &crate::linear::Client {
+        &self.linear
+    }
+    fn atlassian(&self) -> &crate::atlassian::Client {
+        &self.atlassian
+    }
+    fn atlassian_rest(&self) -> &crate::atlassian::rest::Rest {
+        &self.atlassian_rest
+    }
 }
 
 /// Names of the tools we advertise, so the dispatcher and the catalogue cannot
@@ -209,7 +249,7 @@ pub fn catalog() -> Vec<Tool> {
         }),
         Tool::function(ToolFunction {
             name: FETCH_WORK_OVERVIEW.to_string(),
-            description: "The user's work now: pull requests, reviews waiting, \
+            description: "The user's work now: pull requests, issues, tickets, reviews, \
                  meetings. Call to prioritise or say what they did."
                 .to_string(),
             parameters: json!({ "type": "object", "properties": {}, "required": [] }),
@@ -377,13 +417,20 @@ pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
         FETCH_WORK_OVERVIEW => {
             let today = chrono::Local::now().date_naive();
 
-            crate::work::read(context, crate::work::last_week(today), true)
-                .await
-                .as_tool_result()
-                .unwrap_or_else(|| {
-                    json!({ "error": "no GitHub account or calendar is connected, so there is \
-                        nothing to read. Say so and name Settings as the fix." })
-                })
+            crate::work::read(
+                context,
+                &crate::work::Scope {
+                    done_since: crate::work::last_week(today),
+                    day: true,
+                    limit: crate::work::MOST,
+                },
+            )
+            .await
+            .as_tool_result()
+            .unwrap_or_else(|| {
+                json!({ "error": "nothing the user's work lives in is connected or could be \
+                    read. Say so and name Settings as the fix." })
+            })
         }
         unknown => json!({
             "error": format!("there is no tool called '{unknown}'"),
@@ -627,6 +674,10 @@ mod tests {
             pool: migrated_pool().await,
             github: github::Client::against(host).expect("should build a client"),
             microsoft: microsoft::Client::against(host).expect("should build a client"),
+            calendar: crate::calendar::Client::new().expect("should build a client"),
+            linear: crate::linear::Client::new().expect("should build a client"),
+            atlassian: crate::atlassian::Client::new().expect("should build a client"),
+            atlassian_rest: crate::atlassian::rest::Rest::new().expect("should build a client"),
         }
     }
 
