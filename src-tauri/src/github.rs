@@ -327,6 +327,121 @@ impl Involvement {
     }
 }
 
+/// The user's open pull requests with what each is waiting on.
+const BLOCKERS_QUERY: &str = "query($first: Int!) { viewer { pullRequests(states: OPEN, first: $first, \
+orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { number isDraft repository { nameWithOwner } \
+reviewDecision commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } \
+reviewThreads(first: 50) { nodes { isResolved } } } } } }";
+
+/// Where a pull request's checks stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checks {
+    Passing,
+    Failing,
+    Running,
+    /// No checks are configured, or GitHub has not reported any yet.
+    None,
+}
+
+/// What reviewers have decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Approved,
+    ChangesRequested,
+    /// A review is required and has not been given.
+    Required,
+    /// The repository asks for no review.
+    None,
+}
+
+/// What is holding up one of the user's open pull requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blockers {
+    pub repository: String,
+    pub number: i64,
+    pub draft: bool,
+    pub checks: Checks,
+    pub decision: Decision,
+    /// Review threads nobody has marked resolved.
+    pub open_threads: usize,
+}
+
+impl Blockers {
+    /// The same key [`PullRequest::external_id`] gives, so the two join.
+    pub fn external_id(&self) -> String {
+        format!("{}#{}", self.repository, self.number)
+    }
+
+    /// One short phrase for what the user should know, or `None` when there is
+    /// nothing to add. Plain words and no numbers but the thread count, so a
+    /// small model has nothing to garble and the answer check has nothing new
+    /// to object to.
+    pub fn describe(&self) -> Option<String> {
+        let mut parts = Vec::new();
+
+        if self.checks == Checks::Failing {
+            parts.push("checks failing".to_string());
+        }
+        if self.decision == Decision::ChangesRequested {
+            parts.push("changes requested".to_string());
+        }
+        match self.open_threads {
+            0 => {}
+            1 => parts.push("1 unresolved review comment".to_string()),
+            many => parts.push(format!("{many} unresolved review comments")),
+        }
+
+        if parts.is_empty() && !self.draft {
+            if self.decision == Decision::Approved && self.checks != Checks::Running {
+                return Some("approved, ready to merge".to_string());
+            }
+            if self.decision == Decision::Approved {
+                return Some("approved, checks still running".to_string());
+            }
+        }
+
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+}
+
+fn blockers_from(node: &Value) -> Option<Blockers> {
+    let repository = node["repository"]["nameWithOwner"].as_str()?.to_string();
+    let number = node["number"].as_i64()?;
+
+    let checks = match node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"].as_str()
+    {
+        Some("SUCCESS") => Checks::Passing,
+        Some("FAILURE" | "ERROR") => Checks::Failing,
+        Some("PENDING" | "EXPECTED") => Checks::Running,
+        _ => Checks::None,
+    };
+
+    let decision = match node["reviewDecision"].as_str() {
+        Some("APPROVED") => Decision::Approved,
+        Some("CHANGES_REQUESTED") => Decision::ChangesRequested,
+        Some("REVIEW_REQUIRED") => Decision::Required,
+        _ => Decision::None,
+    };
+
+    let open_threads = node["reviewThreads"]["nodes"]
+        .as_array()
+        .map_or(0, |threads| {
+            threads
+                .iter()
+                .filter(|thread| thread["isResolved"].as_bool() == Some(false))
+                .count()
+        });
+
+    Some(Blockers {
+        repository,
+        number,
+        draft: node["isDraft"].as_bool().unwrap_or(false),
+        checks,
+        decision,
+        open_threads,
+    })
+}
+
 /// One issue assigned to the user, as the brief reads it.
 ///
 /// Deliberately not a [`PullRequest`]. GitHub's search returns both from the
@@ -667,6 +782,39 @@ impl Client {
             .ok_or_else(|| Error::Decode("the search response had no items".to_string()))?;
 
         Ok(items.iter().map(issue_from).collect())
+    }
+
+    /// What is holding up the user's own open pull requests: the state of the
+    /// checks, what reviewers have decided, and how many review threads are
+    /// still open.
+    ///
+    /// **One request for all of them.** GitHub's REST API would need three per
+    /// pull request (the pull request, its check runs, its reviews); GraphQL
+    /// answers for every open one at once, so a brief pays for one small
+    /// round trip however many are open. Nothing here involves the model.
+    pub async fn blockers(&self, token: &str, limit: u8) -> Result<Vec<Blockers>, Error> {
+        let response = self
+            .http
+            .post(format!("{}/graphql", self.api_host))
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&serde_json::json!({
+                "query": BLOCKERS_QUERY,
+                "variables": { "first": limit.clamp(1, 50) },
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+
+        let body: Value = self.read(response).await?;
+
+        // GraphQL answers 200 with an `errors` array and no data.
+        let nodes = body["data"]["viewer"]["pullRequests"]["nodes"]
+            .as_array()
+            .ok_or_else(|| Error::Decode("the response had no pull requests".to_string()))?;
+
+        Ok(nodes.iter().filter_map(blockers_from).collect())
     }
 
     /// Who the stored token belongs to, so an account can name itself.
@@ -1381,5 +1529,138 @@ mod waiting_on_me {
             .await
             .expect("read")
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod blockers_tests {
+    //! What is holding up the user's own pull requests.
+
+    use super::*;
+    use crate::llama::test_support::{serve, split};
+
+    const ANSWER: &str = r#"{"data":{"viewer":{"pullRequests":{"nodes":[
+      {"number":7,"isDraft":false,"repository":{"nameWithOwner":"acme/api"},
+       "reviewDecision":"CHANGES_REQUESTED",
+       "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]},
+       "reviewThreads":{"nodes":[{"isResolved":false},{"isResolved":true},{"isResolved":false}]}},
+      {"number":9,"isDraft":false,"repository":{"nameWithOwner":"acme/web"},
+       "reviewDecision":"APPROVED",
+       "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]},
+       "reviewThreads":{"nodes":[]}},
+      {"number":11,"isDraft":true,"repository":{"nameWithOwner":"acme/web"},
+       "reviewDecision":null,
+       "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]},
+       "reviewThreads":{"nodes":[]}}
+    ]}}}}"#;
+
+    fn one(checks: Checks, decision: Decision, open_threads: usize, draft: bool) -> Blockers {
+        Blockers {
+            repository: "acme/api".to_string(),
+            number: 1,
+            draft,
+            checks,
+            decision,
+            open_threads,
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_every_open_pull_request_in_one_request() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        let found = client.blockers("gho_token", 10).await.expect("should read");
+
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[0].checks, Checks::Failing);
+        assert_eq!(found[0].decision, Decision::ChangesRequested);
+        assert_eq!(found[0].open_threads, 2, "resolved threads do not count");
+        assert_eq!(found[1].checks, Checks::Passing);
+        assert_eq!(found[1].decision, Decision::Approved);
+        assert_eq!(found[2].checks, Checks::None);
+        assert_eq!(found[2].decision, Decision::None);
+
+        let received = server.await.expect("server");
+        assert_eq!(received.len(), 1, "one round trip however many are open");
+        let (line, _) = split(&received[0]);
+        assert!(line.starts_with("POST /graphql"), "{line}");
+        assert!(
+            received[0]
+                .to_lowercase()
+                .contains("authorization: bearer gho_token"),
+            "the user's own token, nothing else"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_graphql_error_is_an_error_not_an_empty_list() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            r#"{"errors":[{"message":"nope"}]}"#,
+        )]);
+        let client = Client::against(&host).expect("client");
+
+        let error = client
+            .blockers("gho_token", 10)
+            .await
+            .expect_err("no data is not 'nothing is blocked'");
+
+        assert!(matches!(error, Error::Decode(_)), "got {error:?}");
+        server.await.expect("server");
+    }
+
+    #[test]
+    fn says_what_is_wrong_in_plain_words() {
+        let text = one(Checks::Failing, Decision::ChangesRequested, 2, false)
+            .describe()
+            .expect("something is wrong");
+        assert_eq!(
+            text,
+            "checks failing, changes requested, 2 unresolved review comments"
+        );
+        assert_eq!(
+            one(Checks::Passing, Decision::None, 1, false).describe(),
+            Some("1 unresolved review comment".to_string())
+        );
+    }
+
+    #[test]
+    fn says_nothing_when_nothing_is_known_to_be_wrong() {
+        // Waiting for a review is not a blocker, and no checks is not a failure.
+        assert_eq!(
+            one(Checks::None, Decision::Required, 0, false).describe(),
+            None
+        );
+        assert_eq!(
+            one(Checks::Running, Decision::None, 0, false).describe(),
+            None
+        );
+        assert_eq!(
+            one(Checks::Passing, Decision::None, 0, false).describe(),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_finished_approval_is_ready_to_merge() {
+        assert_eq!(
+            one(Checks::Passing, Decision::Approved, 0, false).describe(),
+            Some("approved, ready to merge".to_string())
+        );
+        assert_eq!(
+            one(Checks::Running, Decision::Approved, 0, false).describe(),
+            Some("approved, checks still running".to_string())
+        );
+        assert_eq!(
+            one(Checks::Passing, Decision::Approved, 0, true).describe(),
+            None,
+            "a draft is not ready to merge whatever it was approved for"
+        );
+        assert_eq!(
+            one(Checks::Failing, Decision::Approved, 0, false).describe(),
+            Some("checks failing".to_string()),
+            "approval does not outrank a red check"
+        );
     }
 }

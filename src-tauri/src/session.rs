@@ -354,6 +354,22 @@ impl<'a> GithubSession<'a> {
             .await
     }
 
+    /// What is holding up the user's own open pull requests, renewing the
+    /// credential the same way.
+    pub async fn blockers(&self, limit: u8) -> Result<Vec<github::Blockers>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.blockers(&token, limit).await
+            })
+            .await
+    }
+
     /// Who reviewed one pull request, renewing the credential the same way.
     pub async fn reviewers(
         &self,
