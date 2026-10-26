@@ -43,13 +43,16 @@ mod retrieval;
 mod router;
 #[cfg(test)]
 mod scenarios;
+mod sections;
 mod session;
 mod settings;
 mod setup;
+mod sources;
 mod sync_state;
 mod tools;
 mod watcher;
 mod weights;
+mod work;
 mod work_log;
 
 // The llama.cpp client is a self-contained piece of this crate's library API:
