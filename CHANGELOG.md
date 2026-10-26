@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0 (2026-10-26)
+
+### Features
+
+- **agent:** keep the model on the CPU on Windows and Linux until the graphics card is switched on ([0b5ea5a](https://github.com/scottmallinson/chief.ai/commit/0b5ea5af3170e0fca0fc51d61091a9487357919c))
+
 ## 0.14.2 (2026-10-23)
 
 ### Fixes

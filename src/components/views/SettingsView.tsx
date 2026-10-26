@@ -15,6 +15,7 @@ import { AtlassianToken } from '@/components/AtlassianToken';
 import { LinearKey } from '@/components/LinearKey';
 import { SignInRegistration } from '@/components/SignInRegistration';
 import { runDoctor, type Report } from '@/lib/doctor';
+import { gpuStatus, setUseGpu, type GpuStatus } from '@/lib/gpu';
 import {
   launchAtLogin,
   setKeepRunning,
@@ -650,7 +651,87 @@ function LocalModel() {
       title="Local model"
       description="Chief runs llama.cpp itself, on a loopback address only this machine can reach. The engine ships with the app and stops when nothing is using it; the client refuses any address that is not local."
       state={model ? <Chip tone="machine">{model}</Chip> : <Chip tone="quiet">Checking</Chip>}
-    />
+    >
+      <GraphicsCard />
+    </SettingsSection>
+  );
+}
+
+/**
+ * Whether the model runs on a graphics card.
+ *
+ * On Windows and Linux the model runs on the processor until this is ticked;
+ * on a Mac it uses the graphics chip until this is unticked. "Back to the default"
+ * appears only once there is a choice to undo.
+ */
+function GraphicsCard() {
+  const [status, setStatus] = useState<GpuStatus | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const current = await gpuStatus();
+      // Anything that is not the shape asked for is no answer at all.
+      setStatus(typeof current?.useGpu === 'boolean' ? current : null);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const choose = async (enabled: boolean | null) => {
+    setSaving(true);
+    setProblem(null);
+
+    try {
+      await setUseGpu(enabled);
+      await load();
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (status === null) {
+    return problem ? <p className="mt-3 text-sm text-attention-text">{problem}</p> : null;
+  }
+
+  return (
+    <div className="mt-4 border-t border-border pt-3">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={status.useGpu}
+          disabled={saving || status.overridden}
+          onChange={(event) => void choose(event.target.checked)}
+          className="size-4 accent-primary"
+        />
+        Use graphics card
+      </label>
+      <p className="mt-2 text-[13px] leading-snug text-muted-foreground">
+        {status.summary ? `${status.summary} ` : ''}
+        {status.overridden
+          ? 'This is set outside Chief, so the box cannot change it.'
+          : 'A graphics card is faster, but a graphics driver that misbehaves can freeze the whole computer, so on Windows and Linux Chief uses the processor unless you tick this. Changing it restarts the model.'}
+      </p>
+      {status.chosen !== null && !status.overridden && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="mt-1"
+          disabled={saving}
+          onClick={() => void choose(null)}
+        >
+          Back to the default
+        </Button>
+      )}
+      {problem && <p className="mt-2 text-sm text-attention-text">{problem}</p>}
+    </div>
   );
 }
 

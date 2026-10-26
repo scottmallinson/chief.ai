@@ -22,6 +22,7 @@ use crate::integrations;
 use crate::recipe;
 use crate::retrieval;
 use crate::tools;
+use crate::work;
 
 /// How many entries `/log` answers with. Enough to see the shape of a week.
 const LOG_ENTRIES: i64 = 10;
@@ -330,74 +331,126 @@ pub fn ground(question: &str) -> Option<Ground> {
         .map(|(_, ground)| *ground)
 }
 
-/// What Chief knows, written for the model rather than for the user.
+/// One section of a standup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StandupPart {
+    pub heading: &'static str,
+    pub lines: Vec<String>,
+}
+
+/// What a standup is made of, read just now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Standup {
+    /// The sections with something in them, in the order they are said.
+    pub parts: Vec<StandupPart>,
+    /// Whether any section is from the last sync because nothing that holds it
+    /// could be asked. The answer says so rather than passing it off as current.
+    pub from_log: bool,
+    /// Whether something could not be read and there was no log to fall back
+    /// on, which is a different statement from having nothing to report.
+    pub unread: bool,
+    /// Whether anything that holds the user's work is connected at all.
+    pub connected: bool,
+    /// The sources that answered, for the line under the answer.
+    pub read: Vec<&'static str>,
+    /// The sources that are connected and did not answer.
+    pub missed: Vec<&'static str>,
+}
+
+/// The user's work for a standup, **live from whatever they have connected**.
 ///
-/// **Never empty.** An empty string would leave the model with the question
-/// and nothing else, which is the state it was in when it answered "What's new
-/// with GitHub pull requests this week?" as though that were a standup item.
-/// Being told plainly that the log is empty is what makes "I have nothing to
-/// report" reachable.
-pub async fn material(ground: Ground, pool: &sqlx::SqlitePool) -> String {
-    match ground {
-        Ground::Standup => standup(pool).await,
-    }
-}
-
-/// Today and the six days before it, as the UTC instants the work log stores.
-pub(crate) fn standup_window<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> (String, String) {
-    let today = now.date_naive();
-    between(
-        now,
-        today - chrono::Duration::days(6),
-        today + chrono::Duration::days(1),
+/// The three sections used to come from the work log. Its rows only ever grow,
+/// so a pull request that had since merged was still "open" and a review done
+/// at nine was still "waiting" at noon — the stale lines in a standup. Each
+/// section is now asked of every connected source that holds it (GitHub,
+/// Linear, Jira), and only a section nothing could answer falls back to the
+/// log, saying so.
+///
+/// **What is done reaches back to the last working day**, not seven days: a
+/// standup is yesterday and today, and a week of merges is a long answer for a
+/// small model to write out. On a Monday that is Friday, which is why it is not
+/// simply yesterday.
+pub async fn standup(context: &tools::Context) -> Standup {
+    let now = chrono::Local::now();
+    let since = work::last_working_day(now.date_naive());
+    let read = work::read(
+        context,
+        &work::Scope {
+            done_since: since,
+            day: false,
+            // A standup is written a few lines at a time, so it can be all of
+            // them.
+            limit: usize::MAX,
+        },
     )
-}
+    .await;
 
-/// The work log, in the three buckets a standup is made of.
-async fn standup(pool: &sqlx::SqlitePool) -> String {
-    let mut sections: Vec<String> = Vec::new();
+    let (from, to) = between(&now, since, now.date_naive() + chrono::Duration::days(1));
+    let mut standup = Standup {
+        parts: Vec::new(),
+        from_log: false,
+        unread: false,
+        connected: false,
+        read: Vec::new(),
+        missed: Vec::new(),
+    };
 
-    // **The last seven days, not "this week".** A calendar week starts on
-    // Monday, so on a Monday morning "this week" held nothing, and the one
-    // stand-up of the week that has the most to report said there was nothing
-    // to report. Found by the runbook's ENG-01 failing on the first Monday it
-    // ran on CI.
-    let (from, to) = standup_window(&chrono::Local::now());
-    let shipped = retrieval::shipped_in_window(pool, &from, &to, LOG_ENTRIES).await;
-
-    for (heading, hits) in [
-        ("Shipped in the last 7 days", shipped),
+    for (heading, live, stored) in [
+        (
+            "Done",
+            read.done,
+            retrieval::shipped_in_window(&context.pool, &from, &to, LOG_ENTRIES).await,
+        ),
         (
             "Still open",
-            retrieval::latest_in_category(pool, ingest::IN_FLIGHT, LOG_ENTRIES).await,
+            read.open,
+            retrieval::latest_in_category(&context.pool, ingest::IN_FLIGHT, LOG_ENTRIES).await,
         ),
         (
             "Waiting on my review",
-            retrieval::latest_in_category(pool, ingest::REVIEW, LOG_ENTRIES).await,
+            read.reviews,
+            retrieval::latest_in_category(&context.pool, ingest::REVIEW, LOG_ENTRIES).await,
         ),
     ] {
-        if let Some(body) = hits
-            .ok()
-            .as_deref()
-            .and_then(|hits| retrieval::to_context(hits, RETRIEVAL_CEILING))
-        {
-            sections.push(format!("{heading}:\n{body}"));
+        standup.connected |= !live.read.is_empty() || !live.unread.is_empty();
+
+        for source in &live.read {
+            if !standup.read.contains(source) {
+                standup.read.push(source);
+            }
+        }
+
+        for (source, _) in &live.unread {
+            if !standup.missed.contains(source) {
+                standup.missed.push(source);
+            }
+        }
+
+        let lines = if live.read.is_empty() {
+            let logged = stored
+                .ok()
+                .as_deref()
+                .and_then(|hits| retrieval::to_context(hits, RETRIEVAL_CEILING))
+                .map(|body| body.lines().map(str::to_string).collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            if logged.is_empty() {
+                standup.unread |= live.is_unread();
+            } else {
+                standup.from_log = true;
+            }
+
+            logged
+        } else {
+            live.lines
+        };
+
+        if !lines.is_empty() {
+            standup.parts.push(StandupPart { heading, lines });
         }
     }
 
-    if sections.is_empty() {
-        return "Chief's work log has nothing in it for the last 7 days. Say that there is nothing to \
-                report and that connecting GitHub in Settings is what would fill it. Do not \
-                invent any work."
-            .to_string();
-    }
-
-    format!(
-        "Here is the user's work, read from this machine's work log. Write their standup from \
-         these lines and nothing else. Do not add items, people, meetings or dates that do not \
-         appear here.\n\n{}",
-        sections.join("\n\n")
-    )
+    standup
 }
 
 /// Answer a routed intent from local data, without a model.
@@ -608,6 +661,7 @@ async fn waiting(context: &recipe::Context) -> Option<Answered> {
         &context.github,
         tools::PullRequestState::Open,
         tools::Whose::Reviewing,
+        None,
     )
     .await
     {
@@ -864,28 +918,6 @@ mod tests {
                 "{asked:?} must be answered about {expected:?}"
             );
         }
-    }
-
-    /// A Monday-morning stand-up reaches back over the weekend to Friday. The
-    /// window was "this week", which on a Monday starts at midnight today.
-    #[test]
-    fn a_monday_standup_still_sees_fridays_work() {
-        use chrono::TimeZone;
-
-        let zone = chrono::FixedOffset::west_opt(5 * 3600).expect("a real offset");
-        let monday = zone
-            .with_ymd_and_hms(2026, 10, 5, 9, 0, 0)
-            .single()
-            .expect("a real instant");
-
-        let (from, to) = standup_window(&monday);
-
-        assert_eq!(from, "2026-09-29T05:00:00.000Z");
-        assert_eq!(to, "2026-10-06T05:00:00.000Z");
-        assert!(
-            from.as_str() < "2026-10-02T05:00:00.000Z",
-            "Friday is inside"
-        );
     }
 
     /// The windows, at a fixed offset rather than the test machine's clock.
@@ -1310,82 +1342,137 @@ mod delivery {
         }
     }
 
-    /// Nothing waiting steps aside rather than saying "nothing".
-    ///
-    /// The safety valve the whole module rests on: "you have nothing waiting"
-    /// and "Chief misunderstood you" are indistinguishable to a reader, so a
-    /// routed intent with nothing to say lets the model take the question.
-    /// The defect REC-62's second half.
-    ///
-    /// "Draft my standup" is the one opener the router does not answer, so it
-    /// reaches the model — which, with nothing in front of it, answered with
-    /// two bullets that were themselves questions: "What's new with GitHub
-    /// pull requests this week?". The material is what it writes from now.
-    #[tokio::test]
-    async fn a_standup_is_written_from_the_work_log_and_not_from_the_question() {
-        let (context, _scratch, _server) = silent("standup").await;
+    fn tools_context(context: &recipe::Context) -> tools::Context {
+        tools::Context::from_recipe(context)
+    }
 
-        let (from, _to) = Window::ThisWeek
-            .bounds(&chrono::Local::now())
-            .expect("this week is a window");
-
+    async fn log_open(context: &recipe::Context, external_id: &str, title: &str) {
         work_log::upsert(
             &context.pool,
             work_log::WorkLogRecord {
-                // Nudged past the boundary the window excludes at the far end.
-                timestamp: bump(&from),
+                timestamp: "2026-09-02T09:00:00.000Z".to_string(),
                 source: "github".to_string(),
-                category: ingest::SHIPPED.to_string(),
-                title: "scottmallinson/chief.ai#64: Ship the work log".to_string(),
-                content: "Merged #64".to_string(),
-                summary: Some("merged".to_string()),
+                category: ingest::IN_FLIGHT.to_string(),
+                title: title.to_string(),
+                content: title.to_string(),
+                summary: Some("open".to_string()),
                 url: None,
                 raw_ref: None,
-                external_id: "gh:64".to_string(),
+                external_id: external_id.to_string(),
                 account_id: 1,
             },
         )
         .await
         .expect("should store");
+    }
 
-        let material = material(Ground::Standup, &context.pool).await;
+    fn search_result(number: u32, title: &str, merged_at: Option<String>) -> String {
+        serde_json::json!({
+            "total_count": 1,
+            "items": [{
+                "number": number,
+                "title": title,
+                "repository_url": "https://api.github.com/repos/o/r",
+                "state": "open",
+                "draft": false,
+                "html_url": format!("https://github.com/o/r/pull/{number}"),
+                "updated_at": "2026-10-23T09:00:00Z",
+                "pull_request": { "merged_at": merged_at },
+            }]
+        })
+        .to_string()
+    }
 
+    /// A standup is read from GitHub as it is asked, so a pull request that has
+    /// since merged is not still "open" because a row nothing closes says so.
+    ///
+    /// Proved by reading the "Still open" section from the log first:
+    ///
+    /// ```text
+    /// a pull request that has since merged is still being reported open
+    /// ```
+    #[tokio::test]
+    async fn a_standup_is_read_from_github_now_and_not_from_rows_that_never_close() {
+        let (mut context, _scratch, _model) = silent("standup-live").await;
+        connect(&context, integrations::GITHUB).await;
+        log_open(&context, "o/r#40", "Already merged since").await;
+
+        let merged_just_now = chrono::Utc::now().to_rfc3339();
+        let open = search_result(41, "Still being reviewed", None);
+        let none = r#"{"total_count":0,"items":[]}"#.to_string();
+        let merged = search_result(42, "Shipped this morning", Some(merged_just_now));
+        let (host, github) = serve(vec![
+            ("HTTP/1.1 200 OK", open),
+            // The issues assigned to the user, which are work like any other.
+            ("HTTP/1.1 200 OK", "[]".to_string()),
+            ("HTTP/1.1 200 OK", none),
+            ("HTTP/1.1 200 OK", merged),
+        ]);
+        context.github = github::Client::against(&host).expect("client");
+
+        let found = standup(&tools_context(&context)).await;
+
+        let section = |heading: &str| {
+            found
+                .parts
+                .iter()
+                .find(|part| part.heading == heading)
+                .map(|part| part.lines.join("\n"))
+                .unwrap_or_default()
+        };
         assert!(
-            material.contains("Ship the work log"),
-            "the model is given the real row: {material}"
+            section("Still open").contains("Still being reviewed"),
+            "{found:?}"
         );
         assert!(
-            material.contains("nothing else"),
-            "and told to write from it alone: {material}"
+            !section("Still open").contains("Already merged since"),
+            "a pull request that has since merged is still being reported open: {found:?}"
+        );
+        assert!(
+            section("Done").contains("Shipped this morning (o/r#42, merged today)"),
+            "{found:?}"
+        );
+        assert!(
+            section("Waiting on my review").is_empty(),
+            "an empty section is left out"
+        );
+        assert!(!found.from_log && !found.unread);
+
+        let requests = github.await.expect("server");
+        assert_eq!(
+            requests.len(),
+            4,
+            "open, assigned issues, review requests and merged: four reads"
         );
     }
 
-    /// The empty case, which is the one that was inventing.
-    ///
-    /// Proved by returning an empty string when there is nothing:
-    ///
-    /// ```text
-    /// assertion failed: an empty log has to be stated, or the model fills
-    /// the silence
-    /// ```
+    /// GitHub out of reach: the last sync answers, and the standup says so.
     #[tokio::test]
-    async fn an_empty_log_is_said_out_loud_rather_than_left_as_silence() {
-        let (context, _scratch, _server) = silent("standup-empty").await;
+    async fn a_standup_falls_back_to_the_log_and_says_so_when_github_is_unreachable() {
+        let (context, _scratch, _model) = silent("standup-offline").await;
+        connect(&context, integrations::GITHUB).await;
+        log_open(&context, "o/r#40", "Logged and open").await;
 
-        let material = material(Ground::Standup, &context.pool).await;
+        let found = standup(&tools_context(&context)).await;
 
+        assert!(found.from_log, "{found:?}");
         assert!(
-            !material.trim().is_empty(),
-            "an empty log has to be stated, or the model fills the silence"
+            found.parts.iter().any(|part| part.heading == "Still open"
+                && part.lines.join("\n").contains("Logged and open")),
+            "{found:?}"
         );
-        assert!(
-            material.contains("nothing in it"),
-            "and it says so plainly: {material}"
-        );
-        assert!(
-            material.contains("Do not invent"),
-            "and says what not to do instead: {material}"
-        );
+    }
+
+    /// Unreachable and nothing logged is not "nothing to report".
+    #[tokio::test]
+    async fn an_unreadable_standup_with_an_empty_log_is_not_an_empty_standup() {
+        let (context, _scratch, _model) = silent("standup-unread").await;
+        connect(&context, integrations::GITHUB).await;
+
+        let found = standup(&tools_context(&context)).await;
+
+        assert!(found.parts.is_empty());
+        assert!(found.unread, "{found:?}");
     }
 
     const REVIEW_REQUESTS: &str = r#"{

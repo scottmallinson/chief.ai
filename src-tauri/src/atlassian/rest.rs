@@ -212,10 +212,32 @@ impl Rest {
         email: &str,
         token: &str,
     ) -> Result<Vec<Issue>, Error> {
+        self.search(site, email, token, ASSIGNED).await
+    }
+
+    /// What this person resolved since `since`.
+    pub async fn completed(
+        &self,
+        site: &str,
+        email: &str,
+        token: &str,
+        since: chrono::NaiveDate,
+    ) -> Result<Vec<Issue>, Error> {
+        self.search(site, email, token, &super::completed_jql(since))
+            .await
+    }
+
+    async fn search(
+        &self,
+        site: &str,
+        email: &str,
+        token: &str,
+        jql: &str,
+    ) -> Result<Vec<Issue>, Error> {
         let body = serde_json::json!({
-            "jql": ASSIGNED,
+            "jql": jql,
             "maxResults": READ_LIMIT,
-            "fields": ["summary", "status"],
+            "fields": ["summary", "status", "resolutiondate"],
         });
 
         let found: SearchReply = self.post(site, SEARCH, email, token, &body).await?;
@@ -228,6 +250,7 @@ impl Rest {
                 key: issue.key,
                 summary: issue.fields.summary,
                 status: issue.fields.status.map(|it| it.name).unwrap_or_default(),
+                resolved: issue.fields.resolutiondate,
             })
             .collect())
     }
@@ -384,6 +407,8 @@ struct Fields {
     summary: String,
     #[serde(default)]
     status: Option<Named>,
+    #[serde(default)]
+    resolutiondate: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -554,6 +579,35 @@ mod tests {
             sent.contains("resolution = EMPTY"),
             "open is the absence of a resolution, not a state called Done: {sent}"
         );
+    }
+
+    #[tokio::test]
+    async fn reads_what_was_resolved_since_a_date() {
+        let body = serde_json::json!({
+            "issues": [{ "key": "ENG-3", "fields": {
+                "summary": "Closed it", "status": { "name": "Done" },
+                "resolutiondate": "2026-10-22T10:15:30.000+0100" } }]
+        })
+        .to_string();
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", body)]);
+        let rest = Rest::new().expect("client");
+        let since = chrono::NaiveDate::from_ymd_opt(2026, 10, 22).expect("a date");
+
+        let found = rest
+            .completed(&host, "scott@example.com", "a-token", since)
+            .await
+            .expect("should read");
+
+        assert_eq!(found[0].key, "ENG-3");
+        assert_eq!(
+            found[0].resolved.as_deref(),
+            Some("2026-10-22T10:15:30.000+0100")
+        );
+
+        let sent = server.await.expect("server").join("");
+        assert!(sent.contains("resolutiondate"), "{sent}");
+        assert!(sent.contains("2026-10-22"), "{sent}");
+        assert!(sent.contains("currentUser()"), "{sent}");
     }
 
     fn pages_body() -> String {

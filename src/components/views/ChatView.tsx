@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Caret, Sweep } from '@/components/ui/activity';
 import type { UseChat } from '@/hooks/use-chat';
 import openers from '@/lib/openers.json';
+import { plainText } from '@/lib/plain-text';
 import { useElapsed } from '@/hooks/use-elapsed';
 import type { ChatMessage } from '@/lib/agent';
 
@@ -177,7 +178,7 @@ export function ChatView({ chat }: { chat: UseChat }) {
                     label={<p className="micro text-verified-text">chief · local</p>}
                   >
                     <span className="sr-only">Chief said: </span>
-                    {message.content}
+                    {plainText(message.content)}
                     {/* Under the answer, not in it. The text above is what the
                         model wrote; this line is what Rust knows, and keeping
                         them in separate elements is what stops a model that
@@ -195,7 +196,7 @@ export function ChatView({ chat }: { chat: UseChat }) {
               {isWriting && (
                 <Answer label={working}>
                   <span className="sr-only">Chief is saying: </span>
-                  {partial}
+                  {plainText(partial)}
                   <Caret />
                 </Answer>
               )}
