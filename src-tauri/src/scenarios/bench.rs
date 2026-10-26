@@ -1263,11 +1263,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
         "tool-calendar-unconnected" | "tool-mail-unconnected" => {
             let github = github_with(Github::default()).await;
             let world = world(Some(&github.host), None, NOWHERE).await;
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
             let question = if id == "tool-calendar-unconnected" {
                 "What meetings do I have tomorrow?"

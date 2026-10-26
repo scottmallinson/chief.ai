@@ -1855,7 +1855,7 @@ mod orchestration_tests {
             .iter()
             .filter_map(|tool| tool["function"]["name"].as_str())
             .collect();
-        assert_eq!(offered, ["fetch_github_prs"]);
+        assert_eq!(offered, ["fetch_github_prs", "fetch_work_overview"]);
 
         let system = sent["messages"][0]["content"]
             .as_str()

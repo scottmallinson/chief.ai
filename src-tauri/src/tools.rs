@@ -1377,7 +1377,12 @@ mod tests {
 
         assert_eq!(
             names(&offer),
-            [FETCH_GITHUB_PRS, FETCH_CALENDAR, FETCH_RECENT_MAIL]
+            [
+                FETCH_GITHUB_PRS,
+                FETCH_CALENDAR,
+                FETCH_RECENT_MAIL,
+                FETCH_WORK_OVERVIEW
+            ]
         );
         assert!(offer.not_connected.is_none());
     }
@@ -1385,7 +1390,7 @@ mod tests {
     #[test]
     fn leaves_out_the_tools_of_a_service_that_is_not_connected() {
         let github_only = offer_for(true, false);
-        assert_eq!(names(&github_only), [FETCH_GITHUB_PRS]);
+        assert_eq!(names(&github_only), [FETCH_GITHUB_PRS, FETCH_WORK_OVERVIEW]);
         let note = github_only
             .not_connected
             .expect("should say what is missing");
@@ -1393,7 +1398,10 @@ mod tests {
         assert!(!note.contains("GitHub"), "{note}");
 
         let outlook_only = offer_for(false, true);
-        assert_eq!(names(&outlook_only), [FETCH_CALENDAR, FETCH_RECENT_MAIL]);
+        assert_eq!(
+            names(&outlook_only),
+            [FETCH_CALENDAR, FETCH_RECENT_MAIL, FETCH_WORK_OVERVIEW]
+        );
         let note = outlook_only
             .not_connected
             .expect("should say what is missing");
@@ -1401,7 +1409,7 @@ mod tests {
         assert!(!note.contains("Outlook"), "{note}");
 
         let nothing = offer_for(false, false);
-        assert!(nothing.tools.is_empty());
+        assert_eq!(names(&nothing), [FETCH_WORK_OVERVIEW]);
         let note = nothing.not_connected.expect("should say what is missing");
         assert!(
             note.contains("GitHub") && note.contains("Outlook"),
@@ -1424,7 +1432,11 @@ mod tests {
         let pool = migrated_pool().await;
 
         let none = catalog_for(&pool).await;
-        assert!(none.tools.is_empty(), "nothing is connected yet");
+        assert_eq!(
+            none.tools.len(),
+            1,
+            "nothing is connected yet, so only the overview is offered"
+        );
 
         for (service, key) in [
             (integrations::GITHUB, "octocat"),
