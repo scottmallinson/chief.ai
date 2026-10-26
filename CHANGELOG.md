@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.16.0 (2026-10-26)
+
+### Features
+
+- **agent:** draw the brief and standup from every connected source, in full ([73e186d](https://github.com/scottmallinson/chief.ai/commit/73e186df30ca5a2444852231c4a884befce0846e))
+
+### Fixes
+
+- **agent:** look back as far as the question asks ([6449985](https://github.com/scottmallinson/chief.ai/commit/6449985c1e8107202bc3982b82a0e8b850df8b9b))
+- **agent:** answer prioritise, yesterday and standup questions from live work ([6e47899](https://github.com/scottmallinson/chief.ai/commit/6e47899a0e0981a2c04c6530eeb15db7bf960bdf))
+
 ## 0.15.0 (2026-10-26)
 
 ### Features
