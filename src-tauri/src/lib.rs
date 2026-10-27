@@ -50,6 +50,7 @@ mod settings;
 mod setup;
 mod sources;
 mod sync_state;
+mod team;
 mod tools;
 mod watcher;
 mod weights;

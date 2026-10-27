@@ -640,6 +640,25 @@ when it had gone out of date.
 `#[serde(skip_serializing)]` so it cannot leak into `as_tool_entries` — a list of pull request
 bodies would swamp the prompt budget, and the model does not need one to say what is waiting.
 
+## The team view
+
+`src-tauri/src/team.rs` answers `/team` for somebody whose work is other people's work: open pull
+requests waiting on review in the repositories they list.
+
+- **Opt-in, and a file.** Nothing is read until `team.md` in the corpus lists a repository as
+  `- owner/name`, so a user who never opens it never makes a request. The file is created on the
+  first `/team`, with its example inside an HTML comment (`people::outside_comments` hides comments
+  from the parser), and an unlisted repository costing no request is a test.
+- **Only what the user's own token can see.** One GraphQL search per repository, at most 5
+  repositories and 50 pull requests each. GitHub's search answers a repository the token cannot read
+  with no pull requests, so an empty answer says it may be either.
+- **Counted in code.** Groups, order and ages come from the data; no model is called. A pull request
+  with no decision but a review already given is "reviewed", not "waiting". People are named only
+  when `people.md` has them confirmed.
+- The repository is checked as `owner/name` before it goes into the search query
+  (`github::is_repository`), because a value that could carry another qualifier would read somewhere
+  the user never listed.
+
 ## Calendars without a sign-in
 
 `src-tauri/src/ical.rs` parses iCalendar; `src-tauri/src/calendar.rs` fetches it. Together they are

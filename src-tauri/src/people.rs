@@ -117,7 +117,7 @@ fn line_person(line: &str) -> Option<Person> {
 /// The part of `line` outside `<!-- ... -->`, carrying an unclosed comment over
 /// to the next line. Whatever is commented out is the user's note to themselves
 /// or Chief's example, and is read as nothing.
-fn outside_comments(line: &str, inside: &mut bool) -> String {
+pub(crate) fn outside_comments(line: &str, inside: &mut bool) -> String {
     let mut visible = String::new();
     let mut rest = line;
 

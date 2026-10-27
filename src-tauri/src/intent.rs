@@ -47,6 +47,10 @@ pub enum Intent {
     /// a wrong answer rather than a thin one; this is that distinction carried
     /// into the router.
     Waiting,
+    /// Pull requests waiting on review in the repositories listed in
+    /// `team.md`. Opt-in, and read live: it is somebody else's work, which the
+    /// work log does not hold.
+    Team,
 }
 
 /// How far back a question is asking about.
@@ -112,12 +116,13 @@ fn monday_of(date: chrono::NaiveDate) -> chrono::NaiveDate {
 }
 
 /// The slash commands, matched before anything else and matched exactly.
-const COMMANDS: [(&str, Intent); 5] = [
+const COMMANDS: [(&str, Intent); 6] = [
     ("/brief", Intent::Brief),
     ("/prep", Intent::Prep),
     ("/log", Intent::Log(Window::Recent)),
     ("/week", Intent::Log(Window::ThisWeek)),
     ("/waiting", Intent::Waiting),
+    ("/team", Intent::Team),
 ];
 
 /// The natural-language phrases that route, written out in full.
@@ -244,7 +249,7 @@ impl Intent {
             // problem and saying it were would be a wrong answer.
             Intent::Brief => Feeds::Corpus,
             Intent::Prep => Feeds::Calendar,
-            Intent::Log(_) | Intent::Waiting => Feeds::Github,
+            Intent::Log(_) | Intent::Waiting | Intent::Team => Feeds::Github,
         }
     }
 }
@@ -481,6 +486,7 @@ pub async fn answer(intent: Intent, context: &recipe::Context) -> Option<Answere
         Intent::Prep => prep(context).await,
         Intent::Log(window) => log(context, window).await,
         Intent::Waiting => waiting(context).await,
+        Intent::Team => team(context).await,
     }
     .filter(|answered| !answered.markdown.trim().is_empty());
 
@@ -737,6 +743,14 @@ async fn waiting(context: &recipe::Context) -> Option<Answered> {
     }
 }
 
+/// What is waiting on review in the repositories the user listed.
+async fn team(context: &recipe::Context) -> Option<Answered> {
+    crate::team::read(context).await.map(|report| Answered {
+        markdown: report.markdown,
+        provenance: report.provenance,
+    })
+}
+
 /// The live read, as lines. `None` for an empty one, like the stored read.
 fn live_reviews(read: &serde_json::Value) -> Option<Answered> {
     let lines: Vec<String> = read["pull_requests"]
@@ -876,6 +890,7 @@ mod tests {
         assert_eq!(route("/log"), Some(Intent::Log(Window::Recent)));
         assert_eq!(route("/week"), Some(Intent::Log(Window::ThisWeek)));
         assert_eq!(route("/waiting"), Some(Intent::Waiting));
+        assert_eq!(route("/team"), Some(Intent::Team));
     }
 
     #[test]
@@ -1399,6 +1414,86 @@ mod delivery {
         );
         assert_eq!(
             server.await.expect("server"),
+            Vec::<String>::new(),
+            "and it must cost zero model calls"
+        );
+    }
+
+    const TEAM_ANSWER: &str = r#"{"data":{"search":{"nodes":[
+      {"number":12,"title":"Retry the sync","url":"u","createdAt":"2026-10-20T09:00:00Z",
+       "isDraft":false,"reviewDecision":"REVIEW_REQUIRED","author":{"login":"dvance"},
+       "repository":{"nameWithOwner":"acme/api"},"reviews":{"totalCount":0},
+       "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"prao"}}]}}
+    ]}}}"#;
+
+    /// Nothing is read from any repository until the user has listed one.
+    ///
+    /// Proved by reading the repository named in the starter's commented
+    /// example as if it were listed:
+    ///
+    /// ```text
+    /// an unlisted repository must cost no request
+    /// ```
+    #[tokio::test]
+    async fn team_reads_nothing_until_the_user_lists_a_repository() {
+        let (mut context, _scratch, _engine) = silent("team-off").await;
+        // A spare reply that is never fetched, so a request would show.
+        let (host, github) = serve(vec![("HTTP/1.1 200 OK", TEAM_ANSWER)]);
+        context.github = github::Client::against(&host).expect("client");
+        connect(&context, integrations::GITHUB).await;
+
+        let first = answer(Intent::Team, &context).await.expect("an answer");
+        assert!(
+            first.markdown.contains("The team view is off"),
+            "{}",
+            first.markdown
+        );
+        assert!(
+            context.corpus.read(crate::team::FILE).await.is_ok(),
+            "the file is created so there is something to open"
+        );
+
+        // The file now holds only the commented example.
+        let second = answer(Intent::Team, &context).await.expect("an answer");
+        assert!(second.markdown.contains("The team view is off"));
+        assert!(
+            !github.is_finished(),
+            "an unlisted repository must cost no request"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_lists_what_is_waiting_in_a_repository_the_user_listed() {
+        let (mut context, _scratch, engine) = silent("team-on").await;
+        let (host, github) = serve(vec![("HTTP/1.1 200 OK", TEAM_ANSWER)]);
+        context.github = github::Client::against(&host).expect("client");
+        connect(&context, integrations::GITHUB).await;
+        context
+            .corpus
+            .write(crate::team::FILE, "## Repositories\n- acme/api\n")
+            .await
+            .expect("file");
+
+        let answered = answer(Intent::Team, &context).await.expect("an answer");
+
+        assert!(
+            answered.markdown.contains("### acme/api")
+                && answered.markdown.contains("Waiting for review (1):")
+                && answered
+                    .markdown
+                    .contains("- #12 Retry the sync: @dvance, open ")
+                && answered.markdown.contains("review requested from @prao"),
+            "{}",
+            answered.markdown
+        );
+        assert!(answered.provenance.is_some());
+        assert_eq!(
+            github.await.expect("github").len(),
+            1,
+            "one request per repository"
+        );
+        assert_eq!(
+            engine.await.expect("engine"),
             Vec::<String>::new(),
             "and it must cost zero model calls"
         );

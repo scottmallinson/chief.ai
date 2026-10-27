@@ -410,6 +410,26 @@ impl<'a> GithubSession<'a> {
             .await
     }
 
+    /// The open pull requests in one repository, renewing the credential the
+    /// same way.
+    pub async fn team_pulls(
+        &self,
+        repository: &str,
+        limit: u8,
+    ) -> Result<Vec<github::TeamPull>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.team_pulls(&token, repository, limit).await
+            })
+            .await
+    }
+
     /// A person's public profile name, renewing the credential the same way.
     pub async fn profile_name(&self, login: &str) -> Result<Option<String>, github::Error> {
         let token = self
