@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.1 (2026-10-27)
+
+### Fixes
+
+- **agent:** keep the work overview tool in the connected-only offer ([d0e26b0](https://github.com/scottmallinson/chief.ai/commit/d0e26b077f04fec0ba114d465910f5f03e984273))
+- **agent:** offer only the tools of services the user has connected ([99da894](https://github.com/scottmallinson/chief.ai/commit/99da894e43bd26e7775f12cb55d0b64dd651cba3))
+
 ## 0.16.0 (2026-10-26)
 
 ### Features
