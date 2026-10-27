@@ -393,7 +393,7 @@ async fn merged_pull_requests(
                     .unwrap_or_else(|| account.account_key.clone());
 
                 lines.extend(
-                    github::as_tool_entries(&name, &found)
+                    github::as_tool_entries(&name, &found, &[])
                         .iter()
                         .filter_map(&line),
                 );

@@ -320,7 +320,13 @@ async fn gather(context: &Context, now: chrono::DateTime<chrono::Local>) -> Gath
             )
             .await
         {
-            found.mine.extend(open.iter().map(describe_pull_request));
+            // What is holding each one up comes from a second, separate read,
+            // so a failure there costs the annotation and not the pull request.
+            let blockers = session.blockers(PER_SOURCE).await.unwrap_or_default();
+            found.mine.extend(
+                open.iter()
+                    .map(|one| describe_own_pull_request(one, &blockers)),
+            );
         }
 
         // What somebody else is actually blocked on. Each source fails on its
@@ -1108,6 +1114,25 @@ pub(crate) fn describe_message(message: &microsoft::MailMessage) -> String {
 
 fn describe_issue(issue: &github::Issue) -> String {
     format!("{} #{} — {}", issue.repository, issue.number, issue.title)
+}
+
+/// One of the user's own pull requests, with what is holding it up when
+/// GitHub said. Written by code from GitHub's own fields, never by the model.
+fn describe_own_pull_request(
+    pull_request: &github::PullRequest,
+    blockers: &[github::Blockers],
+) -> String {
+    let line = describe_pull_request(pull_request);
+    let id = pull_request.external_id();
+
+    match blockers
+        .iter()
+        .find(|one| one.external_id().eq_ignore_ascii_case(&id))
+        .and_then(github::Blockers::describe)
+    {
+        Some(status) => format!("{line} ({status})"),
+        None => line,
+    }
 }
 
 fn describe_pull_request(pull_request: &github::PullRequest) -> String {
@@ -2192,5 +2217,57 @@ mod tests {
 
         assert!(from.contains("T00:00:00"), "{from}");
         assert!(to > from);
+    }
+}
+
+#[cfg(test)]
+mod own_pull_request_status {
+    use super::*;
+
+    fn pull_request() -> github::PullRequest {
+        github::PullRequest {
+            number: 7,
+            title: "Add retries".to_string(),
+            repository: "acme/api".to_string(),
+            state: "open".to_string(),
+            draft: false,
+            url: String::new(),
+            updated_at: String::new(),
+            merged_at: None,
+            body: None,
+        }
+    }
+
+    fn red() -> github::Blockers {
+        github::Blockers {
+            repository: "Acme/API".to_string(),
+            number: 7,
+            draft: false,
+            checks: github::Checks::Failing,
+            decision: github::Decision::None,
+            open_threads: 0,
+        }
+    }
+
+    #[test]
+    fn appends_what_is_holding_it_up_to_the_right_pull_request() {
+        assert_eq!(
+            describe_own_pull_request(&pull_request(), &[red()]),
+            "acme/api #7 — Add retries (checks failing)"
+        );
+    }
+
+    #[test]
+    fn leaves_a_pull_request_alone_when_nothing_is_known() {
+        let mut other = red();
+        other.number = 8;
+        assert_eq!(
+            describe_own_pull_request(&pull_request(), &[other]),
+            "acme/api #7 — Add retries"
+        );
+        assert_eq!(
+            describe_own_pull_request(&pull_request(), &[]),
+            "acme/api #7 — Add retries"
+        );
     }
 }

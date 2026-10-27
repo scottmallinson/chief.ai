@@ -1403,6 +1403,11 @@ mod delivery {
         let merged = search_result(42, "Shipped this morning", Some(merged_just_now));
         let (host, github) = serve(vec![
             ("HTTP/1.1 200 OK", open),
+            // What is holding up the open ones: nothing, here.
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"data":{"viewer":{"pullRequests":{"nodes":[]}}}}"#.to_string(),
+            ),
             // The issues assigned to the user, which are work like any other.
             ("HTTP/1.1 200 OK", "[]".to_string()),
             ("HTTP/1.1 200 OK", none),
@@ -1441,8 +1446,8 @@ mod delivery {
         let requests = github.await.expect("server");
         assert_eq!(
             requests.len(),
-            4,
-            "open, assigned issues, review requests and merged: four reads"
+            5,
+            "open, what holds the open ones up, assigned issues, review requests and merged: five reads"
         );
     }
 
