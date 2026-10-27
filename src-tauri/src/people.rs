@@ -218,6 +218,35 @@ pub fn add_suggestions(text: &str, new: &[Person]) -> String {
     written
 }
 
+/// The confirmed people a meeting names, in the order the file lists them.
+///
+/// A name has to appear whole: "Dana Lee" is not found in "Dana Leeson", and a
+/// first name alone is never enough, because two Danas would be one.
+#[must_use]
+pub fn attending<'a>(people: &'a People, meeting: &str) -> Vec<&'a Person> {
+    let text = key(meeting);
+
+    people
+        .confirmed
+        .iter()
+        .filter(|person| names(&text, &key(&person.name)))
+        .collect()
+}
+
+/// Does `name` occur in `text` with no letter or digit against either end?
+fn names(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    text.match_indices(name).any(|(start, found)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + found.len()..].chars().next();
+
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
 /// Which pairs a calendar and a set of GitHub profiles prove.
 ///
 /// A pair needs the profile name to equal exactly one calendar name, and that
@@ -621,5 +650,21 @@ mod tests {
 
         github.await.expect("lookup");
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn finds_a_confirmed_name_only_when_it_appears_whole() {
+        let people = parse("## Confirmed\n- Dana Lee = dlee\n- Sam Roe = sroe\n");
+
+        let found = |meeting: &str| {
+            attending(&people, meeting)
+                .iter()
+                .map(|person| person.handle.clone())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(found("10:00 with dana  LEE, Sam Roe"), vec!["dlee", "sroe"]);
+        assert_eq!(found("Retro with Dana Leeson"), Vec::<String>::new());
+        assert_eq!(found("Retro with Adana Lee"), Vec::<String>::new());
+        assert_eq!(found("1:1 with Dana"), Vec::<String>::new());
     }
 }
