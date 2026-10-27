@@ -39,6 +39,13 @@ Who is who across your tools. Chief suggests, you decide.\n\n\
 One line per person: `- Name as it appears on your calendar = GitHub handle`.\n\
 Chief only uses the lines under Confirmed. Move a line up from Suggested to confirm it, \
 or delete it to say no. You can add your own lines under Confirmed at any time.\n\n\
+<!-- An example, which Chief ignores because it is a comment. Copy a line out of the\n\
+comment and change it to add somebody:\n\
+\n\
+## Confirmed\n\
+- Dana Vance = dvance\n\
+- Priya Rao = @prao\n\
+-->\n\n\
 ## Confirmed\n\n\
 ## Suggested\n";
 
@@ -107,6 +114,38 @@ fn line_person(line: &str) -> Option<Person> {
     })
 }
 
+/// The part of `line` outside `<!-- ... -->`, carrying an unclosed comment over
+/// to the next line. Whatever is commented out is the user's note to themselves
+/// or Chief's example, and is read as nothing.
+fn outside_comments(line: &str, inside: &mut bool) -> String {
+    let mut visible = String::new();
+    let mut rest = line;
+
+    loop {
+        if *inside {
+            match rest.find("-->") {
+                Some(end) => {
+                    rest = &rest[end + 3..];
+                    *inside = false;
+                }
+                None => return visible,
+            }
+        } else {
+            match rest.find("<!--") {
+                Some(start) => {
+                    visible.push_str(&rest[..start]);
+                    rest = &rest[start + 4..];
+                    *inside = true;
+                }
+                None => {
+                    visible.push_str(rest);
+                    return visible;
+                }
+            }
+        }
+    }
+}
+
 /// Read the file. Total: any text parses, and nothing is dropped silently —
 /// a list line that is not a person is reported under `unread`.
 #[must_use]
@@ -120,8 +159,11 @@ pub fn parse(text: &str) -> People {
 
     let mut people = People::default();
     let mut section = Section::Other;
+    let mut commented = false;
 
     for line in text.lines() {
+        let line = outside_comments(line, &mut commented);
+        let line = line.as_str();
         let trimmed = line.trim();
 
         if let Some(heading) = trimmed.strip_prefix("## ") {
@@ -177,7 +219,15 @@ pub fn add_suggestions(text: &str, new: &[Person]) -> String {
 
     let mut lines: Vec<String> = text.lines().map(ToString::to_string).collect();
 
-    let heading = lines.iter().position(|line| {
+    // What each line says outside a comment: a heading or a line of text that
+    // is only commented out is not there, so nothing is added inside one.
+    let mut commented = false;
+    let visible: Vec<String> = lines
+        .iter()
+        .map(|line| outside_comments(line, &mut commented))
+        .collect();
+
+    let heading = visible.iter().position(|line| {
         line.trim()
             .strip_prefix("## ")
             .is_some_and(|name| key(name) == "suggested")
@@ -187,14 +237,14 @@ pub fn add_suggestions(text: &str, new: &[Person]) -> String {
         Some(heading) => {
             // The end of the section: before the next heading, and after the
             // last line that is not blank.
-            let end = lines[heading + 1..]
+            let end = visible[heading + 1..]
                 .iter()
                 .position(|line| line.trim().starts_with("## "))
                 .map_or(lines.len(), |offset| heading + 1 + offset);
 
             (heading + 1..end)
                 .rev()
-                .find(|&index| !lines[index].trim().is_empty())
+                .find(|&index| !visible[index].trim().is_empty())
                 .map_or(heading + 1, |index| index + 1)
         }
         None => {
@@ -320,6 +370,14 @@ async fn load<T: for<'de> Deserialize<'de> + Default>(context: &recipe::Context,
 /// model call. A GitHub that will not answer ends the pass quietly; the next
 /// recount tries again.
 pub async fn suggest(context: &recipe::Context) -> Result<usize, Error> {
+    // The file exists from the first recount, so the user can find it and see
+    // how it is written before Chief has anything to suggest.
+    match context.corpus.read(FILE).await {
+        Err(corpus::Error::NoSuchFile(_)) => context.corpus.write(FILE, STARTER).await?,
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+
     let rows = facts::list(&context.pool).await?;
 
     let handles: Vec<String> = rows
@@ -632,7 +690,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_name_that_does_not_match_writes_no_file() {
+    async fn a_name_that_does_not_match_leaves_only_the_starter() {
         let (host, github) = serve(vec![(
             "HTTP/1.1 200 OK",
             r#"{"login":"dvance","name":"D. Vance"}"#,
@@ -640,13 +698,8 @@ mod tests {
         let (context, root) = seeded(&host, "nomatch").await;
 
         assert_eq!(suggest(&context).await.expect("pass"), 0);
-        assert!(
-            matches!(
-                context.corpus.read(FILE).await,
-                Err(corpus::Error::NoSuchFile(_))
-            ),
-            "no proof, no file"
-        );
+        let file = context.corpus.read(FILE).await.expect("the starter file");
+        assert_eq!(file, STARTER, "no proof, no suggestions: only the starter");
 
         github.await.expect("lookup");
         let _ = std::fs::remove_dir_all(root);
@@ -666,5 +719,66 @@ mod tests {
         assert_eq!(found("Retro with Dana Leeson"), Vec::<String>::new());
         assert_eq!(found("Retro with Adana Lee"), Vec::<String>::new());
         assert_eq!(found("1:1 with Dana"), Vec::<String>::new());
+    }
+
+    /// The example in the starter file is a comment, so it is read as nothing.
+    ///
+    /// Proved by making `outside_comments` return the line whole:
+    ///
+    /// ```text
+    /// the example in the starter must not be read as somebody the user confirmed
+    /// ```
+    #[test]
+    fn the_example_in_the_starter_is_not_somebody_the_user_confirmed() {
+        let people = parse(STARTER);
+
+        assert_eq!(
+            people,
+            People::default(),
+            "the example in the starter must not be read as somebody the user confirmed"
+        );
+    }
+
+    #[test]
+    fn a_line_copied_out_of_the_example_is_read() {
+        let text = STARTER.replace(
+            "## Confirmed\n\n## Suggested",
+            "## Confirmed\n- Dana Vance = dvance\n\n## Suggested",
+        );
+
+        assert_eq!(parse(&text).confirmed, vec![person("Dana Vance", "dvance")]);
+    }
+
+    #[test]
+    fn comments_hide_lines_on_one_line_and_across_several() {
+        let text = "## Confirmed\n- A One = aone <!-- not sure -->\n<!-- - B Two = btwo\n- C Three = cthree -->\n- D Four = dfour\n";
+
+        assert_eq!(
+            parse(text).confirmed,
+            vec![person("A One", "aone"), person("D Four", "dfour")]
+        );
+    }
+
+    #[test]
+    fn suggestions_go_under_the_real_heading_not_a_commented_one() {
+        let text = "## Confirmed\n\n<!--\n## Suggested\n-->\n## Suggested\n";
+        let updated = add_suggestions(text, &[person("Dana Vance", "dvance")]);
+
+        assert_eq!(
+            parse(&updated).suggested,
+            vec![person("Dana Vance", "dvance")]
+        );
+        assert!(
+            updated.ends_with("## Suggested\n- Dana Vance = dvance\n"),
+            "{updated}"
+        );
+    }
+
+    #[test]
+    fn suggestions_land_under_the_starters_own_heading() {
+        let updated = add_suggestions(STARTER, &[person("Priya Rao", "prao")]);
+
+        assert_eq!(parse(&updated).suggested, vec![person("Priya Rao", "prao")]);
+        assert_eq!(parse(&updated).confirmed, Vec::<Person>::new());
     }
 }
