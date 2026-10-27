@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.0 (2026-10-27)
+
+### Features
+
+- **agent:** suggest who is who across the tools in a file the user owns ([8c19a81](https://github.com/scottmallinson/chief.ai/commit/8c19a81a513961c7ff5bbbcf5d17de30e55871b3))
+
 ## 0.18.0 (2026-10-27)
 
 ### Features
