@@ -17,8 +17,10 @@
 
 use crate::agent::Update;
 use crate::context::RETRIEVAL_CEILING;
+use crate::facts;
 use crate::ingest;
 use crate::integrations;
+use crate::people;
 use crate::recipe;
 use crate::retrieval;
 use crate::tools;
@@ -566,13 +568,62 @@ async fn prep(context: &recipe::Context) -> Option<Answered> {
             .ok()
             .flatten();
 
-        notes.push(since.and_then(|since| retrieval::note(&since, &zone)));
+        let history = since.and_then(|since| retrieval::note(&since, &zone));
+        let attendees = attendee_notes(context, hit).await;
+
+        notes.push(match (history, attendees) {
+            (Some(history), Some(attendees)) => Some(format!("{history}\n{attendees}")),
+            (history, attendees) => history.or(attendees),
+        });
     }
 
     retrieval::to_context_with_notes(&hits, &notes, RETRIEVAL_CEILING).map(|body| Answered {
         markdown: format!("## Today\n{body}"),
         provenance: retrieval::provenance(&hits),
     })
+}
+
+/// The most attendees a meeting spends lines on.
+const ATTENDEE_LINES: usize = 3;
+
+/// What the facts say about the people a meeting names, for those the user has
+/// confirmed in `people.md`.
+///
+/// Read from the corpus and the facts table, never the network, so `/prep`
+/// stays free. Somebody who is not confirmed, or whom the facts hold nothing
+/// about, gets no line: a name beside a stranger's review count is worse than
+/// no name. A file that cannot be read costs the meeting these lines only.
+async fn attendee_notes(context: &recipe::Context, hit: &retrieval::Hit) -> Option<String> {
+    let text = context.corpus.read(people::FILE).await.ok()?;
+    let people = people::parse(&text);
+    let meeting = format!(
+        "{} {}",
+        hit.title,
+        hit.summary.as_deref().unwrap_or_default()
+    );
+    let today = chrono::Local::now().date_naive();
+
+    let mut lines = Vec::new();
+    for person in people::attending(&people, &meeting) {
+        let Ok(Some(reviewer)) = facts::reviewer(&context.pool, &person.handle).await else {
+            continue;
+        };
+
+        lines.push(facts::reviewer_line(
+            &person.name,
+            &person.handle,
+            &reviewer,
+            today,
+        ));
+    }
+
+    if lines.len() > ATTENDEE_LINES {
+        let more = lines.len() - ATTENDEE_LINES;
+        lines.truncate(ATTENDEE_LINES);
+        lines.push(format!("  and {more} more people you have confirmed."));
+    }
+
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// Local midnight today and tomorrow, as the **UTC** instants the work log
@@ -1266,6 +1317,84 @@ mod delivery {
             answered.markdown.matches("Last held").count(),
             1,
             "only the meeting that has history gets a note: {}",
+            answered.markdown
+        );
+        assert_eq!(
+            server.await.expect("server"),
+            Vec::<String>::new(),
+            "and it must cost zero model calls"
+        );
+    }
+
+    /// A meeting names the people the user has confirmed, and only them.
+    ///
+    /// Proved by reading `Suggested` lines as confirmed, which names Priya:
+    ///
+    /// ```text
+    /// somebody the user has not confirmed must not be named
+    /// ```
+    #[tokio::test]
+    async fn prep_names_attendees_the_user_confirmed_and_nobody_else() {
+        let (context, _scratch, server) = silent("prep-people").await;
+
+        let (from, _to) = day_window(&chrono::Local::now());
+        work_log::upsert(
+            &context.pool,
+            work_log::WorkLogRecord {
+                timestamp: bump(&from),
+                source: "calendar".to_string(),
+                category: "calendar".to_string(),
+                title: "Design sync".to_string(),
+                content: "10:00 Design sync with Dana Vance, Priya Rao".to_string(),
+                summary: Some("10:00 with Dana Vance, Priya Rao".to_string()),
+                url: None,
+                raw_ref: None,
+                external_id: "cal:design".to_string(),
+                account_id: 1,
+            },
+        )
+        .await
+        .expect("should store");
+
+        let row = |about: &str| facts::NewFact {
+            about: about.to_string(),
+            what: facts::REVIEWS.to_string(),
+            scope: "o/r".to_string(),
+            value: String::new(),
+            count: 7,
+            total: 30,
+            source: "GitHub".to_string(),
+            seen_on: chrono::Local::now().format("%Y-%m-%d").to_string(),
+        };
+        facts::recount(
+            &context.pool,
+            &[facts::REVIEWS],
+            vec![row("dvance"), row("prao")],
+        )
+        .await
+        .expect("facts");
+
+        context
+            .corpus
+            .write(
+                people::FILE,
+                "## Confirmed\n- Dana Vance = dvance\n\n## Suggested\n- Priya Rao = prao\n",
+            )
+            .await
+            .expect("file");
+
+        let answered = answer(Intent::Prep, &context).await.expect("a meeting");
+
+        assert!(
+            answered
+                .markdown
+                .contains("Dana Vance (@dvance) reviewed 7 of your last 30 pull requests"),
+            "a confirmed attendee should be described: {}",
+            answered.markdown
+        );
+        assert!(
+            !answered.markdown.contains("prao"),
+            "somebody the user has not confirmed must not be named: {}",
             answered.markdown
         );
         assert_eq!(
