@@ -848,6 +848,46 @@ impl Client {
         Ok(nodes.iter().filter_map(blockers_from).collect())
     }
 
+    /// The name somebody has chosen to show on their public GitHub profile.
+    ///
+    /// `None` for a login that has none, which most accounts do not. The login
+    /// is checked before it is put in a URL: it comes from review data, and a
+    /// path built from anything else would be a request to somewhere the user
+    /// never connected.
+    pub async fn profile_name(&self, token: &str, login: &str) -> Result<Option<String>, Error> {
+        if login.is_empty()
+            || !login
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        {
+            return Ok(None);
+        }
+
+        let response = self
+            .http
+            .get(format!("{}/users/{login}", self.api_host))
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+
+        // A login that no longer exists is a person with no name to offer, not
+        // a reason to stop asking about the others.
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let body: Value = self.read(response).await?;
+
+        Ok(body["name"]
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string))
+    }
+
     /// Who the stored token belongs to, so an account can name itself.
     pub async fn viewer(&self, token: &str) -> Result<String, Error> {
         let response = self
@@ -1710,5 +1750,63 @@ mod blockers_tests {
             Some("checks failing".to_string()),
             "approval does not outrank a red check"
         );
+    }
+}
+
+#[cfg(test)]
+mod profile_name_tests {
+    use super::*;
+    use crate::llama::test_support::{serve, split};
+
+    #[tokio::test]
+    async fn reads_the_public_name_from_the_users_endpoint() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            r#"{"login":"dvance","name":" Dana Vance "}"#,
+        )]);
+        let client = Client::against(&host).expect("client");
+
+        let name = client.profile_name("gho_token", "dvance").await;
+
+        assert_eq!(name.expect("read").as_deref(), Some("Dana Vance"));
+        let received = server.await.expect("server");
+        let (line, _) = split(&received[0]);
+        assert!(line.starts_with("GET /users/dvance"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn no_name_and_no_such_login_are_both_nobody_rather_than_errors() {
+        let (host, server) = serve(vec![
+            ("HTTP/1.1 200 OK", r#"{"login":"quiet","name":null}"#),
+            ("HTTP/1.1 404 Not Found", r#"{"message":"Not Found"}"#),
+        ]);
+        let client = Client::against(&host).expect("client");
+
+        assert_eq!(client.profile_name("t", "quiet").await.expect("read"), None);
+        assert_eq!(client.profile_name("t", "gone").await.expect("read"), None);
+        server.await.expect("server");
+    }
+
+    /// A login comes from review data, so it is checked before it is put in a
+    /// path. Proved by removing the check: the first request reaches the stub,
+    /// which then has one reply too few for the assertion below.
+    #[tokio::test]
+    async fn a_login_that_is_not_a_login_costs_no_request() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", r#"{"name":"Somebody"}"#)]);
+        let client = Client::against(&host).expect("client");
+
+        for odd in ["", "../orgs", "a/b", "dana vance", "x?y=1"] {
+            assert_eq!(
+                client
+                    .profile_name("t", odd)
+                    .await
+                    .expect("refused quietly"),
+                None,
+                "{odd:?}"
+            );
+        }
+
+        assert!(!server.is_finished(), "a request was made for an odd login");
+        server.abort();
     }
 }
