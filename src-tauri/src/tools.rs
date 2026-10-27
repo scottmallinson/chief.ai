@@ -531,6 +531,102 @@ pub async fn dispatch(context: &Context, call: &ToolCall) -> Value {
     }
 }
 
+/// A period's worth of finished work, ready to be written out in full.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    pub heading: String,
+    pub lines: Vec<String>,
+    /// What the reader should know about what was not read or not shown.
+    pub notes: Vec<String>,
+}
+
+/// One merged pull request as a line, keeping the number a reader looks for.
+fn pull_request_line(entry: &Value) -> String {
+    let text = |key: &str| entry[key].as_str().unwrap_or_default();
+    let merged = entry["merged_at"]
+        .as_str()
+        .map(|at| format!(", merged {}", at.chars().take(10).collect::<String>()))
+        .unwrap_or_default();
+
+    format!(
+        "{} ({}#{}{merged})",
+        text("title"),
+        text("repository"),
+        entry["number"].as_i64().unwrap_or_default()
+    )
+}
+
+/// A long list of finished work for a period the model asked for, as lines.
+///
+/// Such a list is not handed back to the model to word. It is the reader's
+/// whole question ("everything I merged this month"), and a list the length of
+/// a month neither fits the window nor ends inside the answer ceiling — it was
+/// cut to a handful, oldest first, and then cut off. Short lists, and every
+/// question that named no period, go the usual way.
+///
+/// What triggers it is the period the model chose, never words in the question.
+pub fn period_listing(call: &ToolCall, result: &Value) -> Option<Listing> {
+    let listing = match call.function.name.as_str() {
+        FETCH_GITHUB_PRS => {
+            let args = parse(&call.function).ok()?;
+            let days = args.days?;
+            if args.state != PullRequestState::Merged || args.whose != Whose::Mine {
+                return None;
+            }
+            let since =
+                chrono::Local::now().date_naive() - chrono::Duration::days(days.clamp(1, 92) - 1);
+
+            Listing {
+                heading: format!("Merged since {}", since.format("%Y-%m-%d")),
+                lines: result["pull_requests"]
+                    .as_array()?
+                    .iter()
+                    .map(pull_request_line)
+                    .collect(),
+                notes: Vec::new(),
+            }
+        }
+        FETCH_WORK_OVERVIEW if parse_days(&call.function) > 7 => {
+            const DONE: &str = "my_recently_completed_work";
+
+            let lines = result[DONE]
+                .as_array()?
+                .iter()
+                .filter_map(|line| line.as_str().map(ToString::to_string))
+                .collect();
+            let mut notes = Vec::new();
+
+            for entry in result["not_read"].as_array().into_iter().flatten() {
+                if entry["list"] == DONE {
+                    notes.push(format!(
+                        "{} could not be read: {}.",
+                        entry["source"].as_str().unwrap_or("A source"),
+                        entry["why"].as_str().unwrap_or("it did not answer")
+                    ));
+                }
+            }
+
+            if let Some(more) = result["not_shown"][DONE].as_u64() {
+                notes.push(format!("{more} more were found than are listed here."));
+            }
+
+            Listing {
+                heading: format!(
+                    "Completed {}",
+                    result["my_recently_completed_work_covers"]
+                        .as_str()
+                        .unwrap_or("recently")
+                ),
+                lines,
+                notes,
+            }
+        }
+        _ => return None,
+    };
+
+    (listing.lines.len() > crate::sections::BATCH).then_some(listing)
+}
+
 /// How many days of finished work the model asked for: a week unless it said,
 /// and never more than a quarter. The model reads the period out of the
 /// question ("over the past month" is 30); nothing here matches words.
@@ -773,6 +869,59 @@ mod tests {
     /// The model reads the period out of the question; the code only keeps it
     /// sane. A missing, malformed or absurd value is a week or a quarter, never
     /// a failure of the whole tool.
+    fn work_overview_call(arguments: &str) -> ToolCall {
+        ToolCall::new(
+            "call_1",
+            ToolCallFunction {
+                name: FETCH_WORK_OVERVIEW.to_string(),
+                arguments: arguments.to_string(),
+            },
+        )
+    }
+
+    fn overview_with(done: usize) -> Value {
+        let lines: Vec<String> = (0..done)
+            .map(|n| format!("Work item (acme/api#{n})"))
+            .collect();
+
+        json!({
+            "my_recently_completed_work": lines,
+            "my_recently_completed_work_covers": "2026-09-28 to today",
+            "not_read": [{ "list": "my_recently_completed_work", "source": "Jira", "why": "timed out" }],
+            "not_shown": { "my_recently_completed_work": 4 },
+        })
+    }
+
+    #[test]
+    fn a_long_list_for_a_period_the_model_named_is_written_out_in_full() {
+        let listing = period_listing(&work_overview_call(r#"{"days":30}"#), &overview_with(12))
+            .expect("twelve lines for a month is a listing");
+
+        assert_eq!(listing.heading, "Completed 2026-09-28 to today");
+        assert_eq!(listing.lines.len(), 12);
+        assert_eq!(
+            listing.notes,
+            vec![
+                "Jira could not be read: timed out.".to_string(),
+                "4 more were found than are listed here.".to_string()
+            ],
+            "what was not read or not shown is said, not left to look complete"
+        );
+    }
+
+    #[test]
+    fn a_short_list_or_a_question_with_no_period_goes_to_the_model_as_before() {
+        assert_eq!(
+            period_listing(&work_overview_call(r#"{"days":30}"#), &overview_with(5)),
+            None
+        );
+        assert_eq!(
+            period_listing(&work_overview_call("{}"), &overview_with(12)),
+            None,
+            "no period named, no listing"
+        );
+    }
+
     #[test]
     fn the_days_asked_for_are_a_week_unless_the_model_said_and_never_a_year() {
         let days = |arguments: Value| parse_days(&call(FETCH_WORK_OVERVIEW, arguments).function);
