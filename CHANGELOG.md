@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.0 (2026-10-27)
+
+### Features
+
+- **agent:** say what has happened since a recurring meeting last ran ([2e6b348](https://github.com/scottmallinson/chief.ai/commit/2e6b3488313abcef8508bea1aa7321c50ffcbf5b))
+
 ## 0.17.0 (2026-10-27)
 
 ### Features
