@@ -669,13 +669,44 @@ impl Client {
         limit: u8,
     ) -> Result<Vec<PullRequest>, Error> {
         let query = format!("is:pr {}{}", involvement.qualifier(), state.qualifier());
+
+        self.search_pull_requests(token, &query, limit).await
+    }
+
+    /// Pull requests the user authored that were merged on or after `since`.
+    ///
+    /// **The date is in the query, not applied afterwards.** Search sorts by
+    /// last update, so asking for "the latest 25 merged" and dropping the old
+    /// ones afterwards answers "the last month" with whatever fits in 25 — on a
+    /// busy month, the last few days and nothing saying so.
+    pub async fn merged_since(
+        &self,
+        token: &str,
+        since: chrono::NaiveDate,
+        limit: u8,
+    ) -> Result<Vec<PullRequest>, Error> {
+        let query = format!(
+            "is:pr {} is:merged merged:>={}",
+            Involvement::Authored.qualifier(),
+            since.format("%Y-%m-%d")
+        );
+
+        self.search_pull_requests(token, &query, limit).await
+    }
+
+    async fn search_pull_requests(
+        &self,
+        token: &str,
+        query: &str,
+        limit: u8,
+    ) -> Result<Vec<PullRequest>, Error> {
         let url = format!("{}/search/issues", self.api_host);
 
         let response = self
             .http
             .get(url)
             .query(&[
-                ("q", query.as_str()),
+                ("q", query),
                 ("sort", "updated"),
                 ("order", "desc"),
                 ("per_page", &limit.clamp(1, 100).to_string()),

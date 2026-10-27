@@ -267,10 +267,18 @@ the user to install a runtime, which is the whole reason the engine is a module 
   the CPU for the rest of the run: a machine that ran Chief on its CPU before there was a GPU build
   must go on doing so, whatever its driver does. `CHIEF_ENGINE_GPU=off` does the same from the
   start, for a driver that answers wrongly rather than failing, which nothing can detect.
-  **On Windows that is the default, and `CHIEF_ENGINE_GPU=on` opts back in.** 0.14.0 froze a Core
-  Ultra 7 268V laptop (Arc 140V, memory shared with the system) on follow-on questions until the
-  engine was kept off the GPU; Vulkan on an integrated GPU can hang the whole machine, which is not
-  a failed start, so nothing falls back. The Mac and Linux defaults are unchanged.
+  **On Windows and Linux the model runs on the CPU until the person ticks "Use graphics card" in
+  Settings.** 0.14.0 froze a Core Ultra 7 268V laptop (Arc 140V, memory shared with the system) on
+  follow-on questions; a Vulkan driver that hangs rather than fails freezes the whole machine, which
+  is not a failed start, so nothing falls back, and a trial run of the model is the hang. Nothing
+  can promise a driver is stable, so the default is the one that cannot involve it. Apple silicon
+  keeps Metal. Precedence: `CHIEF_ENGINE_GPU` (a developer override) over the Settings box
+  (`engine.use_gpu`) over the platform default. `gpu.rs` runs `llama-server --list-devices` only
+  when Settings opens, to say what the box would switch on; nothing is decided from it. **Choosing
+  between a card and integrated graphics by size or name was built and dropped**: the engine's list
+  prints no integrated/discrete flag (checked with `--verbose` on the Arc 140V laptop), so it was a
+  guess about a flag the driver already holds, and reading that flag needs Vulkan loaded in
+  Chief. llama.cpp itself uses an integrated GPU when it is the only one.
 - **ggml loads its backends from the server's own directory and the current directory — not the
   loader path.** That includes the CPU backend, which the Windows and Linux builds pick per
   instruction set at run time. So the server is started in the library directory
@@ -382,10 +390,59 @@ the user to install a runtime, which is the whole reason the engine is a module 
   `review-requested:@me`, and `assigned_issues` adds `is:issue assignee:@me`. The brief keeps them
   in separate buckets under separate headings, because a review somebody requested of you is a
   request and your own open pull request is not.
-- **The catalogue is at 515 of D2's 600 tokens.** REC-41 added the `whose` parameter for 71 and
-  recovered 33 by cutting redundancy from the description, so it cost 38 net. **85 tokens of
-  headroom is roughly half a parameter**, so measure before adding anything — the number is in the
-  PR each time it moves, not assumed.
+- **The catalogue is at 598 of D2's 600 tokens, with four tools.** `fetch_work_overview` took 81 of
+  the headroom, so the next tool or parameter has to be paid for by trimming a description. It is
+  there because the questions about all of someone's work ("what should I prioritise", "what did I
+  complete yesterday") are not about one tool, and routing them by meaning was measured and
+  refused: a "my work" description in the embedding router took "how do I prioritise a backlog?"
+  and "write a standup process doc" with margins of 0.09 and 0.06, a false positive nobody sees.
+  The model chooses the tool instead, which works only because the system prompt says it knows
+  nothing about their work except through the tools: with thinking off, as Chief runs it, the same
+  Gemma 4 E2B called a tool for those questions 1 time in 5 before that sentence and 15 of 15 after
+  it, and invented pull requests and meetings the other times. A joke still takes no tool call.
+- `work.rs` reads someone's work **live, from every source they have connected**, and none of them
+  is special. GitHub pull requests and issues, Linear and Jira issues (open and recently
+  completed), today's Outlook and subscribed-calendar meetings and unread mail all arrive as
+  one-line strings under the same keys, so a user with only Linear gets the same answer shape as
+  one with only GitHub. `sources.rs` is the readers: each returns `Found{items, connected,
+answered, failed}`, which keeps "not connected" (silent), "nothing there" (said) and "could not
+  be read" (reported under `not_read`) apart. **Nothing is capped for the model's convenience.**
+  A read that came back full says so under `not_shown` rather than looking complete.
+  **A period is the model's to name, and GitHub is asked with the date.** `fetch_work_overview`
+  and `fetch_github_prs` take `days`; the model reads "past month" as 30 (measured on Gemma 4 E2B
+  against the real catalogue: 30 of 30 right, and no tool call for "how do I prioritise a backlog?"),
+  the code only clamps it to 1–92, and a period lifts the per-source limit from 8 to 60. The merged
+  search carries `merged:>=DATE`, because search sorts by last update and "the latest 25, minus the
+  old ones" answered a month with whatever fitted. The result says how far back it covers
+  (`my_recently_completed_work_covers`), so "how far back did you look?" has an answer.
+  **The router does not read merged pull requests.** It places a question by meaning and cannot
+  read "past month" out of one, so a merged question read there had no period: the latest 25,
+  cut oldest-first to a token budget that shrank with every follow-up (20, 15, then 7 entries
+  measured), which looked like "nothing before 16 October". `routed` declines the Merged view and
+  the model makes the call, naming the period. **A long list for a period is not handed back to
+  the model.** `tools::period_listing` turns a merged-pull-request or completed-work result for a
+  named period, longer than `BATCH`, into lines, and `write_listing` writes it through
+  `sections.rs` — the tool result is otherwise trimmed to the same budget and the answer written
+  in one request, which was cut off at the length ceiling. What triggers it is the period the
+  model chose, never words in the question.
+- **Anything long is written a section at a time, by `sections.rs`.** One request per section and
+  eight lines per request (`BATCH`), the headings written in code, so a long queue costs more short
+  requests instead of one answer that hits the length ceiling. Each batch is checked: a reply that
+  names what its lines do not (`check::unsupported_by`), is empty, or was cut off is replaced by
+  the lines themselves, and a line the model dropped (found by its pull request number, issue key
+  or time) is put back. A part of one line is written in code without asking the model. The daily
+  brief and the standup both go through it, which is why `Not listed: 3 more…` no longer exists
+  and why the brief takes several short requests where it used to take one; the shared prefix is
+  cached by llama.cpp, so the extra requests are cheap. The old scheduled refresh (`refresh_after`,
+  `refresh_due`) is gone with the window it served: the brief lists the rest of the day, and
+  meetings that have finished drop out when it is next read.
+- **A standup is read live and not tied to GitHub.** `intent::standup` takes whatever sources are
+  connected (the log is only the fallback when none could be read, and the answer says so), and
+  `write_standup` uses the section writer. Done reaches back to the last working day, not seven
+  days. Nothing to write is answered in code before the engine starts.
+- **Answers are plain text.** The chat draws text as it is, so `src/lib/plain-text.ts` strips
+  Markdown marks at display time, which also covers an answer still arriving; the system prompt
+  asks for plain text too, but a small model forgets.
 - `agent::Attention` counts the questions the user is waiting on. The engine decodes one request at
   a time, so the daemon reads this and steps aside rather than putting a background summary ahead of
   a person.

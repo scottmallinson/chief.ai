@@ -21,6 +21,7 @@ mod embedder;
 mod engine;
 mod facts;
 mod github;
+mod gpu;
 mod ical;
 mod ingest;
 mod integrations;
@@ -42,13 +43,16 @@ mod retrieval;
 mod router;
 #[cfg(test)]
 mod scenarios;
+mod sections;
 mod session;
 mod settings;
 mod setup;
+mod sources;
 mod sync_state;
 mod tools;
 mod watcher;
 mod weights;
+mod work;
 mod work_log;
 
 // The llama.cpp client is a self-contained piece of this crate's library API:
@@ -140,6 +144,8 @@ pub fn run() {
             background::close_window,
             background::set_keep_running,
             background::window_behaviour,
+            gpu::gpu_status,
+            gpu::set_use_gpu,
             login::launch_at_login,
             login::set_launch_at_login,
             connect::add_calendar,

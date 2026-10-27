@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.16.1 (2026-10-27)
+
+### Fixes
+
+- **agent:** keep the work overview tool in the connected-only offer ([d0e26b0](https://github.com/scottmallinson/chief.ai/commit/d0e26b077f04fec0ba114d465910f5f03e984273))
+- **agent:** offer only the tools of services the user has connected ([99da894](https://github.com/scottmallinson/chief.ai/commit/99da894e43bd26e7775f12cb55d0b64dd651cba3))
+
+## 0.16.0 (2026-10-26)
+
+### Features
+
+- **agent:** draw the brief and standup from every connected source, in full ([73e186d](https://github.com/scottmallinson/chief.ai/commit/73e186df30ca5a2444852231c4a884befce0846e))
+
+### Fixes
+
+- **agent:** look back as far as the question asks ([6449985](https://github.com/scottmallinson/chief.ai/commit/6449985c1e8107202bc3982b82a0e8b850df8b9b))
+- **agent:** answer prioritise, yesterday and standup questions from live work ([6e47899](https://github.com/scottmallinson/chief.ai/commit/6e47899a0e0981a2c04c6530eeb15db7bf960bdf))
+
+## 0.15.0 (2026-10-26)
+
+### Features
+
+- **agent:** keep the model on the CPU on Windows and Linux until the graphics card is switched on ([0b5ea5a](https://github.com/scottmallinson/chief.ai/commit/0b5ea5af3170e0fca0fc51d61091a9487357919c))
+
 ## 0.14.2 (2026-10-23)
 
 ### Fixes

@@ -23,6 +23,7 @@ use crate::llama::{self, ChatRequest, Client, Message, Role};
 use crate::microsoft;
 use crate::recipe;
 use crate::router;
+use crate::sections;
 use crate::tools;
 
 /// The model the engine is serving. It runs one, under the name it was given
@@ -155,7 +156,13 @@ You help them understand their work: what they shipped, what is waiting on them,
 and what their day looks like.
 
 Use the tools available to you to look things up rather than guessing. When a tool
-returns results, answer from those results alone.
+returns results, answer from those results alone. You know nothing about the user's
+work, plans or meetings except through the tools, so any question about them, such as what
+to prioritise or work on, what they did or finished, or how things stand, must start with a
+tool call. Answering such a question without one is inventing.
+
+Write plain text. No Markdown: no asterisks, hashes or backticks. Start list items with
+a dash.
 
 Never invent. An empty result is an answer: if a tool returns nothing, reports that
 a service is not connected, or fails, say exactly that and name what would fix it.
@@ -381,7 +388,21 @@ async fn respond_offering<F>(
 where
     F: FnMut(Update),
 {
-    let catalog = tools::catalog();
+    // Only the tools for services that are connected. The note about the rest
+    // goes onto the opening system message rather than in as a second one, which
+    // some chat templates refuse, and after the stable prompt so the cached
+    // prefix is untouched.
+    let offer = tools::catalog_for(&context.pool).await;
+    let catalog = offer.tools;
+
+    if offer_tools_at_first {
+        if let (Some(note), Some(opening)) = (&offer.not_connected, messages.first_mut()) {
+            if opening.role == Role::System {
+                opening.content.push_str("\n\n");
+                opening.content.push_str(note);
+            }
+        }
+    }
 
     // Whether the tool catalogue is still being offered. It stops being offered
     // for the rest of this answer the first time the engine cannot parse what
@@ -493,6 +514,14 @@ where
             let result = tools::dispatch(context, call).await;
             ran_a_tool = true;
 
+            // A long list for a period is written out in full, a few lines at a
+            // time, rather than handed to the model to fit in one answer.
+            if let Some(listing) = tools::period_listing(call, &result) {
+                let system = messages.first().filter(|first| first.role == Role::System);
+
+                return write_listing(client, model, system, &listing, &mut on_update).await;
+            }
+
             // Tool output is prompt, and it is the least bounded thing that
             // becomes prompt: twenty-five pull requests of JSON took one
             // measured question to 2,504 tokens on a 4,096 window, and two more
@@ -539,6 +568,67 @@ where
     let _ = shown;
 
     Ok(vetted(reply.content, offer_tools_at_first, ran_a_tool))
+}
+
+/// Write a long list of finished work **a few lines at a time**.
+///
+/// The same writer the standup and the brief use: one short request per batch,
+/// the heading written here, a line the model dropped put back as it was found.
+/// Nothing is trimmed to a token budget, so a month is a month, and no request
+/// is long enough to reach the answer ceiling.
+async fn write_listing<F>(
+    client: &Client,
+    model: &str,
+    system: Option<&Message>,
+    listing: &tools::Listing,
+    on_update: &mut F,
+) -> Result<String, Error>
+where
+    F: FnMut(Update),
+{
+    let section = sections::Section {
+        heading: listing.heading.clone(),
+        lines: listing.lines.clone(),
+        worded: true,
+    };
+
+    let mut written = sections::write(
+        client,
+        &[section],
+        |heading| format!("{heading}:"),
+        |_, lines| {
+            format!(
+                "These lines are the user's finished work, read just now:\n{lines}\n\nWrite \
+                 each as one short plain sentence starting with a dash, keeping its repository \
+                 and pull request number or ticket key. Do not add or merge items, and do not \
+                 add dates or people."
+            )
+        },
+        |prompt| {
+            let mut turns: Vec<Message> = system.cloned().into_iter().collect();
+            turns.push(Message::user(prompt));
+
+            ChatRequest::new(model, turns)
+        },
+        // What streamed cannot be taken back, so nothing is refused here: the
+        // dropped lines are put back instead.
+        |_, _| Vec::new(),
+        |text| {
+            on_update(Update::Delta {
+                text: text.to_string(),
+            });
+        },
+    )
+    .await
+    .map_err(Error::from)?;
+
+    for note in &listing.notes {
+        let line = format!("\n\n{note}");
+        on_update(Update::Delta { text: line.clone() });
+        written.text.push_str(&line);
+    }
+
+    Ok(written.text)
 }
 
 /// Put after a tool's result, in front of the question it answers.
@@ -641,36 +731,159 @@ pub struct Answer {
     pub provenance: Option<String>,
 }
 
-/// Ask the local model to answer the conversation so far.
+/// Whether the newest question is a request for a standup.
+fn is_standup(messages: &[Turn]) -> bool {
+    messages
+        .iter()
+        .rev()
+        .find(|turn| turn.role == Role::User)
+        .is_some_and(|turn| intent::ground(&turn.content) == Some(intent::Ground::Standup))
+}
+
+/// What a standup says when there is nothing for a model to write.
 ///
-/// The answer is returned whole, and also emitted piece by piece on
-/// [`STREAM_EVENT`] as it is written, tagged with `request_id` so the window
-/// can tell one question from the next.
-/// Put what this machine knows in front of the newest question, when it is one
-/// [`intent::ground`] recognises.
-///
-/// The material goes immediately before the question rather than after it, so
-/// the model reads the facts and then what is being asked of them — and so the
-/// question stays the newest turn, which is the one `conversation_within`
-/// guarantees survives trimming.
-async fn grounded(messages: Vec<Turn>, pool: &sqlx::SqlitePool) -> (Vec<Turn>, bool) {
-    let Some(at) = messages.iter().rposition(|turn| turn.role == Role::User) else {
-        return (messages, false);
+/// Said in code, before the engine is started: a model handed an empty list is
+/// handed room to invent one, and starting it to say "nothing" costs seconds of
+/// reading weights for a sentence that was already known.
+fn standup_without_a_model(standup: &intent::Standup) -> Option<Answer> {
+    if !standup.parts.is_empty() {
+        return None;
+    }
+
+    let missed = names(&standup.missed);
+
+    let (content, provenance) = if !standup.connected {
+        (
+            "Nothing that holds your work is connected yet, so there is nothing to put in a \
+             standup. Connect GitHub, Linear or Jira in Settings."
+                .to_string(),
+            None,
+        )
+    } else if standup.unread {
+        (
+            format!(
+                "Chief could not read your work from {missed} just now and has nothing logged \
+                 to fall back on. Check the connection in Settings."
+            ),
+            None,
+        )
+    } else {
+        (
+            "Nothing to report: nothing finished since the last working day, nothing open, and \
+             no reviews waiting on you."
+                .to_string(),
+            Some(provenance(standup)),
+        )
     };
 
-    let Some(ground) = intent::ground(&messages[at].content) else {
-        return (messages, false);
+    Some(Answer {
+        content,
+        provenance,
+    })
+}
+
+/// `GitHub`, `GitHub and Linear`, `GitHub, Linear and Jira`.
+fn names(sources: &[&str]) -> String {
+    match sources {
+        [] => "your tools".to_string(),
+        [only] => (*only).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The line under a standup saying where it came from, written here from what
+/// was read rather than by the model.
+fn provenance(standup: &intent::Standup) -> String {
+    let mut line = if standup.from_log {
+        format!(
+            "{} could not be reached, so some of this is from the last sync and may be out of \
+             date.",
+            names(&standup.missed)
+        )
+    } else {
+        format!("Read just now from {}.", names(&standup.read))
     };
 
-    // **One user turn, not two.** The material used to be its own turn ahead of
-    // the question. Gemma's chat template refuses two user turns in a row with a
-    // 400, and with the tools offered Llama 3.2 answered the same layout with a
-    // 500; joined, the layout is the plain one every template accepts.
-    let mut grounded = messages;
-    let question = grounded[at].content.clone();
-    grounded[at].content = format!("{}\n\n{question}", intent::material(ground, pool).await);
+    if !standup.from_log && !standup.missed.is_empty() {
+        line.push_str(&format!(" {} could not be read.", names(&standup.missed)));
+    }
 
-    (grounded, true)
+    line
+}
+
+/// Write a standup **one section at a time**.
+///
+/// Each section is its own short request, a handful of lines at a time and
+/// nothing else. A whole standup in one request is twenty lines to copy out
+/// against a 512-token ceiling, and it was cut off part-way through. Here every
+/// request ends well inside the ceiling, the sections stream in order, the
+/// headings are Rust's so the structure cannot drift, and a line the model
+/// dropped is put back. `sections::write` is where that lives; the brief
+/// writes itself the same way.
+///
+/// The system prompt and the clock open every request unchanged, which is what
+/// lets llama.cpp reuse that prefix across the sections.
+async fn write_standup<F>(
+    client: &Client,
+    model: &str,
+    tier: crate::probe::Tier,
+    standup: &intent::Standup,
+    mut on_update: F,
+) -> Result<Answer, Error>
+where
+    F: FnMut(Update),
+{
+    let sections: Vec<sections::Section> = standup
+        .parts
+        .iter()
+        .map(|part| sections::Section {
+            heading: part.heading.to_string(),
+            lines: part.lines.clone(),
+            worded: true,
+        })
+        .collect();
+
+    let written = sections::write(
+        client,
+        &sections,
+        |heading| format!("{heading}:"),
+        |heading, lines| {
+            format!(
+                "These lines are the user's work, read just now:\n{lines}\n\nWrite the \
+                 \"{heading}\" part of their standup from these lines and nothing else: one \
+                 short plain sentence per line, in the first person, each starting with a dash \
+                 and keeping its pull request number or ticket key. Do not add items, people \
+                 or dates."
+            )
+        },
+        |prompt| {
+            ChatRequest::new(
+                model,
+                adapter::Adapter::for_tier(tier).assemble(
+                    vec![Turn {
+                        role: Role::User,
+                        content: prompt,
+                    }],
+                    &clock::present(),
+                ),
+            )
+        },
+        // What streamed cannot be taken back, so nothing is refused here: the
+        // dropped lines are put back instead.
+        |_, _| Vec::new(),
+        |text| {
+            on_update(Update::Delta {
+                text: text.to_string(),
+            });
+        },
+    )
+    .await
+    .map_err(Error::from)?;
+
+    Ok(Answer {
+        content: written.text,
+        provenance: Some(provenance(standup)),
+    })
 }
 
 /// What the router read for a question, to put in front of the model.
@@ -703,6 +916,14 @@ async fn routed(
         .find(|turn| turn.role == Role::User)?
         .content;
     let route = router::route(router_client, question).await.ok()??;
+
+    // Merged pull requests belong to a period, and the router can place a
+    // question by meaning but cannot read "past month" out of it. Read here
+    // with no period they were the latest few, cut to a token budget. The
+    // model names the period when it makes the call itself.
+    if matches!(route, router::Route::Github(router::GithubView::Merged)) {
+        return None;
+    }
 
     let mut sections = Vec::new();
     let mut read = Vec::new();
@@ -760,6 +981,11 @@ fn with_material(mut messages: Vec<Turn>, material: &str) -> Vec<Turn> {
     messages
 }
 
+/// Ask the local model to answer the conversation so far.
+///
+/// The answer is returned whole, and also emitted piece by piece on
+/// [`STREAM_EVENT`] as it is written, tagged with `request_id` so the window
+/// can tell one question from the next.
 #[tauri::command]
 pub async fn ask_agent<R: Runtime>(
     app: AppHandle<R>,
@@ -776,6 +1002,10 @@ pub async fn ask_agent<R: Runtime>(
         pool: db::pool(&app).await?,
         github: github.inner().clone(),
         microsoft: microsoft.inner().clone(),
+        calendar: app.state::<crate::calendar::Client>().inner().clone(),
+        linear: app.state::<crate::linear::Client>().inner().clone(),
+        atlassian: app.state::<crate::atlassian::Client>().inner().clone(),
+        atlassian_rest: app.state::<crate::atlassian::rest::Rest>().inner().clone(),
     };
 
     // The daemon shares this engine. Hold the door while someone is waiting.
@@ -818,22 +1048,25 @@ pub async fn ask_agent<R: Runtime>(
         }
     }
 
-    // Some questions the tool loop has to write are ones this machine already
-    // knows the facts for. Putting those facts in front of the model is the
-    // difference between a standup drafted from the work log and one invented
-    // out of the question's own words — measured in the running app, where
-    // "Draft my standup" came back as two bullets that were themselves
-    // questions. Injected as a turn rather than folded into the system prompt:
-    // the opening is the cached prefix llama.cpp reuses, and material that
-    // changes per question does not belong in it.
-    let (messages, has_material) = grounded(messages, &context.pool).await;
+    // A standup is read from GitHub now and written a section at a time, so it
+    // does not go through the router or the tool loop at all. When there is
+    // nothing to write it is answered here, before the engine is started.
+    let standup = if is_standup(&messages) {
+        Some(intent::standup(&context).await)
+    } else {
+        None
+    };
+
+    if let Some(said) = standup.as_ref().and_then(standup_without_a_model) {
+        return Ok(said);
+    }
 
     // **Experimental, and off unless `CHIEF_ROUTER_URL` is set.** A question the
     // router can place has its source read here, in Rust, and the model only
     // writes it up with no tools on offer. Everything else, and every failure,
     // is the tool loop below exactly as it was.
     let routed = match router::configured() {
-        Some(router_client) if !has_material => {
+        Some(router_client) if standup.is_none() => {
             routed(&messages, &context, &router_client, |name| {
                 let _ = app.emit(
                     STREAM_EVENT,
@@ -878,13 +1111,26 @@ pub async fn ask_agent<R: Runtime>(
 
     engine.start_and_wait(client.inner()).await?;
 
+    if let Some(standup) = &standup {
+        return write_standup(&client, &model, engine.tier(), standup, |update| {
+            let _ = app.emit(
+                STREAM_EVENT,
+                StreamEvent {
+                    request_id: request_id.clone(),
+                    update,
+                },
+            );
+        })
+        .await;
+    }
+
     let (messages, has_material, provenance) = match routed {
         Some(read) => (
             with_material(messages, &read.material),
             true,
             Some(read.provenance),
         ),
-        None => (messages, has_material, None),
+        None => (messages, false, None),
     };
 
     let conversation =
@@ -935,13 +1181,22 @@ pub(crate) async fn answer_for_bench(
     tier: crate::probe::Tier,
     question: &str,
 ) -> Result<String, Error> {
-    let (messages, has_material) = grounded(vec![turn(Role::User, question)], &context.pool).await;
+    let messages = vec![turn(Role::User, question)];
+
+    if is_standup(&messages) {
+        let standup = intent::standup(context).await;
+
+        return match standup_without_a_model(&standup) {
+            Some(said) => Ok(said.content),
+            None => write_standup(client, DEFAULT_MODEL, tier, &standup, |_| {})
+                .await
+                .map(|answer| answer.content),
+        };
+    }
 
     // The router, when the benchmark has started an embedding server for it.
     let routed = match router::configured() {
-        Some(router_client) if !has_material => {
-            routed(&messages, context, &router_client, |_| {}).await
-        }
+        Some(router_client) => routed(&messages, context, &router_client, |_| {}).await,
         _ => None,
     };
     if let Some(nothing) = routed.as_ref().and_then(|read| read.nothing.clone()) {
@@ -950,7 +1205,7 @@ pub(crate) async fn answer_for_bench(
 
     let (messages, has_material) = match routed {
         Some(read) => (with_material(messages, &read.material), true),
-        None => (messages, has_material),
+        None => (messages, false),
     };
 
     let conversation = adapter::Adapter::for_tier(tier).assemble(messages, &clock::present());
@@ -1352,6 +1607,10 @@ mod orchestration_tests {
             pool,
             github: github::Client::against(host).expect("should build a client"),
             microsoft: microsoft::Client::against(host).expect("should build a client"),
+            calendar: crate::calendar::Client::new().expect("should build a client"),
+            linear: crate::linear::Client::new().expect("should build a client"),
+            atlassian: crate::atlassian::Client::new().expect("should build a client"),
+            atlassian_rest: crate::atlassian::rest::Rest::new().expect("should build a client"),
         }
     }
 
@@ -1404,32 +1663,177 @@ mod orchestration_tests {
         conversation(vec![turn(Role::User, question)], PRESENT)
     }
 
-    /// ENG-08. A standup arrives with its facts, so the question is one user
-    /// turn that carries them. Two user turns in a row is a 400 from Gemma's
-    /// template and a 500 from Llama 3.2 once tools are offered.
+    fn standup_of(parts: &[(&'static str, &[&str])]) -> intent::Standup {
+        intent::Standup {
+            parts: parts
+                .iter()
+                .map(|(heading, lines)| intent::StandupPart {
+                    heading,
+                    lines: lines.iter().map(ToString::to_string).collect(),
+                })
+                .collect(),
+            from_log: false,
+            unread: false,
+            connected: true,
+            read: vec!["GitHub", "Linear"],
+            missed: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_a_request_for_a_standup_is_one() {
+        assert!(is_standup(&[turn(Role::User, "Draft my standup")]));
+        assert!(!is_standup(&[turn(Role::User, "Tell me a joke")]));
+        assert!(!is_standup(&[]));
+    }
+
+    /// Nothing to write is said in code. Proved by returning `None` for the
+    /// empty standup, which would start the engine to write nothing:
+    ///
+    /// ```text
+    /// assertion failed: an empty standup is said without a model
+    /// ```
+    #[test]
+    fn an_empty_standup_is_said_without_a_model_and_an_unread_one_says_so() {
+        let empty = standup_of(&[]);
+        let said =
+            standup_without_a_model(&empty).expect("an empty standup is said without a model");
+        assert!(
+            said.content.starts_with("Nothing to report"),
+            "{}",
+            said.content
+        );
+        assert_eq!(
+            said.provenance.as_deref(),
+            Some("Read just now from GitHub and Linear.")
+        );
+
+        let mut unread = standup_of(&[]);
+        unread.unread = true;
+        unread.missed = vec!["GitHub", "Jira"];
+        let said = standup_without_a_model(&unread).expect("an unread one is said too");
+        assert!(
+            said.content
+                .contains("could not read your work from GitHub and Jira"),
+            "{}",
+            said.content
+        );
+        assert_eq!(
+            said.provenance, None,
+            "nothing was read, so nothing is cited"
+        );
+
+        let mut nothing = standup_of(&[]);
+        nothing.connected = false;
+        let said = standup_without_a_model(&nothing).expect("and so is an unconnected one");
+        assert!(
+            said.content.contains("Connect GitHub, Linear or Jira"),
+            "{}",
+            said.content
+        );
+
+        assert!(standup_without_a_model(&standup_of(&[("Done", &["x (o/r#1)"])])).is_none());
+    }
+
+    /// The line under a standup names the tools it was read from, and the ones
+    /// it could not read, instead of saying "GitHub" whatever the user has.
+    #[test]
+    fn a_standup_says_which_tools_it_came_from() {
+        let mut standup = standup_of(&[("Done", &["x (o/r#1)"])]);
+        assert_eq!(
+            provenance(&standup),
+            "Read just now from GitHub and Linear."
+        );
+
+        standup.read = vec!["GitHub", "Linear", "Jira"];
+        assert_eq!(
+            provenance(&standup),
+            "Read just now from GitHub, Linear and Jira."
+        );
+
+        standup.missed = vec!["Jira"];
+        standup.read = vec!["Linear"];
+        assert_eq!(
+            provenance(&standup),
+            "Read just now from Linear. Jira could not be read."
+        );
+
+        standup.from_log = true;
+        assert!(provenance(&standup).starts_with("Jira could not be reached"));
+    }
+
+    /// A standup is written a section at a time: one request each, carrying
+    /// that section's lines and not the others', no tools, the headings written
+    /// in code and a line the model dropped put back.
+    ///
+    /// Proved by sending every section's lines in each request:
+    ///
+    /// ```text
+    /// the Still open request carried a line from Done
+    /// ```
     #[tokio::test]
-    async fn a_grounded_question_is_one_user_turn() {
-        let context = context_connected_to("http://127.0.0.1:1").await;
+    async fn a_standup_is_written_one_section_per_request() {
+        let (base_url, server) = serve(vec![
+            ("HTTP/1.1 200 OK", answers()),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let standup = standup_of(&[
+            (
+                "Done",
+                &["Cache the lookup (acme/api#88, merged yesterday)"],
+            ),
+            ("Still open", &["Fix the modal (acme/web#87)"]),
+        ]);
 
-        let (messages, has_material) =
-            grounded(vec![turn(Role::User, "Draft my standup")], &context.pool).await;
+        let mut streamed = String::new();
+        let answer = write_standup(
+            &client,
+            MODEL,
+            crate::probe::Tier::Standard,
+            &standup,
+            |update| {
+                if let Update::Delta { text } = update {
+                    streamed.push_str(&text);
+                }
+            },
+        )
+        .await
+        .expect("the stub should answer");
 
-        assert!(has_material);
-        assert_eq!(messages.len(), 1, "the facts were a second turn");
+        let requests = server.await.expect("the stub should finish");
+        assert_eq!(requests.len(), 2, "one request per section");
+        assert!(body_of(&requests[0]).get("tools").is_none());
         assert!(
-            messages[0].content.contains("work log"),
-            "{:?}",
-            messages[0]
+            requests[0].contains("Cache the lookup") && !requests[0].contains("Fix the modal"),
+            "the Done request carried a line from Still open"
         );
         assert!(
-            messages[0].content.ends_with("Draft my standup"),
-            "the question must stay the last words the model reads"
+            requests[1].contains("Fix the modal") && !requests[1].contains("Cache the lookup"),
+            "the Still open request carried a line from Done"
         );
 
-        let (messages, has_material) =
-            grounded(vec![turn(Role::User, "Tell me a joke")], &context.pool).await;
-        assert!(!has_material);
-        assert_eq!(messages[0].content, "Tell me a joke");
+        assert!(answer.content.starts_with("Done:\n"), "{}", answer.content);
+        assert!(
+            answer.content.contains("\n\nStill open:\n"),
+            "{}",
+            answer.content
+        );
+        // The stub's sentence names neither number, so both lines are put back.
+        assert!(
+            answer.content.contains("- Cache the lookup (acme/api#88"),
+            "{}",
+            answer.content
+        );
+        assert!(
+            answer.content.contains("- Fix the modal (acme/web#87)"),
+            "{}",
+            answer.content
+        );
+        assert_eq!(
+            streamed, answer.content,
+            "what streamed is what was returned"
+        );
     }
 
     /// ENG-08. With the facts in the prompt there is nothing to look up, and
@@ -1498,6 +1902,79 @@ mod orchestration_tests {
         );
 
         server.await.expect("the stub should finish");
+    }
+
+    /// Only GitHub is connected in `context_connected_to`, so the calendar and
+    /// mail tools are neither described nor callable, and the model is told in
+    /// the system prompt why it has nothing for them.
+    #[tokio::test]
+    async fn offers_only_the_tools_of_connected_services_and_says_what_is_missing() {
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", answers())]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let context = context_connected_to("http://127.0.0.1:1").await;
+        respond(
+            &client,
+            &context,
+            MODEL,
+            asked("What is on my calendar?"),
+            |_| {},
+        )
+        .await
+        .expect("the stub should answer");
+
+        let requests = server.await.expect("the stub should finish");
+        let sent = body_of(&requests[0]);
+
+        let offered: Vec<&str> = sent["tools"]
+            .as_array()
+            .expect("tools should be sent")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect();
+        assert_eq!(offered, ["fetch_github_prs", "fetch_work_overview"]);
+
+        let system = sent["messages"][0]["content"]
+            .as_str()
+            .expect("the first message should be the system prompt");
+        assert!(
+            system.starts_with(SYSTEM_PROMPT),
+            "the prefix must not move"
+        );
+        assert!(system.contains("Not connected on this machine"), "{system}");
+        assert!(system.contains("Outlook calendar and mail"), "{system}");
+        assert_eq!(
+            sent["messages"].as_array().map(Vec::len),
+            Some(2),
+            "the note joins the system message rather than adding one"
+        );
+    }
+
+    /// A question that arrives with its facts is offered no tools, so there is
+    /// nothing to explain and the prompt stays as it was.
+    #[tokio::test]
+    async fn adds_no_note_when_no_tools_are_offered() {
+        let (base_url, server) = serve(vec![("HTTP/1.1 200 OK", answers())]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let context = context_connected_to("http://127.0.0.1:1").await;
+        respond_offering(
+            &client,
+            &context,
+            MODEL,
+            asked("Draft my standup"),
+            false,
+            |_| {},
+        )
+        .await
+        .expect("the stub should answer");
+
+        let requests = server.await.expect("the stub should finish");
+        let sent = body_of(&requests[0]);
+        let system = sent["messages"][0]["content"]
+            .as_str()
+            .expect("a system prompt");
+        assert!(!system.contains("Not connected"), "{system}");
     }
 
     #[tokio::test]
@@ -2201,6 +2678,169 @@ mod orchestration_tests {
         );
 
         github_server.await.expect("GitHub stub should finish");
+    }
+
+    /// A page of search results holding `count` pull requests merged on
+    /// consecutive days, numbered from 100.
+    fn merged_search(count: usize) -> String {
+        let items: Vec<Value> = (0..count)
+            .map(|index| {
+                json!({
+                    "number": 100 + index,
+                    "title": format!("Change number {index}"),
+                    "repository_url": "https://api.github.com/repos/scottmallinson/chief.ai",
+                    "state": "closed",
+                    "draft": false,
+                    "html_url": format!("https://github.com/scottmallinson/chief.ai/pull/{}", 100 + index),
+                    "updated_at": "2026-10-01T10:00:00Z",
+                    "pull_request": { "merged_at": format!("2026-10-{:02}T10:00:00Z", 1 + index % 27) },
+                })
+            })
+            .collect();
+
+        json!({ "total_count": count, "items": items }).to_string()
+    }
+
+    fn asks_for_a_month_merged() -> String {
+        events(&[
+            json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_month",
+                            "type": "function",
+                            "function": {
+                                "name": "fetch_github_prs",
+                                "arguments": "{\"state\":\"merged\",\"days\":30}",
+                            },
+                        }],
+                    },
+                }],
+            }),
+            json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }] }),
+        ])
+    }
+
+    /// A month of merged pull requests is written in full, a few at a time.
+    ///
+    /// It used to be cut to whatever fitted a token budget, oldest first, and
+    /// then cut off at the answer ceiling. Proved by sending the result back
+    /// through `trim_result` instead: the older pull requests go missing.
+    #[tokio::test]
+    async fn a_months_merged_pull_requests_are_all_written_a_few_at_a_time() {
+        let brief_reply = events(&[json!({
+            "choices": [{ "index": 0, "delta": { "content": "- Done." } }],
+        })]);
+
+        let (base_url, server) = serve(vec![
+            ("HTTP/1.1 200 OK", asks_for_a_month_merged()),
+            ("HTTP/1.1 200 OK", brief_reply.clone()),
+            ("HTTP/1.1 200 OK", brief_reply.clone()),
+            ("HTTP/1.1 200 OK", brief_reply),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", merged_search(20))]);
+        let context = context_connected_to(&github_host).await;
+
+        let answer = respond(
+            &client,
+            &context,
+            MODEL,
+            asked("Review all my pull requests merged over the past month"),
+            |_| {},
+        )
+        .await
+        .expect("the stub should answer");
+
+        for number in 100..120 {
+            assert!(
+                answer.contains(&format!("#{number}")),
+                "pull request {number} is missing from:\n{answer}"
+            );
+        }
+        assert!(!answer.contains("Cut short"), "{answer}");
+        assert!(answer.starts_with("Merged since "), "{answer}");
+
+        let requests = server.await.expect("the stub should finish");
+        assert_eq!(requests.len(), 4, "the call, then 8 + 8 + 4 lines");
+
+        let second = body_of(&requests[1]).to_string();
+        assert!(second.contains("#100") && second.contains("#107"));
+        assert!(
+            !second.contains("#108"),
+            "a request carries only its own batch"
+        );
+
+        github_server.await.expect("GitHub stub should finish");
+    }
+
+    /// A short list for a period goes the usual way: the model words it.
+    #[tokio::test]
+    async fn a_short_list_for_a_period_is_still_answered_by_the_model() {
+        let (base_url, server) = serve(vec![
+            ("HTTP/1.1 200 OK", asks_for_a_month_merged()),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", merged_search(3))]);
+        let context = context_connected_to(&github_host).await;
+
+        let answer = respond(&client, &context, MODEL, asked("What did I merge?"), |_| {})
+            .await
+            .expect("the stub should answer");
+
+        assert_eq!(answer, ANSWER);
+        server.await.expect("the stub should finish");
+    }
+
+    /// The router places "merged" questions but cannot read a period out of
+    /// them, so they are left to the model, which names the period itself.
+    #[tokio::test]
+    async fn a_merged_question_is_left_to_the_tool_loop() {
+        let vectors = [
+            [0.9, 0.1, 0.1, 0.1],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        let data: Vec<_> = vectors
+            .iter()
+            .enumerate()
+            .map(|(index, embedding)| json!({ "index": index, "embedding": embedding }))
+            .collect();
+
+        let (router_host, _router) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            json!({ "data": data }).to_string(),
+        )]);
+        let router_client = Client::with_base_url(&router_host).expect("loopback");
+        // A GitHub that answers, so that reading it would succeed: the question
+        // is declined because of what it is, not because the read failed.
+        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", merged_search(3))]);
+        let context = context_connected_to(&github_host).await;
+
+        let read = routed(
+            &[turn(Role::User, "What have I merged this month?")],
+            &context,
+            &router_client,
+            |_| {},
+        )
+        .await;
+
+        assert!(
+            read.is_none(),
+            "merged pull requests need a period, which only the model can name"
+        );
     }
 
     /// The embedding server's reply that places a question on GitHub.

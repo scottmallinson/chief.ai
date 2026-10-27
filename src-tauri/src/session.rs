@@ -284,6 +284,27 @@ impl<'a> AtlassianSession<'a> {
             })
             .await
     }
+
+    /// What this person resolved since `since`, on the same terms.
+    pub async fn completed(
+        &self,
+        since: chrono::NaiveDate,
+    ) -> Result<Vec<atlassian::Issue>, atlassian::Error> {
+        let token = self.session.token().await?;
+
+        self.session
+            .renewing(token, |token| async move {
+                let mcp = self.client.connect(&token).await?;
+                let mut found = Vec::new();
+
+                for site in mcp.sites().await? {
+                    found.extend(mcp.completed(&site, since).await?);
+                }
+
+                Ok(found)
+            })
+            .await
+    }
 }
 
 pub struct GithubSession<'a> {
@@ -324,6 +345,25 @@ impl<'a> GithubSession<'a> {
         self.session
             .renewing(token, |token| async move {
                 self.client.assigned_issues(&token, limit).await
+            })
+            .await
+    }
+
+    /// The user's own pull requests merged on or after `since`.
+    pub async fn merged_since(
+        &self,
+        since: chrono::NaiveDate,
+        limit: u8,
+    ) -> Result<Vec<PullRequest>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.merged_since(&token, since, limit).await
             })
             .await
     }
