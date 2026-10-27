@@ -556,7 +556,20 @@ async fn prep(context: &recipe::Context) -> Option<Answered> {
     .await
     .ok()?;
 
-    retrieval::to_context(&hits, RETRIEVAL_CEILING).map(|body| Answered {
+    // A meeting held before says so, and what was shipped in between. Each is
+    // a small read of the log; a read that fails costs that meeting its note.
+    let zone = chrono::Local;
+    let mut notes = Vec::with_capacity(hits.len());
+    for hit in &hits {
+        let since = retrieval::since_last(&context.pool, &hit.title, &from, &to)
+            .await
+            .ok()
+            .flatten();
+
+        notes.push(since.and_then(|since| retrieval::note(&since, &zone)));
+    }
+
+    retrieval::to_context_with_notes(&hits, &notes, RETRIEVAL_CEILING).map(|body| Answered {
         markdown: format!("## Today\n{body}"),
         provenance: retrieval::provenance(&hits),
     })
@@ -1176,6 +1189,84 @@ mod delivery {
                 .as_ref()
                 .is_some_and(|answered| answered.markdown.contains("Standup")),
             "the answer should be the stored meeting: {answered:?}"
+        );
+        assert_eq!(
+            server.await.expect("server"),
+            Vec::<String>::new(),
+            "and it must cost zero model calls"
+        );
+    }
+
+    /// A meeting held before says when, and what was shipped since, and still
+    /// costs no model call.
+    ///
+    /// Proved by dropping the note from `prep` and watching it fail:
+    ///
+    /// ```text
+    /// the recurring meeting should say when it was last held
+    /// ```
+    #[tokio::test]
+    async fn prep_says_what_happened_since_a_recurring_meeting_last_ran() {
+        let (context, _scratch, server) = silent("prep-history").await;
+
+        let (from, _to) = day_window(&chrono::Local::now());
+        let at = |stamp: &str, id: &str, category: &str, title: &str| work_log::WorkLogRecord {
+            timestamp: stamp.to_string(),
+            source: if category == "calendar" {
+                "calendar"
+            } else {
+                "github"
+            }
+            .to_string(),
+            category: category.to_string(),
+            title: title.to_string(),
+            content: title.to_string(),
+            summary: Some("09:30".to_string()),
+            url: None,
+            raw_ref: None,
+            external_id: id.to_string(),
+            account_id: 1,
+        };
+
+        // Two days before the window opens: held then, and one thing shipped
+        // after it.
+        let earlier = chrono::DateTime::parse_from_rfc3339(&from)
+            .expect("a day boundary")
+            .checked_sub_signed(chrono::Duration::days(2))
+            .expect("in range")
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        let after = bump(&earlier);
+
+        for entry in [
+            at(&earlier, "cal:old", "calendar", "1:1 with Dana"),
+            at(&after, "o/r#9", "pr", "o/r #9: Retry the sync"),
+            at(&bump(&from), "cal:new", "calendar", "1:1 with Dana"),
+        ] {
+            work_log::upsert(&context.pool, entry)
+                .await
+                .expect("should store");
+        }
+
+        let answered = answer(Intent::Prep, &context)
+            .await
+            .expect("today has a meeting");
+
+        assert!(
+            answered.markdown.contains("Last held"),
+            "the recurring meeting should say when it was last held: {}",
+            answered.markdown
+        );
+        assert!(
+            answered.markdown.contains("o/r #9: Retry the sync"),
+            "and what was shipped since: {}",
+            answered.markdown
+        );
+        assert_eq!(
+            answered.markdown.matches("Last held").count(),
+            1,
+            "only the meeting that has history gets a note: {}",
+            answered.markdown
         );
         assert_eq!(
             server.await.expect("server"),
