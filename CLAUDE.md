@@ -415,6 +415,16 @@ answered, failed}`, which keeps "not connected" (silent), "nothing there" (said)
   search carries `merged:>=DATE`, because search sorts by last update and "the latest 25, minus the
   old ones" answered a month with whatever fitted. The result says how far back it covers
   (`my_recently_completed_work_covers`), so "how far back did you look?" has an answer.
+  **The router does not read merged pull requests.** It places a question by meaning and cannot
+  read "past month" out of one, so a merged question read there had no period: the latest 25,
+  cut oldest-first to a token budget that shrank with every follow-up (20, 15, then 7 entries
+  measured), which looked like "nothing before 16 October". `routed` declines the Merged view and
+  the model makes the call, naming the period. **A long list for a period is not handed back to
+  the model.** `tools::period_listing` turns a merged-pull-request or completed-work result for a
+  named period, longer than `BATCH`, into lines, and `write_listing` writes it through
+  `sections.rs` — the tool result is otherwise trimmed to the same budget and the answer written
+  in one request, which was cut off at the length ceiling. What triggers it is the period the
+  model chose, never words in the question.
 - **Anything long is written a section at a time, by `sections.rs`.** One request per section and
   eight lines per request (`BATCH`), the headings written in code, so a long queue costs more short
   requests instead of one answer that hits the length ceiling. Each batch is checked: a reply that

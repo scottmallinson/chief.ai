@@ -514,6 +514,14 @@ where
             let result = tools::dispatch(context, call).await;
             ran_a_tool = true;
 
+            // A long list for a period is written out in full, a few lines at a
+            // time, rather than handed to the model to fit in one answer.
+            if let Some(listing) = tools::period_listing(call, &result) {
+                let system = messages.first().filter(|first| first.role == Role::System);
+
+                return write_listing(client, model, system, &listing, &mut on_update).await;
+            }
+
             // Tool output is prompt, and it is the least bounded thing that
             // becomes prompt: twenty-five pull requests of JSON took one
             // measured question to 2,504 tokens on a 4,096 window, and two more
@@ -560,6 +568,67 @@ where
     let _ = shown;
 
     Ok(vetted(reply.content, offer_tools_at_first, ran_a_tool))
+}
+
+/// Write a long list of finished work **a few lines at a time**.
+///
+/// The same writer the standup and the brief use: one short request per batch,
+/// the heading written here, a line the model dropped put back as it was found.
+/// Nothing is trimmed to a token budget, so a month is a month, and no request
+/// is long enough to reach the answer ceiling.
+async fn write_listing<F>(
+    client: &Client,
+    model: &str,
+    system: Option<&Message>,
+    listing: &tools::Listing,
+    on_update: &mut F,
+) -> Result<String, Error>
+where
+    F: FnMut(Update),
+{
+    let section = sections::Section {
+        heading: listing.heading.clone(),
+        lines: listing.lines.clone(),
+        worded: true,
+    };
+
+    let mut written = sections::write(
+        client,
+        &[section],
+        |heading| format!("{heading}:"),
+        |_, lines| {
+            format!(
+                "These lines are the user's finished work, read just now:\n{lines}\n\nWrite \
+                 each as one short plain sentence starting with a dash, keeping its repository \
+                 and pull request number or ticket key. Do not add or merge items, and do not \
+                 add dates or people."
+            )
+        },
+        |prompt| {
+            let mut turns: Vec<Message> = system.cloned().into_iter().collect();
+            turns.push(Message::user(prompt));
+
+            ChatRequest::new(model, turns)
+        },
+        // What streamed cannot be taken back, so nothing is refused here: the
+        // dropped lines are put back instead.
+        |_, _| Vec::new(),
+        |text| {
+            on_update(Update::Delta {
+                text: text.to_string(),
+            });
+        },
+    )
+    .await
+    .map_err(Error::from)?;
+
+    for note in &listing.notes {
+        let line = format!("\n\n{note}");
+        on_update(Update::Delta { text: line.clone() });
+        written.text.push_str(&line);
+    }
+
+    Ok(written.text)
 }
 
 /// Put after a tool's result, in front of the question it answers.
@@ -847,6 +916,14 @@ async fn routed(
         .find(|turn| turn.role == Role::User)?
         .content;
     let route = router::route(router_client, question).await.ok()??;
+
+    // Merged pull requests belong to a period, and the router can place a
+    // question by meaning but cannot read "past month" out of it. Read here
+    // with no period they were the latest few, cut to a token budget. The
+    // model names the period when it makes the call itself.
+    if matches!(route, router::Route::Github(router::GithubView::Merged)) {
+        return None;
+    }
 
     let mut sections = Vec::new();
     let mut read = Vec::new();
@@ -2601,6 +2678,169 @@ mod orchestration_tests {
         );
 
         github_server.await.expect("GitHub stub should finish");
+    }
+
+    /// A page of search results holding `count` pull requests merged on
+    /// consecutive days, numbered from 100.
+    fn merged_search(count: usize) -> String {
+        let items: Vec<Value> = (0..count)
+            .map(|index| {
+                json!({
+                    "number": 100 + index,
+                    "title": format!("Change number {index}"),
+                    "repository_url": "https://api.github.com/repos/scottmallinson/chief.ai",
+                    "state": "closed",
+                    "draft": false,
+                    "html_url": format!("https://github.com/scottmallinson/chief.ai/pull/{}", 100 + index),
+                    "updated_at": "2026-10-01T10:00:00Z",
+                    "pull_request": { "merged_at": format!("2026-10-{:02}T10:00:00Z", 1 + index % 27) },
+                })
+            })
+            .collect();
+
+        json!({ "total_count": count, "items": items }).to_string()
+    }
+
+    fn asks_for_a_month_merged() -> String {
+        events(&[
+            json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_month",
+                            "type": "function",
+                            "function": {
+                                "name": "fetch_github_prs",
+                                "arguments": "{\"state\":\"merged\",\"days\":30}",
+                            },
+                        }],
+                    },
+                }],
+            }),
+            json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }] }),
+        ])
+    }
+
+    /// A month of merged pull requests is written in full, a few at a time.
+    ///
+    /// It used to be cut to whatever fitted a token budget, oldest first, and
+    /// then cut off at the answer ceiling. Proved by sending the result back
+    /// through `trim_result` instead: the older pull requests go missing.
+    #[tokio::test]
+    async fn a_months_merged_pull_requests_are_all_written_a_few_at_a_time() {
+        let brief_reply = events(&[json!({
+            "choices": [{ "index": 0, "delta": { "content": "- Done." } }],
+        })]);
+
+        let (base_url, server) = serve(vec![
+            ("HTTP/1.1 200 OK", asks_for_a_month_merged()),
+            ("HTTP/1.1 200 OK", brief_reply.clone()),
+            ("HTTP/1.1 200 OK", brief_reply.clone()),
+            ("HTTP/1.1 200 OK", brief_reply),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+
+        let (github_host, github_server) = serve(vec![("HTTP/1.1 200 OK", merged_search(20))]);
+        let context = context_connected_to(&github_host).await;
+
+        let answer = respond(
+            &client,
+            &context,
+            MODEL,
+            asked("Review all my pull requests merged over the past month"),
+            |_| {},
+        )
+        .await
+        .expect("the stub should answer");
+
+        for number in 100..120 {
+            assert!(
+                answer.contains(&format!("#{number}")),
+                "pull request {number} is missing from:\n{answer}"
+            );
+        }
+        assert!(!answer.contains("Cut short"), "{answer}");
+        assert!(answer.starts_with("Merged since "), "{answer}");
+
+        let requests = server.await.expect("the stub should finish");
+        assert_eq!(requests.len(), 4, "the call, then 8 + 8 + 4 lines");
+
+        let second = body_of(&requests[1]).to_string();
+        assert!(second.contains("#100") && second.contains("#107"));
+        assert!(
+            !second.contains("#108"),
+            "a request carries only its own batch"
+        );
+
+        github_server.await.expect("GitHub stub should finish");
+    }
+
+    /// A short list for a period goes the usual way: the model words it.
+    #[tokio::test]
+    async fn a_short_list_for_a_period_is_still_answered_by_the_model() {
+        let (base_url, server) = serve(vec![
+            ("HTTP/1.1 200 OK", asks_for_a_month_merged()),
+            ("HTTP/1.1 200 OK", answers()),
+        ]);
+        let client = Client::with_base_url(&base_url).expect("loopback should be allowed");
+        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", merged_search(3))]);
+        let context = context_connected_to(&github_host).await;
+
+        let answer = respond(&client, &context, MODEL, asked("What did I merge?"), |_| {})
+            .await
+            .expect("the stub should answer");
+
+        assert_eq!(answer, ANSWER);
+        server.await.expect("the stub should finish");
+    }
+
+    /// The router places "merged" questions but cannot read a period out of
+    /// them, so they are left to the model, which names the period itself.
+    #[tokio::test]
+    async fn a_merged_question_is_left_to_the_tool_loop() {
+        let vectors = [
+            [0.9, 0.1, 0.1, 0.1],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        let data: Vec<_> = vectors
+            .iter()
+            .enumerate()
+            .map(|(index, embedding)| json!({ "index": index, "embedding": embedding }))
+            .collect();
+
+        let (router_host, _router) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            json!({ "data": data }).to_string(),
+        )]);
+        let router_client = Client::with_base_url(&router_host).expect("loopback");
+        // A GitHub that answers, so that reading it would succeed: the question
+        // is declined because of what it is, not because the read failed.
+        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", merged_search(3))]);
+        let context = context_connected_to(&github_host).await;
+
+        let read = routed(
+            &[turn(Role::User, "What have I merged this month?")],
+            &context,
+            &router_client,
+            |_| {},
+        )
+        .await;
+
+        assert!(
+            read.is_none(),
+            "merged pull requests need a period, which only the model can name"
+        );
     }
 
     /// The embedding server's reply that places a question on GitHub.
