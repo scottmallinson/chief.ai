@@ -508,6 +508,24 @@ fn team_pull_from(node: &Value) -> Option<TeamPull> {
     })
 }
 
+/// Which open pull requests to read: everyone's in a repository, or one
+/// person's across every repository the token can see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamScope<'a> {
+    Repository(&'a str),
+    Author(&'a str),
+}
+
+/// Is this a GitHub login and nothing else?
+#[must_use]
+pub fn is_login(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 39
+        && text
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+}
+
 /// Is this `owner/name` and nothing else?
 ///
 /// The repository goes into a search query, so it is checked rather than
@@ -932,23 +950,30 @@ impl Client {
         Ok(nodes.iter().filter_map(blockers_from).collect())
     }
 
-    /// The open pull requests in one repository, oldest first.
+    /// The open pull requests in one repository, or by one person, oldest
+    /// first.
     ///
     /// Whatever the user's own token can see and nothing more: a repository it
     /// cannot read answers with no pull requests rather than an error, which
     /// is GitHub's search and not something this code can tell apart. One
-    /// request per repository.
+    /// request per repository or person.
     pub async fn team_pulls(
         &self,
         token: &str,
-        repository: &str,
+        scope: TeamScope<'_>,
         limit: u8,
     ) -> Result<Vec<TeamPull>, Error> {
-        if !is_repository(repository) {
-            return Err(Error::Decode(format!(
-                "\"{repository}\" is not a repository written as owner/name"
-            )));
-        }
+        let qualifier = match scope {
+            TeamScope::Repository(repository) if is_repository(repository) => {
+                format!("repo:{repository}")
+            }
+            TeamScope::Author(login) if is_login(login) => format!("author:{login}"),
+            TeamScope::Repository(text) | TeamScope::Author(text) => {
+                return Err(Error::Decode(format!(
+                    "\"{text}\" is not a repository written as owner/name or a GitHub login"
+                )));
+            }
+        };
 
         let response = self
             .http
@@ -959,7 +984,7 @@ impl Client {
             .json(&serde_json::json!({
                 "query": TEAM_QUERY,
                 "variables": {
-                    "q": format!("repo:{repository} is:pr is:open sort:created-asc"),
+                    "q": format!("{qualifier} is:pr is:open sort:created-asc"),
                     "first": limit.clamp(1, 50),
                 },
             }))
@@ -1794,7 +1819,7 @@ mod team_tests {
         let client = Client::against(&host).expect("client");
 
         let found = client
-            .team_pulls("gho_token", "acme/api", 50)
+            .team_pulls("gho_token", TeamScope::Repository("acme/api"), 50)
             .await
             .expect("should read");
 
@@ -1821,6 +1846,64 @@ mod team_tests {
     /// ```text
     /// a repository that is not owner/name must cost no request
     /// ```
+    #[test]
+    fn accepts_only_a_login() {
+        for good in ["dvance", "d-vance", "D2"] {
+            assert!(is_login(good), "{good}");
+        }
+        for bad in [
+            "",
+            "d vance",
+            "dvance is:closed",
+            "@dvance",
+            "d/vance",
+            "a".repeat(40).as_str(),
+        ] {
+            assert!(!is_login(bad), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn asks_for_one_persons_pull_requests_across_every_repository() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        client
+            .team_pulls("gho_token", TeamScope::Author("dvance"), 50)
+            .await
+            .expect("should read");
+
+        let received = server.await.expect("server");
+        assert!(
+            received[0].contains("author:dvance is:pr is:open sort:created-asc")
+                && !received[0].contains("repo:"),
+            "{}",
+            received[0]
+        );
+    }
+
+    /// Proved by letting any text through as an author:
+    ///
+    /// ```text
+    /// an author that could carry another qualifier must cost no request
+    /// ```
+    #[tokio::test]
+    async fn an_author_that_could_carry_another_qualifier_costs_no_request() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        let error = client
+            .team_pulls("gho_token", TeamScope::Author("dvance org:other"), 50)
+            .await
+            .expect_err("should refuse");
+
+        assert!(matches!(error, Error::Decode(_)), "{error}");
+        assert!(
+            !server.is_finished(),
+            "an author that could carry another qualifier must cost no request"
+        );
+    }
+
     #[tokio::test]
     async fn a_repository_that_could_carry_another_qualifier_costs_no_request() {
         // A spare reply that is never fetched, so a request would show.
@@ -1828,7 +1911,7 @@ mod team_tests {
         let client = Client::against(&host).expect("client");
 
         let error = client
-            .team_pulls("gho_token", "acme/api is:closed", 50)
+            .team_pulls("gho_token", TeamScope::Repository("acme/api is:closed"), 50)
             .await
             .expect_err("should refuse");
 

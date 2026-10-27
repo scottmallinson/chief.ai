@@ -410,11 +410,11 @@ impl<'a> GithubSession<'a> {
             .await
     }
 
-    /// The open pull requests in one repository, renewing the credential the
-    /// same way.
+    /// The open pull requests in one repository or by one person, renewing the
+    /// credential the same way.
     pub async fn team_pulls(
         &self,
-        repository: &str,
+        scope: github::TeamScope<'_>,
         limit: u8,
     ) -> Result<Vec<github::TeamPull>, github::Error> {
         let token = self
@@ -425,7 +425,7 @@ impl<'a> GithubSession<'a> {
 
         self.session
             .renewing(token, |token| async move {
-                self.client.team_pulls(&token, repository, limit).await
+                self.client.team_pulls(&token, scope, limit).await
             })
             .await
     }

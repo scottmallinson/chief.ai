@@ -1465,23 +1465,32 @@ mod delivery {
     #[tokio::test]
     async fn team_lists_what_is_waiting_in_a_repository_the_user_listed() {
         let (mut context, _scratch, engine) = silent("team-on").await;
-        let (host, github) = serve(vec![("HTTP/1.1 200 OK", TEAM_ANSWER)]);
+        let (host, github) = serve(vec![
+            ("HTTP/1.1 200 OK", TEAM_ANSWER),
+            ("HTTP/1.1 200 OK", TEAM_ANSWER),
+        ]);
         context.github = github::Client::against(&host).expect("client");
         connect(&context, integrations::GITHUB).await;
         context
             .corpus
-            .write(crate::team::FILE, "## Repositories\n- acme/api\n")
+            .write(
+                crate::team::FILE,
+                "## People\n- Dana Vance = dvance\n\n## Repositories\n- acme/api\n",
+            )
             .await
             .expect("file");
 
         let answered = answer(Intent::Team, &context).await.expect("an answer");
 
         assert!(
-            answered.markdown.contains("### acme/api")
-                && answered.markdown.contains("Waiting for review (1):")
+            answered.markdown.contains("### Dana Vance (@dvance)")
                 && answered
                     .markdown
-                    .contains("- #12 Retry the sync: @dvance, open ")
+                    .contains("- acme/api#12 Retry the sync: open ")
+                && answered.markdown.contains("### acme/api")
+                && answered
+                    .markdown
+                    .contains("- #12 Retry the sync: Dana Vance (@dvance), open ")
                 && answered.markdown.contains("review requested from @prao"),
             "{}",
             answered.markdown
@@ -1489,8 +1498,8 @@ mod delivery {
         assert!(answered.provenance.is_some());
         assert_eq!(
             github.await.expect("github").len(),
-            1,
-            "one request per repository"
+            2,
+            "one request for the person and one for the repository"
         );
         assert_eq!(
             engine.await.expect("engine"),

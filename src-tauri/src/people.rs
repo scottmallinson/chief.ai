@@ -89,11 +89,7 @@ fn key(text: &str) -> String {
 
 /// A GitHub login: letters, digits and hyphens, and not empty.
 fn is_handle(text: &str) -> bool {
-    !text.is_empty()
-        && text.len() <= 39
-        && text
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    crate::github::is_login(text)
 }
 
 fn line_person(line: &str) -> Option<Person> {
