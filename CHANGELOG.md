@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.0 (2026-10-27)
+
+### Features
+
+- **agent:** say what is holding up the user's open pull requests in answers ([d5ad891](https://github.com/scottmallinson/chief.ai/commit/d5ad891c67cdfb1e103bc9ed5eb9bd9185ce8db6))
+- **integrations:** say what is holding up the user's own pull requests ([8167068](https://github.com/scottmallinson/chief.ai/commit/81670685f8d4553450981a3945060c9f66417bac))
+
+### Fixes
+
+- **agent:** list a period's merged pull requests in full ([019aab9](https://github.com/scottmallinson/chief.ai/commit/019aab98e1e66116c383bbe39ee8185f49a781c7))
+
 ## 0.16.1 (2026-10-27)
 
 ### Fixes
