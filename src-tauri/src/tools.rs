@@ -265,6 +265,74 @@ pub fn catalog() -> Vec<Tool> {
     ]
 }
 
+/// What the model is offered on this machine: the tools whose service the user
+/// has connected, and a sentence about the ones they have not.
+#[derive(Debug, Clone)]
+pub struct Offer {
+    pub tools: Vec<Tool>,
+    /// Added to the system prompt when something is missing. Hiding a tool
+    /// removes the one place a "not connected" answer used to come from, so
+    /// the model is told in words instead, for a few dozen tokens rather than
+    /// a few hundred.
+    pub not_connected: Option<String>,
+}
+
+/// [`catalog`], narrowed to the services that are connected.
+///
+/// A tool for a service nobody signed in to can only fail, and offering it is
+/// how a pull request question came to be answered with a calendar call and a
+/// calendar error that did not exist. A failed lookup of accounts offers
+/// everything, as before: a storage error must not silently remove tools.
+pub async fn catalog_for(pool: &SqlitePool) -> Offer {
+    let connected = |service| async move {
+        integrations::accounts(pool, service)
+            .await
+            .map(|accounts| !accounts.is_empty())
+    };
+
+    match (
+        connected(integrations::GITHUB).await,
+        connected(integrations::MICROSOFT).await,
+    ) {
+        (Ok(github), Ok(microsoft)) => offer_for(github, microsoft),
+        _ => offer_for(true, true),
+    }
+}
+
+/// The pure half of [`catalog_for`], so the mapping is tested without a database.
+fn offer_for(github: bool, microsoft: bool) -> Offer {
+    let tools = catalog()
+        .into_iter()
+        .filter(|tool| match tool.function.name.as_str() {
+            FETCH_GITHUB_PRS => github,
+            FETCH_CALENDAR | FETCH_RECENT_MAIL => microsoft,
+            _ => true,
+        })
+        .collect();
+
+    let mut missing = Vec::new();
+    if !github {
+        missing.push("GitHub pull requests");
+    }
+    if !microsoft {
+        missing.push("Outlook calendar and mail");
+    }
+
+    let not_connected = (!missing.is_empty()).then(|| {
+        format!(
+            "Not connected on this machine: {}. If asked about these, say that \
+             it is not connected and that connecting it in Settings would fix \
+             that. Do not guess.",
+            missing.join("; ")
+        )
+    });
+
+    Offer {
+        tools,
+        not_connected,
+    }
+}
+
 /// The read that answers a question routed to `route`, with what it is called
 /// in the material the model is shown.
 ///
@@ -1293,5 +1361,108 @@ mod tests {
             r#"{"name": "fetch_weather", "parameters": {}}"#
         ));
         assert!(call_in_text(r#"{"name": "fetch_weather", "parameters": {}}"#, "t").is_none());
+    }
+
+    fn names(offer: &Offer) -> Vec<&str> {
+        offer
+            .tools
+            .iter()
+            .map(|tool| tool.function.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn offers_every_tool_when_everything_is_connected() {
+        let offer = offer_for(true, true);
+
+        assert_eq!(
+            names(&offer),
+            [
+                FETCH_GITHUB_PRS,
+                FETCH_CALENDAR,
+                FETCH_RECENT_MAIL,
+                FETCH_WORK_OVERVIEW
+            ]
+        );
+        assert!(offer.not_connected.is_none());
+    }
+
+    #[test]
+    fn leaves_out_the_tools_of_a_service_that_is_not_connected() {
+        let github_only = offer_for(true, false);
+        assert_eq!(names(&github_only), [FETCH_GITHUB_PRS, FETCH_WORK_OVERVIEW]);
+        let note = github_only
+            .not_connected
+            .expect("should say what is missing");
+        assert!(note.contains("Outlook"), "{note}");
+        assert!(!note.contains("GitHub"), "{note}");
+
+        let outlook_only = offer_for(false, true);
+        assert_eq!(
+            names(&outlook_only),
+            [FETCH_CALENDAR, FETCH_RECENT_MAIL, FETCH_WORK_OVERVIEW]
+        );
+        let note = outlook_only
+            .not_connected
+            .expect("should say what is missing");
+        assert!(note.contains("GitHub"), "{note}");
+        assert!(!note.contains("Outlook"), "{note}");
+
+        let nothing = offer_for(false, false);
+        assert_eq!(names(&nothing), [FETCH_WORK_OVERVIEW]);
+        let note = nothing.not_connected.expect("should say what is missing");
+        assert!(
+            note.contains("GitHub") && note.contains("Outlook"),
+            "{note}"
+        );
+    }
+
+    /// The reason for the note: a hidden tool can no longer return "not
+    /// connected", so the sentence has to be in the prompt instead.
+    #[test]
+    fn the_note_tells_the_model_what_to_say_and_not_to_guess() {
+        let note = offer_for(false, false).not_connected.expect("a note");
+        assert!(note.contains("not connected"), "{note}");
+        assert!(note.contains("Settings"), "{note}");
+        assert!(note.contains("Do not guess"), "{note}");
+    }
+
+    #[tokio::test]
+    async fn reads_which_services_are_connected_from_the_accounts() {
+        let pool = migrated_pool().await;
+
+        let none = catalog_for(&pool).await;
+        assert_eq!(
+            none.tools.len(),
+            1,
+            "nothing is connected yet, so only the overview is offered"
+        );
+
+        for (service, key) in [
+            (integrations::GITHUB, "octocat"),
+            (integrations::MICROSOFT, "me@example.com"),
+        ] {
+            integrations::save(
+                &pool,
+                integrations::NewAccount {
+                    service,
+                    account_key: key,
+                    identity: Some(key),
+                    credential_kind: integrations::OAUTH,
+                    access_token: "token",
+                    refresh_token: None,
+                    expires_at: None,
+                    scopes: None,
+                    client_id: None,
+                    client_secret: None,
+                },
+            )
+            .await
+            .expect("should store a credential");
+        }
+
+        let both = catalog_for(&pool).await;
+        assert_eq!(both.tools.len(), catalog().len());
+        assert!(both.not_connected.is_none());
     }
 }
