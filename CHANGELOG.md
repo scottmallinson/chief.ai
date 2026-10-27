@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.0 (2026-10-27)
+
+### Features
+
+- **agent:** show how people.md is written in a commented example ([c643ae8](https://github.com/scottmallinson/chief.ai/commit/c643ae8e982d6af7f766bb9e121e3d9fa56136c5))
+- **agent:** name who is in a meeting from the people the user confirmed ([bbe9a3f](https://github.com/scottmallinson/chief.ai/commit/bbe9a3ff3aa77b67d793ee25a5ee3c21f7c5a72d))
+
 ## 0.19.0 (2026-10-27)
 
 ### Features
