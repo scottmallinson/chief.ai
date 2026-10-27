@@ -399,6 +399,146 @@ pub fn to_context(hits: &[Hit], ceiling: u32) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
+/// What happened between one holding of a meeting and the next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SinceLast {
+    /// When the meeting was last held before the window, ISO-8601 UTC.
+    pub last_held: String,
+    /// How many pull requests were merged since then.
+    pub shipped: i64,
+    /// The newest few of them, as the log titles them.
+    pub newest: Vec<String>,
+}
+
+/// How many merged pull requests a meeting's note names.
+const NOTE_TITLES: i64 = 3;
+
+/// When a meeting with this exact title was last held before `before`, and
+/// what the user shipped between then and `until`.
+///
+/// **A recurring meeting is recognised by its title and nothing smarter.** The
+/// calendar gives a series the same subject every time, so an exact match is a
+/// fact; anything looser ("has a word in common with") would be a guess about
+/// what the user means, and a note about the wrong meeting reads as true. A
+/// meeting held once has no history and gets no note.
+///
+/// Answered from the log alone: two small reads, no network and no model.
+pub async fn since_last(
+    pool: &SqlitePool,
+    title: &str,
+    before: &str,
+    until: &str,
+) -> Result<Option<SinceLast>, Error> {
+    let last: Option<(String,)> = sqlx::query_as(
+        "SELECT timestamp FROM work_logs
+          WHERE category = 'calendar' AND title = ?1 AND timestamp < ?2
+          ORDER BY timestamp DESC LIMIT 1",
+    )
+    .bind(title)
+    .bind(before)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some((last_held,)) = last else {
+        return Ok(None);
+    };
+
+    let (shipped,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM work_logs
+          WHERE category = ?1 AND timestamp > ?2 AND timestamp < ?3",
+    )
+    .bind(crate::ingest::SHIPPED)
+    .bind(&last_held)
+    .bind(until)
+    .fetch_one(pool)
+    .await?;
+
+    let newest: Vec<(String,)> = sqlx::query_as(
+        "SELECT title FROM work_logs
+          WHERE category = ?1 AND timestamp > ?2 AND timestamp < ?3
+          ORDER BY timestamp DESC, id DESC LIMIT ?4",
+    )
+    .bind(crate::ingest::SHIPPED)
+    .bind(&last_held)
+    .bind(until)
+    .bind(NOTE_TITLES)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(Some(SinceLast {
+        last_held,
+        shipped,
+        newest: newest.into_iter().map(|(title,)| title).collect(),
+    }))
+}
+
+/// The sentence under a meeting that has been held before.
+///
+/// Generic over the zone so the date is tested at a fixed offset, for the
+/// reason `intent::day_window` is. `None` when the stored time cannot be read:
+/// better no note than one that names the wrong day.
+#[must_use]
+pub fn note<Tz: chrono::TimeZone>(since: &SinceLast, zone: &Tz) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let held = chrono::DateTime::parse_from_rfc3339(&since.last_held)
+        .ok()?
+        .with_timezone(zone)
+        .format("%a %-d %b");
+
+    Some(if since.shipped == 0 {
+        format!("  Last held {held}. Nothing shipped since.")
+    } else {
+        let more = since.shipped - i64::try_from(since.newest.len()).unwrap_or(0);
+        let tail = if more > 0 {
+            format!("; and {more} more")
+        } else {
+            String::new()
+        };
+
+        format!(
+            "  Last held {held}. Shipped since: {}{tail}.",
+            since.newest.join("; ")
+        )
+    })
+}
+
+/// [`to_context`] with an optional note under each row, kept or dropped with
+/// the row it belongs to so a note can never be left without its meeting.
+#[must_use]
+pub fn to_context_with_notes(
+    hits: &[Hit],
+    notes: &[Option<String>],
+    ceiling: u32,
+) -> Option<String> {
+    let mut budget = Budget::with_ceiling(ceiling);
+    let mut lines: Vec<String> = Vec::new();
+
+    for (hit, note) in hits.iter().zip(
+        notes
+            .iter()
+            .map(Option::as_deref)
+            .chain(std::iter::repeat(None)),
+    ) {
+        let Some(line) = describe(hit) else {
+            continue;
+        };
+        let entry = match note {
+            Some(note) => format!("{line}\n{note}"),
+            None => line,
+        };
+
+        if budget.add("row", &entry).is_err() {
+            break;
+        }
+
+        lines.push(entry);
+    }
+
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,6 +669,128 @@ mod tests {
             .await
             .expect("search")
             .is_empty());
+    }
+
+    fn meeting(external_id: &str, title: &str, stamp: &str) -> WorkLogRecord {
+        let mut entry = record(external_id, title, "09:30");
+        entry.source = "calendar".to_string();
+        entry.category = "calendar".to_string();
+        entry.timestamp = stamp.to_string();
+        entry
+    }
+
+    fn merged(external_id: &str, title: &str, stamp: &str) -> WorkLogRecord {
+        let mut entry = record(external_id, title, "merged");
+        entry.timestamp = stamp.to_string();
+        entry
+    }
+
+    const TODAY: &str = "2026-10-27T00:00:00.000Z";
+    const TOMORROW: &str = "2026-10-28T00:00:00.000Z";
+
+    #[tokio::test]
+    async fn a_meeting_held_before_names_when_and_what_was_shipped_since() {
+        let pool = migrated_pool().await;
+        for entry in [
+            meeting("m1", "1:1 with Dana", "2026-10-13T09:30:00.000Z"),
+            meeting("m2", "1:1 with Dana", "2026-10-20T09:30:00.000Z"),
+            // Before the last holding, so not "since".
+            merged("p1", "o/r #1: Old", "2026-10-15T10:00:00.000Z"),
+            merged("p2", "o/r #2: One", "2026-10-21T10:00:00.000Z"),
+            merged("p3", "o/r #3: Two", "2026-10-22T10:00:00.000Z"),
+            merged("p4", "o/r #4: Three", "2026-10-23T10:00:00.000Z"),
+            merged("p5", "o/r #5: Four", "2026-10-24T10:00:00.000Z"),
+            // Open work is not shipped.
+            WorkLogRecord {
+                category: "open".to_string(),
+                ..merged("p6", "o/r #6: Still open", "2026-10-25T10:00:00.000Z")
+            },
+        ] {
+            work_log::upsert(&pool, entry).await.expect("should store");
+        }
+
+        let since = since_last(&pool, "1:1 with Dana", TODAY, TOMORROW)
+            .await
+            .expect("read")
+            .expect("it has been held before");
+
+        assert_eq!(since.last_held, "2026-10-20T09:30:00.000Z");
+        assert_eq!(since.shipped, 4, "only merged work after the last holding");
+        assert_eq!(
+            since.newest,
+            ["o/r #5: Four", "o/r #4: Three", "o/r #3: Two"],
+            "the newest three"
+        );
+        assert_eq!(
+            note(&since, &chrono::FixedOffset::east_opt(0).expect("zone")).as_deref(),
+            Some("  Last held Tue 20 Oct. Shipped since: o/r #5: Four; o/r #4: Three; o/r #3: Two; and 1 more.")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_meeting_held_once_has_no_note_and_a_different_title_is_not_the_same_meeting() {
+        let pool = migrated_pool().await;
+        for entry in [
+            meeting("m1", "Standup", "2026-10-20T09:30:00.000Z"),
+            // Today's own row is not "before".
+            meeting("m2", "1:1 with Dana", "2026-10-27T09:30:00.000Z"),
+            // Held earlier, but under a different name.
+            meeting("m3", "1:1 with Danielle", "2026-10-21T09:30:00.000Z"),
+        ] {
+            work_log::upsert(&pool, entry).await.expect("should store");
+        }
+
+        assert_eq!(
+            since_last(&pool, "1:1 with Dana", TODAY, TOMORROW)
+                .await
+                .expect("read"),
+            None,
+            "held once, and only today"
+        );
+        assert_eq!(
+            since_last(&pool, "1:1 with Dan", TODAY, TOMORROW)
+                .await
+                .expect("read"),
+            None,
+            "a near match is a guess, not a series"
+        );
+    }
+
+    #[test]
+    fn says_nothing_shipped_rather_than_leaving_the_sentence_out() {
+        let since = SinceLast {
+            last_held: "2026-10-20T09:30:00.000Z".to_string(),
+            shipped: 0,
+            newest: Vec::new(),
+        };
+
+        assert_eq!(
+            note(&since, &chrono::FixedOffset::east_opt(0).expect("zone")).as_deref(),
+            Some("  Last held Tue 20 Oct. Nothing shipped since.")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_note_stays_with_its_meeting_and_goes_with_it_when_the_budget_runs_out() {
+        let pool = migrated_pool().await;
+        work_log::upsert(&pool, meeting("m1", "Standup", "2026-10-27T09:30:00.000Z"))
+            .await
+            .expect("should store");
+        let hits = in_window(&pool, TODAY, TOMORROW, Some("calendar"), 10)
+            .await
+            .expect("window");
+
+        let with =
+            to_context_with_notes(&hits, &[Some("  Last held Tue 20 Oct.".to_string())], 1000)
+                .expect("fits");
+        assert!(with.contains("Standup") && with.contains("\n  Last held Tue 20 Oct."));
+
+        let plain = to_context_with_notes(&hits, &[None], 1000).expect("fits");
+        assert_eq!(
+            plain,
+            to_context(&hits, 1000).expect("fits"),
+            "no note, no change"
+        );
     }
 
     #[tokio::test]
