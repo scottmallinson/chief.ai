@@ -1446,8 +1446,8 @@ mod delivery {
         let requests = github.await.expect("server");
         assert_eq!(
             requests.len(),
-            4,
-            "open, assigned issues, review requests and merged: four reads"
+            5,
+            "open, what holds the open ones up, assigned issues, review requests and merged: five reads"
         );
     }
 
