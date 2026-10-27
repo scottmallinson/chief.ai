@@ -33,6 +33,7 @@ mod microsoft;
 // OAuth machinery shared by every provider. Part of the crate's library API,
 // the same as `llama` below.
 pub mod oauth;
+mod people;
 mod perms;
 mod probe;
 mod profile;

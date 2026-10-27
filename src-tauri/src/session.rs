@@ -410,6 +410,21 @@ impl<'a> GithubSession<'a> {
             .await
     }
 
+    /// A person's public profile name, renewing the credential the same way.
+    pub async fn profile_name(&self, login: &str) -> Result<Option<String>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.profile_name(&token, login).await
+            })
+            .await
+    }
+
     /// Who reviewed one pull request, renewing the credential the same way.
     pub async fn reviewers(
         &self,

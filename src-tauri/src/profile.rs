@@ -227,6 +227,17 @@ pub async fn bootstrap(context: &recipe::Context) -> Result<Report, Error> {
         }
     }
 
+    // Who is who across the tools, proposed in a file the user owns. Best
+    // effort: nothing here can fail a recount that otherwise worked.
+    match crate::people::suggest(context).await {
+        Ok(0) => {}
+        Ok(added) => report.written.push(format!(
+            "{added} suggested {} in people.md, for you to confirm",
+            if added == 1 { "match" } else { "matches" }
+        )),
+        Err(error) => eprintln!("people: no suggestions this pass: {error}"),
+    }
+
     if kept > 0 {
         report.kept.push(format!(
             "{kept} facts you had changed or removed, left as they were"
