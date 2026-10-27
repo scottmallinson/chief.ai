@@ -933,13 +933,23 @@ mod tests {
             json!({ "whose": "reviewing" }),
             json!({ "state": "merged" }),
         ] {
-            let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+            // A second reply is on offer. A stub that has answered everything
+            // it was given simply stops listening, so an unwanted second
+            // request would otherwise go nowhere and prove nothing: here it
+            // would be answered, and the stub would be finished.
+            let (host, server) = serve(vec![
+                ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+                ("HTTP/1.1 200 OK", BLOCKERS),
+            ]);
             let context = connected(&host).await;
 
             dispatch(&context, &call("fetch_github_prs", arguments.clone())).await;
 
-            let requests = server.await.expect("the stub should finish");
-            assert_eq!(requests.len(), 1, "{arguments} should make one request");
+            assert!(
+                !server.is_finished(),
+                "{arguments} should make one request, not ask for status as well"
+            );
+            server.abort();
         }
     }
 
