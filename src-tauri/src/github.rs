@@ -920,12 +920,29 @@ fn pull_request_from(item: &Value) -> PullRequest {
 /// personal account gets one list covering both, and the only way the model can
 /// say whose a pull request is — or that two similar ones are not the same work
 /// twice — is if the entry says so itself.
-pub fn as_tool_entries(account: &str, pull_requests: &[PullRequest]) -> Vec<Value> {
+///
+/// A pull request that `blockers` has something to say about gains a `status`
+/// field holding that phrase, written by code. One with nothing to say gains
+/// no field at all, so the entry costs the prompt nothing it did not cost before.
+pub fn as_tool_entries(
+    account: &str,
+    pull_requests: &[PullRequest],
+    blockers: &[Blockers],
+) -> Vec<Value> {
     pull_requests
         .iter()
         .map(|pull_request| {
             let mut entry = json!(pull_request);
             entry["account"] = json!(account);
+
+            let id = pull_request.external_id();
+            if let Some(status) = blockers
+                .iter()
+                .find(|one| one.external_id().eq_ignore_ascii_case(&id))
+                .and_then(Blockers::describe)
+            {
+                entry["status"] = json!(status);
+            }
 
             entry
         })

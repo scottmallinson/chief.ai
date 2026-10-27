@@ -417,14 +417,27 @@ pub async fn fetch_github_prs(
     for account in &accounts {
         let name = describe(account);
 
-        match GithubSession::new(pool, github, account.id)
+        let session = GithubSession::new(pool, github, account.id);
+
+        match session
             .pull_requests(whose.into(), state.into(), PR_LIMIT)
             .await
         {
             Ok(found) => {
                 readable += 1;
                 reports.push(json!({ "account": name, "count": found.len() }));
-                pull_requests.extend(github::as_tool_entries(&name, &found));
+
+                // What is holding the user's own open pull requests up. Only
+                // for those: it is one more request, and for somebody else's
+                // work or finished work it has nothing to add. Best effort, so
+                // a failure here costs the annotation and not the answer.
+                let blockers = if whose == Whose::Mine && state == PullRequestState::Open {
+                    session.blockers(PR_LIMIT).await.unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
+                pull_requests.extend(github::as_tool_entries(&name, &found, &blockers));
             }
             Err(error) => {
                 reports.push(json!({ "account": name, "error": error.to_string() }));
@@ -863,6 +876,73 @@ mod tests {
         );
     }
 
+    const BLOCKERS: &str = r#"{"data":{"viewer":{"pullRequests":{"nodes":[
+      {"number":12,"isDraft":false,"repository":{"nameWithOwner":"scottmallinson/chief.ai"},
+       "reviewDecision":"CHANGES_REQUESTED",
+       "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]},
+       "reviewThreads":{"nodes":[{"isResolved":false}]}}]}}}}"#;
+
+    #[tokio::test]
+    async fn says_what_is_holding_up_the_users_own_open_pull_requests() {
+        let (host, server) = serve(vec![
+            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+            ("HTTP/1.1 200 OK", BLOCKERS),
+        ]);
+        let context = connected(&host).await;
+
+        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+
+        assert_eq!(
+            result["pull_requests"][0]["status"],
+            json!("checks failing, changes requested, 1 unresolved review comment")
+        );
+
+        let requests = server.await.expect("the stub should finish");
+        assert_eq!(requests.len(), 2, "one search and one status read");
+        let (line, _) = crate::llama::test_support::split(&requests[1]);
+        assert!(line.starts_with("POST /graphql"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn leaves_the_answer_alone_when_the_status_read_fails() {
+        let (host, server) = serve(vec![
+            ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+            ("HTTP/1.1 502 Bad Gateway", "{}"),
+        ]);
+        let context = connected(&host).await;
+
+        let result = dispatch(&context, &call("fetch_github_prs", json!({}))).await;
+
+        assert_eq!(
+            result["count"],
+            json!(1),
+            "the pull request is still listed"
+        );
+        assert!(
+            result["pull_requests"][0].get("status").is_none(),
+            "no status is invented when GitHub would not say: {result}"
+        );
+        server.await.expect("the stub should finish");
+    }
+
+    #[tokio::test]
+    async fn does_not_ask_for_status_of_anything_but_the_users_own_open_work() {
+        // Review requests are somebody else's; a closed one has nothing left
+        // to be blocked on. Either would be a request that adds nothing.
+        for arguments in [
+            json!({ "whose": "reviewing" }),
+            json!({ "state": "merged" }),
+        ] {
+            let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
+            let context = connected(&host).await;
+
+            dispatch(&context, &call("fetch_github_prs", arguments.clone())).await;
+
+            let requests = server.await.expect("the stub should finish");
+            assert_eq!(requests.len(), 1, "{arguments} should make one request");
+        }
+    }
+
     #[tokio::test]
     async fn asks_github_for_the_requested_state() {
         let (host, server) = serve(vec![("HTTP/1.1 200 OK", SEARCH_RESULTS)]);
@@ -887,9 +967,13 @@ mod tests {
     async fn reads_every_account_and_says_which_is_which() {
         // Answering out of one account was answering about half of a two-account
         // user's work, confidently and with nothing to say so.
+        // Each account is a search and then a status read, in that order.
+        const NOTHING_WRONG: &str = r#"{"data":{"viewer":{"pullRequests":{"nodes":[]}}}}"#;
         let (host, server) = serve(vec![
             ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+            ("HTTP/1.1 200 OK", NOTHING_WRONG),
             ("HTTP/1.1 200 OK", SEARCH_RESULTS),
+            ("HTTP/1.1 200 OK", NOTHING_WRONG),
         ]);
         let context = connected(&host).await;
         connect(&context, "hubot").await;
@@ -916,8 +1000,8 @@ mod tests {
 
         assert_eq!(
             server.await.expect("the stub should finish").len(),
-            2,
-            "each account is a read of its own, with its own token"
+            4,
+            "each account is a search and a status read of its own, with its own token"
         );
     }
 
