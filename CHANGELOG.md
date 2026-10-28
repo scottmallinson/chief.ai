@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.0 (2026-10-28)
+
+### Features
+
+- **agent:** show what the people you manage merged and have open before each meeting ([41182c3](https://github.com/scottmallinson/chief.ai/commit/41182c3405316e39827c5cee5f68d39b47999078))
+
 ## 0.21.0 (2026-10-28)
 
 ### Features
