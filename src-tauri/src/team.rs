@@ -36,8 +36,8 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::github::{Decision, TeamPull, TeamScope};
-use crate::{corpus, people, recipe, session::GithubSession};
+use crate::github::{Decision, TeamKind, TeamPull, TeamScope};
+use crate::{corpus, people, recipe, retrieval, session::GithubSession};
 
 /// Where the list lives, relative to the corpus.
 pub const FILE: &str = "team.md";
@@ -322,11 +322,8 @@ fn read_note(count: usize) -> Option<String> {
     })
 }
 
-/// Read what the user listed and say what is waiting.
-///
-/// `None` when no GitHub account is connected, so the caller can say that
-/// instead of this.
-pub async fn read(context: &recipe::Context) -> Option<Report> {
+/// What `team.md` lists, or the answer to give when it lists nothing.
+async fn listed(context: &recipe::Context) -> Result<Watched, Report> {
     let text = match context.corpus.read(FILE).await {
         Ok(text) => text,
         Err(corpus::Error::NoSuchFile(_)) => {
@@ -334,14 +331,14 @@ pub async fn read(context: &recipe::Context) -> Option<Report> {
             if let Err(error) = context.corpus.write(FILE, STARTER).await {
                 eprintln!("team: could not write {FILE}: {error}");
             }
-            return Some(Report {
+            return Err(Report {
                 markdown: how_to_turn_on(&[]),
                 provenance: None,
             });
         }
         Err(error) => {
             eprintln!("team: could not read {FILE}: {error}");
-            return Some(Report {
+            return Err(Report {
                 markdown: format!("Chief could not read `{FILE}`, so nothing was read."),
                 provenance: None,
             });
@@ -350,17 +347,18 @@ pub async fn read(context: &recipe::Context) -> Option<Report> {
 
     let watched = parse(&text);
     if watched.is_empty() {
-        return Some(Report {
+        return Err(Report {
             markdown: how_to_turn_on(&watched.unread),
             provenance: None,
         });
     }
 
-    let account = recipe::github_accounts(context).await.first().copied()?;
-    let session = GithubSession::new(&context.pool, &context.github, account);
+    Ok(watched)
+}
 
-    // Only people the user named, here or as confirmed in people.md, are named;
-    // the rest are handles.
+/// Names by handle: those confirmed in `people.md`, then those written in
+/// `team.md`, which win. Everybody else is a handle.
+async fn known_names(context: &recipe::Context, watched: &Watched) -> HashMap<String, String> {
     let mut names: HashMap<String, String> = match context.corpus.read(people::FILE).await {
         Ok(file) => people::parse(&file)
             .confirmed
@@ -375,6 +373,23 @@ pub async fn read(context: &recipe::Context) -> Option<Report> {
         }
     }
 
+    names
+}
+
+/// Read what the user listed and say what is waiting.
+///
+/// `None` when no GitHub account is connected, so the caller can say that
+/// instead of this.
+pub async fn read(context: &recipe::Context) -> Option<Report> {
+    let watched = match listed(context).await {
+        Ok(watched) => watched,
+        Err(report) => return Some(report),
+    };
+
+    let account = recipe::github_accounts(context).await.first().copied()?;
+    let session = GithubSession::new(&context.pool, &context.github, account);
+    let names = known_names(context, &watched).await;
+
     let now = Utc::now();
     let mut sections = vec!["## Pull requests waiting".to_string()];
 
@@ -382,7 +397,7 @@ pub async fn read(context: &recipe::Context) -> Option<Report> {
         sections.push(format!("### {}", who(&member.handle, &names)));
 
         match session
-            .team_pulls(TeamScope::Author(&member.handle), PER_REPO)
+            .team_pulls(TeamScope::Author(&member.handle), TeamKind::Open, PER_REPO)
             .await
         {
             Ok(pulls) if pulls.is_empty() => {
@@ -400,7 +415,7 @@ pub async fn read(context: &recipe::Context) -> Option<Report> {
         sections.push(format!("### {repository}"));
 
         match session
-            .team_pulls(TeamScope::Repository(repository), PER_REPO)
+            .team_pulls(TeamScope::Repository(repository), TeamKind::Open, PER_REPO)
             .await
         {
             Ok(pulls) if pulls.is_empty() => sections.push(
@@ -441,6 +456,200 @@ pub async fn read(context: &recipe::Context) -> Option<Report> {
     })
 }
 
+/// How far back a person's sheet looks for what they merged.
+const MERGED_DAYS: i64 = 14;
+
+/// Merged pull requests listed on a sheet before the rest are counted.
+const MERGED_LINES: usize = 10;
+
+fn merged_for(merged_at: &str, now: DateTime<Utc>) -> Option<String> {
+    let merged = DateTime::parse_from_rfc3339(merged_at).ok()?;
+    let days = (now - merged.with_timezone(&Utc)).num_days().max(0);
+
+    Some(match days {
+        0 => "merged today".to_string(),
+        1 => "merged 1 day ago".to_string(),
+        days => format!("merged {days} days ago"),
+    })
+}
+
+/// What somebody merged, newest first, one line each.
+#[must_use]
+pub fn merged_lines(pulls: &[TeamPull], now: DateTime<Utc>) -> Vec<String> {
+    let mut merged: Vec<&TeamPull> = pulls
+        .iter()
+        .filter(|pull| pull.merged_at.is_some())
+        .collect();
+    merged.sort_by(|left, right| right.merged_at.cmp(&left.merged_at));
+
+    if merged.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = vec![format!(
+        "Merged in the last {MERGED_DAYS} days ({}):",
+        merged.len()
+    )];
+    lines.extend(merged.iter().take(MERGED_LINES).map(|pull| {
+        let when = pull
+            .merged_at
+            .as_deref()
+            .and_then(|at| merged_for(at, now))
+            .unwrap_or_else(|| "merged".to_string());
+
+        format!(
+            "- {}#{} {}, {when}",
+            pull.repository, pull.number, pull.title
+        )
+    }));
+    if merged.len() > MERGED_LINES {
+        lines.push(format!(
+            "- and {} more, older than these.",
+            merged.len() - MERGED_LINES
+        ));
+    }
+
+    lines
+}
+
+/// The people in `watched` that a meeting names, by the name written beside
+/// their handle in `team.md` or confirmed in `people.md`.
+///
+/// **A person with no name cannot be matched**, because a handle is not what a
+/// calendar says. That is deliberate: matching "dvance" against a meeting
+/// called "dvance sync" is a guess, and a wrong name beside somebody's work is
+/// worse than no sheet.
+#[must_use]
+pub fn meeting_members<'a>(
+    watched: &'a Watched,
+    names: &HashMap<String, String>,
+    meeting: &str,
+) -> Vec<&'a Member> {
+    watched
+        .people
+        .iter()
+        .filter(|member| {
+            names
+                .get(&member.handle.to_lowercase())
+                .is_some_and(|name| people::mentions(meeting, name))
+        })
+        .collect()
+}
+
+/// A sheet for each of today's meetings that includes somebody the user listed.
+///
+/// `meetings` come from the work log, so which meetings there are costs no
+/// request; what each person merged and has open is read from GitHub with the
+/// user's own token, once per person however many meetings they are in.
+pub async fn one_on_ones(
+    context: &recipe::Context,
+    meetings: &[retrieval::Hit],
+    now: DateTime<Utc>,
+) -> Report {
+    let watched = match listed(context).await {
+        Ok(watched) => watched,
+        Err(report) => return report,
+    };
+    let names = known_names(context, &watched).await;
+
+    let matched: Vec<(&retrieval::Hit, Vec<&Member>)> = meetings
+        .iter()
+        .map(|hit| {
+            let text = format!(
+                "{} {}",
+                hit.title,
+                hit.summary.as_deref().unwrap_or_default()
+            );
+            (hit, meeting_members(&watched, &names, &text))
+        })
+        .filter(|(_, members)| !members.is_empty())
+        .collect();
+
+    if matched.is_empty() {
+        return Report {
+            markdown: format!(
+                "None of today's meetings include someone you listed in `{FILE}`. A meeting is \
+                 matched by the name beside the handle, as in `- Dana Vance = dvance`, appearing \
+                 in it."
+            ),
+            provenance: None,
+        };
+    }
+
+    let Some(account) = recipe::github_accounts(context).await.first().copied() else {
+        return Report {
+            markdown: "No GitHub account is connected, so Chief has nothing to read. Connect \
+                       GitHub in Settings."
+                .to_string(),
+            provenance: None,
+        };
+    };
+    let session = GithubSession::new(&context.pool, &context.github, account);
+    let since = (now - chrono::Duration::days(MERGED_DAYS))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let mut read: HashMap<String, Vec<String>> = HashMap::new();
+    let mut sections = vec!["## Meetings with your people".to_string()];
+
+    for (hit, members) in matched {
+        sections.push(format!(
+            "### {}",
+            retrieval::line(hit).unwrap_or_else(|| hit.title.clone())
+        ));
+
+        for member in members.into_iter().take(MAX_PEOPLE) {
+            let key = member.handle.to_lowercase();
+            sections.push(who(&member.handle, &names));
+
+            if !read.contains_key(&key) {
+                let mut lines = Vec::new();
+
+                match session
+                    .team_pulls(
+                        TeamScope::Author(&member.handle),
+                        TeamKind::MergedSince(&since),
+                        PER_REPO,
+                    )
+                    .await
+                {
+                    Ok(pulls) => lines.extend(merged_lines(&pulls, now)),
+                    Err(error) => {
+                        lines.push(format!("What they merged could not be read: {error}"))
+                    }
+                }
+                match session
+                    .team_pulls(TeamScope::Author(&member.handle), TeamKind::Open, PER_REPO)
+                    .await
+                {
+                    Ok(pulls) => lines.extend(describe(&pulls, now, &names, Show::Repository)),
+                    Err(error) => {
+                        lines.push(format!("What they have open could not be read: {error}"))
+                    }
+                }
+                if lines.is_empty() {
+                    lines.push(
+                        "Nothing merged or open, or none that your GitHub account can see."
+                            .to_string(),
+                    );
+                }
+
+                read.insert(key.clone(), lines);
+            }
+
+            sections.extend(read[&key].iter().cloned());
+        }
+    }
+
+    Report {
+        markdown: sections.join("\n"),
+        provenance: Some(format!(
+            "Meetings from the work log; pull requests read from GitHub just now, for people \
+             listed in {FILE}."
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,6 +669,7 @@ mod tests {
             url: String::new(),
             author: "dvance".to_string(),
             created_at: created.to_string(),
+            merged_at: None,
             draft: false,
             decision,
             reviews: 0,
@@ -606,6 +816,72 @@ mod tests {
         assert_eq!(
             lines[1],
             "- acme/api#2 Change 2: open 7 days, review requested from @prao"
+        );
+    }
+
+    fn merged(number: i64, at: &str) -> TeamPull {
+        let mut pull = pull(number, "2026-10-01T09:00:00Z", Decision::None);
+        pull.repository = "acme/web".to_string();
+        pull.merged_at = Some(at.to_string());
+        pull
+    }
+
+    #[test]
+    fn lists_what_was_merged_newest_first_and_counts_the_rest() {
+        let mut pulls: Vec<TeamPull> = (1..=12)
+            .map(|number| merged(number, &format!("2026-10-{:02}T09:00:00Z", 10 + number)))
+            .collect();
+        // Open work is not on this list.
+        pulls.push(pull(99, "2026-10-26T09:00:00Z", Decision::Required));
+
+        let lines = merged_lines(&pulls, now());
+
+        assert_eq!(lines[0], "Merged in the last 14 days (12):");
+        assert_eq!(lines[1], "- acme/web#12 Change 12, merged 5 days ago");
+        assert_eq!(lines.len(), 1 + MERGED_LINES + 1);
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("- and 2 more, older than these.")
+        );
+        assert!(!lines.iter().any(|line| line.contains("#99")));
+    }
+
+    #[test]
+    fn says_nothing_when_nothing_was_merged() {
+        assert_eq!(merged_lines(&[], now()), Vec::<String>::new());
+    }
+
+    /// A meeting names a person by the name written beside their handle, never
+    /// by the handle.
+    ///
+    /// Proved by matching on the handle as well:
+    ///
+    /// ```text
+    /// a handle is not what a calendar says
+    /// ```
+    #[test]
+    fn a_meeting_names_a_person_only_by_their_name() {
+        let watched = parse("- Dana Vance = dvance\n- prao\n- Sam Roe = sroe\n");
+        let names = HashMap::from([("dvance".to_string(), "Dana Vance".to_string())]);
+
+        let found = |meeting: &str| -> Vec<String> {
+            meeting_members(&watched, &names, meeting)
+                .iter()
+                .map(|member| member.handle.clone())
+                .collect()
+        };
+
+        assert_eq!(found("1:1 with Dana Vance"), vec!["dvance"]);
+        assert_eq!(
+            found("prao sync"),
+            Vec::<String>::new(),
+            "a handle is not what a calendar says"
+        );
+        assert_eq!(found("Retro with Dana Vancelot"), Vec::<String>::new());
+        assert_eq!(
+            found("Sam Roe and Dana Vance"),
+            vec!["dvance"],
+            "Sam has no name on record here"
         );
     }
 }

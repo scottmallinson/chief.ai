@@ -51,6 +51,9 @@ pub enum Intent {
     /// `team.md`. Opt-in, and read live: it is somebody else's work, which the
     /// work log does not hold.
     Team,
+    /// Today's meetings that include someone listed in `team.md`, each with
+    /// what that person merged lately and has open. Opt-in, like [`Intent::Team`].
+    OneOnOne,
 }
 
 /// How far back a question is asking about.
@@ -116,13 +119,14 @@ fn monday_of(date: chrono::NaiveDate) -> chrono::NaiveDate {
 }
 
 /// The slash commands, matched before anything else and matched exactly.
-const COMMANDS: [(&str, Intent); 6] = [
+const COMMANDS: [(&str, Intent); 7] = [
     ("/brief", Intent::Brief),
     ("/prep", Intent::Prep),
     ("/log", Intent::Log(Window::Recent)),
     ("/week", Intent::Log(Window::ThisWeek)),
     ("/waiting", Intent::Waiting),
     ("/team", Intent::Team),
+    ("/1on1", Intent::OneOnOne),
 ];
 
 /// The natural-language phrases that route, written out in full.
@@ -248,7 +252,7 @@ impl Intent {
             // The brief is a file on disk. An empty one is not a connection
             // problem and saying it were would be a wrong answer.
             Intent::Brief => Feeds::Corpus,
-            Intent::Prep => Feeds::Calendar,
+            Intent::Prep | Intent::OneOnOne => Feeds::Calendar,
             Intent::Log(_) | Intent::Waiting | Intent::Team => Feeds::Github,
         }
     }
@@ -487,6 +491,7 @@ pub async fn answer(intent: Intent, context: &recipe::Context) -> Option<Answere
         Intent::Log(window) => log(context, window).await,
         Intent::Waiting => waiting(context).await,
         Intent::Team => team(context).await,
+        Intent::OneOnOne => one_on_one(context).await,
     }
     .filter(|answered| !answered.markdown.trim().is_empty());
 
@@ -751,6 +756,34 @@ async fn team(context: &recipe::Context) -> Option<Answered> {
     })
 }
 
+/// A sheet for each of today's meetings that includes somebody the user manages.
+///
+/// The meetings are read from the work log, like `/prep`; `None` when there are
+/// none, so a machine with no calendar is told that.
+async fn one_on_one(context: &recipe::Context) -> Option<Answered> {
+    let (from, to) = day_window(&chrono::Local::now());
+    let hits = retrieval::in_window(
+        &context.pool,
+        &from,
+        &to,
+        Some("calendar"),
+        recipe::CALENDAR_LIMIT.into(),
+    )
+    .await
+    .ok()?;
+
+    if hits.is_empty() {
+        return None;
+    }
+
+    let report = crate::team::one_on_ones(context, &hits, chrono::Utc::now()).await;
+
+    Some(Answered {
+        markdown: report.markdown,
+        provenance: report.provenance,
+    })
+}
+
 /// The live read, as lines. `None` for an empty one, like the stored read.
 fn live_reviews(read: &serde_json::Value) -> Option<Answered> {
     let lines: Vec<String> = read["pull_requests"]
@@ -891,6 +924,7 @@ mod tests {
         assert_eq!(route("/week"), Some(Intent::Log(Window::ThisWeek)));
         assert_eq!(route("/waiting"), Some(Intent::Waiting));
         assert_eq!(route("/team"), Some(Intent::Team));
+        assert_eq!(route("/1on1"), Some(Intent::OneOnOne));
     }
 
     #[test]
@@ -1505,6 +1539,127 @@ mod delivery {
             engine.await.expect("engine"),
             Vec::<String>::new(),
             "and it must cost zero model calls"
+        );
+    }
+
+    const MERGED_ANSWER: &str = r#"{"data":{"search":{"nodes":[
+      {"number":30,"title":"Cache the calendar","url":"u","createdAt":"2026-10-01T09:00:00Z",
+       "mergedAt":"2026-10-26T09:00:00Z","isDraft":false,"reviewDecision":"APPROVED",
+       "author":{"login":"dvance"},"repository":{"nameWithOwner":"acme/web"},
+       "reviews":{"totalCount":1},"reviewRequests":{"nodes":[]}}
+    ]}}}"#;
+
+    async fn meeting(context: &recipe::Context, title: &str) {
+        let (from, _to) = day_window(&chrono::Local::now());
+        work_log::upsert(
+            &context.pool,
+            work_log::WorkLogRecord {
+                timestamp: bump(&from),
+                source: "calendar".to_string(),
+                category: "calendar".to_string(),
+                title: title.to_string(),
+                content: format!("10:00 {title}"),
+                summary: Some("10:00".to_string()),
+                url: None,
+                raw_ref: None,
+                external_id: format!("cal:{title}"),
+                account_id: 1,
+            },
+        )
+        .await
+        .expect("should store");
+    }
+
+    #[tokio::test]
+    async fn one_on_one_shows_what_a_listed_person_merged_and_has_open() {
+        let (mut context, _scratch, engine) = silent("one-on-one").await;
+        let (host, github) = serve(vec![
+            ("HTTP/1.1 200 OK", MERGED_ANSWER),
+            ("HTTP/1.1 200 OK", TEAM_ANSWER),
+        ]);
+        context.github = github::Client::against(&host).expect("client");
+        connect(&context, integrations::GITHUB).await;
+        meeting(&context, "1:1 with Dana Vance").await;
+        context
+            .corpus
+            .write(crate::team::FILE, "## People\n- Dana Vance = dvance\n")
+            .await
+            .expect("file");
+
+        let answered = answer(Intent::OneOnOne, &context)
+            .await
+            .expect("a meeting with a listed person");
+
+        assert!(
+            answered.markdown.contains("### ")
+                && answered.markdown.contains("1:1 with Dana Vance")
+                && answered.markdown.contains("Dana Vance (@dvance)")
+                && answered
+                    .markdown
+                    .contains("Merged in the last 14 days (1):")
+                && answered
+                    .markdown
+                    .contains("- acme/web#30 Cache the calendar, merged ")
+                && answered.markdown.contains("Waiting for review (1):")
+                && answered
+                    .markdown
+                    .contains("- acme/api#12 Retry the sync: open "),
+            "{}",
+            answered.markdown
+        );
+        assert_eq!(
+            github.await.expect("github").len(),
+            2,
+            "one request for what they merged and one for what is open"
+        );
+        assert_eq!(
+            engine.await.expect("engine"),
+            Vec::<String>::new(),
+            "and it must cost zero model calls"
+        );
+    }
+
+    /// A meeting only matches by a name; a handle on its own is not what a
+    /// calendar says, and somebody who is not listed is not read at all.
+    ///
+    /// Proved by matching on the handle when a person has no name:
+    ///
+    /// ```text
+    /// a meeting with nobody listed must cost no request
+    /// ```
+    #[tokio::test]
+    async fn one_on_one_reads_nothing_for_a_meeting_with_nobody_listed() {
+        let (mut context, _scratch, _engine) = silent("one-on-one-none").await;
+        // Spare replies that are never fetched, so a request would show.
+        let (host, github) = serve(vec![
+            ("HTTP/1.1 200 OK", MERGED_ANSWER),
+            ("HTTP/1.1 200 OK", TEAM_ANSWER),
+        ]);
+        context.github = github::Client::against(&host).expect("client");
+        connect(&context, integrations::GITHUB).await;
+        meeting(&context, "1:1 with Priya Rao").await;
+        meeting(&context, "prao sync").await;
+        context
+            .corpus
+            .write(
+                crate::team::FILE,
+                "## People\n- Dana Vance = dvance\n- prao\n",
+            )
+            .await
+            .expect("file");
+
+        let answered = answer(Intent::OneOnOne, &context).await.expect("an answer");
+
+        assert!(
+            answered
+                .markdown
+                .contains("None of today's meetings include someone you listed"),
+            "{}",
+            answered.markdown
+        );
+        assert!(
+            !github.is_finished(),
+            "a meeting with nobody listed must cost no request"
         );
     }
 
