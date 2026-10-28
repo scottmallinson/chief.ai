@@ -212,7 +212,7 @@ impl Rest {
         email: &str,
         token: &str,
     ) -> Result<Vec<Issue>, Error> {
-        self.search(site, email, token, ASSIGNED).await
+        self.search(site, email, token, ASSIGNED, true).await
     }
 
     /// What this person resolved since `since`.
@@ -223,7 +223,7 @@ impl Rest {
         token: &str,
         since: chrono::NaiveDate,
     ) -> Result<Vec<Issue>, Error> {
-        self.search(site, email, token, &super::completed_jql(since))
+        self.search(site, email, token, &super::completed_jql(since), false)
             .await
     }
 
@@ -233,12 +233,18 @@ impl Rest {
         email: &str,
         token: &str,
         jql: &str,
+        history: bool,
     ) -> Result<Vec<Issue>, Error> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "jql": jql,
             "maxResults": READ_LIMIT,
             "fields": super::SEARCH_FIELDS,
         });
+        // The changelog roughly doubles an issue's size, so the search for what
+        // was resolved, which has no use for it, does not ask.
+        if history {
+            body["expand"] = "changelog".into();
+        }
 
         let found: serde_json::Value = self.post(site, SEARCH, email, token, &body).await?;
 
@@ -545,7 +551,9 @@ mod tests {
     async fn asks_for_the_fields_that_say_how_an_issue_is_going() {
         let body = serde_json::json!({ "issues": [{ "key": "ENG-3", "fields": {
             "summary": "s", "status": { "name": "Doing", "statusCategory": { "key": "indeterminate" } },
-            "duedate": "2026-11-02", "priority": { "name": "Low" } } }] })
+            "duedate": "2026-11-02", "priority": { "name": "Low" } },
+            "changelog": { "histories": [{ "created": "2026-10-26T09:00:00.000+0000",
+              "items": [{ "field": "status", "fromString": "To Do", "toString": "Doing" }] }] } }] })
         .to_string();
         let (host, server) = serve(vec![("HTTP/1.1 200 OK", body)]);
         let rest = Rest::new().expect("client");
@@ -557,10 +565,11 @@ mod tests {
 
         assert_eq!(found[0].detail.due.as_deref(), Some("2026-11-02"));
         assert_eq!(found[0].detail.status_kind, "indeterminate");
+        assert_eq!(found[0].detail.changes.len(), 1);
 
         let sent = server.await.expect("server").join("");
         assert!(
-            sent.contains("issuelinks") && sent.contains("duedate"),
+            sent.contains("issuelinks") && sent.contains("duedate") && sent.contains("changelog"),
             "{sent}"
         );
     }

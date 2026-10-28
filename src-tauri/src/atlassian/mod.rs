@@ -472,6 +472,65 @@ pub struct Detail {
     pub blocked_by: Vec<String>,
     /// Who it is assigned to, by display name.
     pub assignee: Option<String>,
+    /// Status moves and blocks, from the changelog. Empty when the search did
+    /// not ask for it, as the Remote MCP one does not, which is different from
+    /// nothing having happened.
+    pub changes: Vec<crate::items::Change>,
+    /// Whether the search returned a changelog at all.
+    pub history: bool,
+}
+
+/// The dated status moves and blocks in an issue's changelog.
+///
+/// Jira writes a link change as the sentence it shows, so a block is read
+/// from "This issue is blocked by ENG-4" and the key is its last word. A site
+/// that words it otherwise reads as no block: a block Chief cannot date is
+/// left undated rather than guessed at.
+#[must_use]
+pub(crate) fn changes_of(issue: &serde_json::Value) -> Vec<crate::items::Change> {
+    use crate::items::{Change, ChangeKind};
+
+    let text = |value: &serde_json::Value| value.as_str().map(str::to_string);
+
+    issue["changelog"]["histories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|history| {
+            let at = text(&history["created"]);
+
+            history["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| {
+                    let at = at.clone()?;
+                    let field = item["field"].as_str()?;
+
+                    if field.eq_ignore_ascii_case("status") {
+                        Some(Change {
+                            at,
+                            kind: ChangeKind::Moved {
+                                from: text(&item["fromString"]).unwrap_or_default(),
+                                to: text(&item["toString"])?,
+                            },
+                        })
+                    } else if field.eq_ignore_ascii_case("link") {
+                        let sentence = item["toString"].as_str()?;
+                        let by = sentence.split_whitespace().last()?;
+
+                        (sentence.to_lowercase().contains("is blocked by") && by.contains('-'))
+                            .then(|| Change {
+                                at,
+                                kind: ChangeKind::Blocked { by: by.to_string() },
+                            })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Read [`Detail`] out of an issue's `fields`.
@@ -514,6 +573,8 @@ pub(crate) fn detail_of(fields: Option<&serde_json::Value>) -> Detail {
         status_kind: text(&fields["status"]["statusCategory"]["key"]).unwrap_or_default(),
         blocked_by,
         assignee: text(&fields["assignee"]["displayName"]),
+        changes: Vec::new(),
+        history: false,
     }
 }
 
@@ -1363,7 +1424,11 @@ pub(crate) fn issues_at(value: &serde_json::Value, site_url: &str) -> Vec<Issue>
                 status,
                 url,
                 resolved,
-                detail: detail_of(fields),
+                detail: Detail {
+                    changes: changes_of(issue),
+                    history: issue.get("changelog").is_some(),
+                    ..detail_of(fields)
+                },
             })
         })
         .collect()
@@ -2355,6 +2420,41 @@ mod tests {
             .expect_err("should refuse");
 
         assert!(matches!(error, Error::Rejected), "{error:?}");
+    }
+
+    #[test]
+    fn reads_dated_moves_and_blocks_out_of_the_changelog() {
+        use crate::items::{Change, ChangeKind};
+
+        let issue = serde_json::json!({ "key": "ENG-3", "changelog": { "histories": [
+            { "created": "2026-10-20T09:00:00.000+0000", "items": [
+                { "field": "status", "fromString": "To Do", "toString": "In Progress" },
+                { "field": "assignee", "fromString": "A", "toString": "B" } ] },
+            { "created": "2026-10-15T09:00:00.000+0000", "items": [
+                { "field": "Link", "toString": "This issue is blocked by ENG-4" } ] },
+            { "created": "2026-10-14T09:00:00.000+0000", "items": [
+                { "field": "Link", "toString": "This issue relates to ENG-9" } ] }
+        ] } });
+
+        assert_eq!(
+            changes_of(&issue),
+            [
+                Change {
+                    at: "2026-10-20T09:00:00.000+0000".to_string(),
+                    kind: ChangeKind::Moved {
+                        from: "To Do".to_string(),
+                        to: "In Progress".to_string()
+                    }
+                },
+                Change {
+                    at: "2026-10-15T09:00:00.000+0000".to_string(),
+                    kind: ChangeKind::Blocked {
+                        by: "ENG-4".to_string()
+                    }
+                },
+            ]
+        );
+        assert!(changes_of(&serde_json::json!({ "key": "ENG-3" })).is_empty());
     }
 
     fn detailed_issue() -> serde_json::Value {

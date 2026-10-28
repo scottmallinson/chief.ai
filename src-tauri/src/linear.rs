@@ -146,6 +146,8 @@ pub struct Item {
     pub blocked_by: Vec<String>,
     /// Pull requests attached to the issue, as `owner/name#number`.
     pub pull_requests: Vec<String>,
+    /// Status moves and blocks, newest first as Linear returns them.
+    pub changes: Vec<crate::items::Change>,
 }
 
 /// What is assigned to the key holder, with the detail [`Item`] carries.
@@ -169,8 +171,9 @@ query Items($first: Int!) {
     nodes {
       identifier title priority dueDate url updatedAt
       state { name type }
-      inverseRelations { nodes { type issue { identifier completedAt canceledAt } } }
+      inverseRelations { nodes { type createdAt issue { identifier completedAt canceledAt } } }
       attachments { nodes { url } }
+      history(first: 25) { nodes { createdAt fromState { name } toState { name } } }
     }
   }
 }
@@ -241,6 +244,42 @@ fn read_items(value: &serde_json::Value) -> Result<Vec<Item>, Error> {
                 .filter_map(|relation| text(&relation["issue"], "identifier"))
                 .collect();
 
+            let mut changes: Vec<crate::items::Change> = node["history"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| {
+                    // An entry that changed something else has no `toState`.
+                    Some(crate::items::Change {
+                        at: text(entry, "createdAt")?,
+                        kind: crate::items::ChangeKind::Moved {
+                            from: text(&entry["fromState"], "name").unwrap_or_default(),
+                            to: text(&entry["toState"], "name")?,
+                        },
+                    })
+                })
+                .collect();
+
+            changes.extend(
+                node["inverseRelations"]["nodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|relation| relation["type"] == "blocks")
+                    .filter(|relation| {
+                        relation["issue"]["completedAt"].is_null()
+                            && relation["issue"]["canceledAt"].is_null()
+                    })
+                    .filter_map(|relation| {
+                        Some(crate::items::Change {
+                            at: text(relation, "createdAt")?,
+                            kind: crate::items::ChangeKind::Blocked {
+                                by: text(&relation["issue"], "identifier")?,
+                            },
+                        })
+                    }),
+            );
+
             let pull_requests = node["attachments"]["nodes"]
                 .as_array()
                 .into_iter()
@@ -261,6 +300,7 @@ fn read_items(value: &serde_json::Value) -> Result<Vec<Item>, Error> {
                 updated_at: text(node, "updatedAt"),
                 blocked_by,
                 pull_requests,
+                changes,
             })
         })
         .collect())
@@ -718,9 +758,13 @@ mod tests {
               "updatedAt": "2026-10-27T09:00:00.000Z",
               "state": { "name": "In Progress", "type": "started" },
               "inverseRelations": { "nodes": [
-                { "type": "blocks", "issue": { "identifier": "REC-48", "completedAt": null, "canceledAt": null } },
-                { "type": "blocks", "issue": { "identifier": "REC-47", "completedAt": "2026-10-20T09:00:00.000Z", "canceledAt": null } },
+                { "type": "blocks", "createdAt": "2026-10-15T08:00:00.000Z", "issue": { "identifier": "REC-48", "completedAt": null, "canceledAt": null } },
+                { "type": "blocks", "createdAt": "2026-10-10T08:00:00.000Z", "issue": { "identifier": "REC-47", "completedAt": "2026-10-20T09:00:00.000Z", "canceledAt": null } },
                 { "type": "related", "issue": { "identifier": "REC-46", "completedAt": null, "canceledAt": null } }
+              ] },
+              "history": { "nodes": [
+                { "createdAt": "2026-10-22T10:00:00.000Z", "fromState": { "name": "Todo" }, "toState": { "name": "In Progress" } },
+                { "createdAt": "2026-10-21T10:00:00.000Z", "fromState": null, "toState": null }
               ] },
               "attachments": { "nodes": [
                 { "url": "https://github.com/scottmallinson/chief.ai/pull/131" },
@@ -756,6 +800,37 @@ mod tests {
 
         // REC-47 is finished and REC-46 is only related.
         assert_eq!(items[0].blocked_by, ["REC-48"]);
+    }
+
+    #[tokio::test]
+    async fn reads_when_it_moved_and_when_it_was_blocked() {
+        use crate::items::{Change, ChangeKind};
+
+        let (host, _server) = serve(vec![("HTTP/1.1 200 OK", ITEMS)]);
+        let client = Client::against(&host).expect("client");
+
+        let items = client.items("lin_api_test").await.expect("should read");
+
+        // The history entry that changed nothing about the state is not a move,
+        // and only the unfinished blocker's relation is a block.
+        assert_eq!(
+            items[0].changes,
+            [
+                Change {
+                    at: "2026-10-22T10:00:00.000Z".to_string(),
+                    kind: ChangeKind::Moved {
+                        from: "Todo".to_string(),
+                        to: "In Progress".to_string()
+                    }
+                },
+                Change {
+                    at: "2026-10-15T08:00:00.000Z".to_string(),
+                    kind: ChangeKind::Blocked {
+                        by: "REC-48".to_string()
+                    }
+                },
+            ]
+        );
     }
 
     #[tokio::test]

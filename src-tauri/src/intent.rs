@@ -1569,8 +1569,8 @@ mod delivery {
             answered.markdown.contains("## Blocked (2)")
                 && answered
                     .markdown
-                    .contains("Pull requests: o/r#131 (checks failing, changes requested).")
-                && answered.markdown.contains("Blocked by REC-49."),
+                    .contains("Pull request o/r#131 (checks failing, changes requested)")
+                && answered.markdown.contains("Blocked by REC-49,"),
             "{}",
             answered.markdown
         );
