@@ -704,6 +704,16 @@ Linear, whichever of them are connected, and how it is going.
   4-core x86 box; slower on the Mac mini.
 - **Nothing streams.** A batch is held until the check has read it, so the answer arrives whole;
   if the engine cannot be reached the same facts are shown as found.
+- **`/items team` is the same report for each person in `team.md`.** GitHub is read by handle (their
+  open pull requests with checks, review decision and unresolved threads, and their assigned
+  issues); Linear and Jira only by the **exact name written beside the handle**, found with a
+  `name` variable on Linear and a user search on Jira that yields an account id, and only the id
+  goes into the JQL. A name two people share (Linear) or that is not exactly one active person
+  (Jira) reads as nothing and says so, because a wrong name beside somebody's work is worse than no
+  sheet. A handle with no name is read from GitHub only and the report says Jira and Linear were not
+  searched. **Jira over the sign-in route cannot do this**: looking a person up by name is not one
+  of the deterministic Remote MCP tools, so those accounts say they need an API token. The headline
+  lists each person's counts. Tested against stubs for Linear and Jira, not a live workspace.
 - **A pull request belongs to an item** when Linear attached it (read from the address, not from
   Linear's own source label) or when the item's key appears in the pull request's title or
   description as a whole word, which is how Jira's GitHub integration matches them. Jira's own

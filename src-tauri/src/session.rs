@@ -349,6 +349,26 @@ impl<'a> GithubSession<'a> {
             .await
     }
 
+    /// The open issues assigned to somebody else, renewing the credential the
+    /// same way.
+    pub async fn assigned_issues_to(
+        &self,
+        login: &str,
+        limit: u8,
+    ) -> Result<Vec<github::Issue>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.assigned_issues_to(&token, login, limit).await
+            })
+            .await
+    }
+
     /// The user's own pull requests merged on or after `since`.
     pub async fn merged_since(
         &self,

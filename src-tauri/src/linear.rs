@@ -49,6 +49,10 @@ pub enum Error {
     Transport,
     #[error("Linear answered with something unexpected")]
     Decode,
+    /// Two people in the workspace share the name, so whose work it is cannot
+    /// be told from the name.
+    #[error("more than one person in Linear has that name")]
+    Ambiguous,
 }
 
 impl serde::Serialize for Error {
@@ -178,6 +182,27 @@ query Items($first: Int!) {
   }
 }
 ";
+
+/// [`ITEMS_QUERY`] asked about somebody by name instead of about the key
+/// holder, and also returning who each issue is assigned to so two people with
+/// one name can be told apart.
+///
+/// Derived from the same text so the two cannot drift in what they select.
+fn items_of_query() -> String {
+    ITEMS_QUERY
+        .replace(
+            "query Items($first: Int!)",
+            "query ItemsOf($first: Int!, $name: String!)",
+        )
+        .replace(
+            "assignee: { isMe: { eq: true } }",
+            "assignee: { name: { eqIgnoreCase: $name } }",
+        )
+        .replace(
+            "identifier title priority",
+            "assignee { id } identifier title priority",
+        )
+}
 
 /// A GitHub pull request address as `owner/name#number`, or `None` for any
 /// other kind of link. Read from the address and not from a field Linear calls
@@ -430,10 +455,36 @@ impl Client {
     /// What is assigned to the key holder and open, with its due date, what
     /// blocks it and the pull requests attached to it.
     pub async fn items(&self, key: &str) -> Result<Vec<Item>, Error> {
-        let body = serde_json::json!({
-            "query": ITEMS_QUERY,
-            "variables": { "first": i32::from(READ_LIMIT) },
-        });
+        self.read_items_of(
+            key,
+            ITEMS_QUERY,
+            serde_json::json!({ "first": i32::from(READ_LIMIT) }),
+        )
+        .await
+    }
+
+    /// What is assigned to somebody else in the key holder's workspace, found
+    /// by their exact name and nothing looser.
+    ///
+    /// **A name that two people share reads as nothing.** A wrong name beside
+    /// somebody's work is worse than no sheet, so the issues are read and, if
+    /// they belong to more than one person, refused as [`Error::Ambiguous`].
+    pub async fn items_of(&self, key: &str, name: &str) -> Result<Vec<Item>, Error> {
+        self.read_items_of(
+            key,
+            &items_of_query(),
+            serde_json::json!({ "first": i32::from(READ_LIMIT), "name": name }),
+        )
+        .await
+    }
+
+    async fn read_items_of(
+        &self,
+        key: &str,
+        query: &str,
+        variables: serde_json::Value,
+    ) -> Result<Vec<Item>, Error> {
+        let body = serde_json::json!({ "query": query, "variables": variables });
 
         let response = self
             .http
@@ -454,6 +505,19 @@ impl Client {
         }
 
         let value: serde_json::Value = response.json().await.map_err(|_| Error::Decode)?;
+
+        // Only the query that asks by name returns who each issue belongs to.
+        let mut owners: Vec<&str> = value["data"]["issues"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|node| node["assignee"]["id"].as_str())
+            .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        if owners.len() > 1 {
+            return Err(Error::Ambiguous);
+        }
 
         read_items(&value)
     }
@@ -831,6 +895,61 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn asks_about_somebody_by_name_and_not_about_the_key_holder() {
+        let query = items_of_query();
+
+        assert!(query.contains("$name: String!"), "{query}");
+        assert!(query.contains("eqIgnoreCase: $name"), "{query}");
+        assert!(!query.contains("isMe"), "{query}");
+        // Everything else the report reads is still read.
+        assert!(
+            query.contains("history(first: 25)") && query.contains("inverseRelations"),
+            "{query}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_somebody_elses_items_by_name_and_sends_the_name_as_a_variable() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ITEMS)]);
+        let client = Client::against(&host).expect("client");
+
+        let items = client
+            .items_of("lin_api_test", "Dana Vance")
+            .await
+            .expect("should read");
+
+        assert_eq!(items.len(), 2);
+        let sent = server.await.expect("server").join("");
+        assert!(
+            sent.contains("Dana Vance") && sent.contains("eqIgnoreCase"),
+            "{sent}"
+        );
+        // The name travels once, as a variable, and is never spliced into the
+        // query text, where it could carry a filter of its own.
+        assert_eq!(sent.matches("Dana Vance").count(), 1, "{sent}");
+    }
+
+    /// Proved by deleting the owner check in `read_items_of`: two people's
+    /// issues were then reported as one person's.
+    #[tokio::test]
+    async fn a_name_two_people_share_is_refused_rather_than_guessed() {
+        const TWO: &str = r#"{ "data": { "viewer": { "name": "S", "email": "s@example.com" },
+          "issues": { "nodes": [
+            { "assignee": { "id": "u1" }, "identifier": "REC-1", "title": "a", "priority": 0,
+              "state": { "name": "Todo", "type": "unstarted" } },
+            { "assignee": { "id": "u2" }, "identifier": "REC-2", "title": "b", "priority": 0,
+              "state": { "name": "Todo", "type": "unstarted" } }
+          ] } } }"#;
+        let (host, _server) = serve(vec![("HTTP/1.1 200 OK", TWO)]);
+        let client = Client::against(&host).expect("client");
+
+        assert!(matches!(
+            client.items_of("lin_api_test", "Dana Vance").await,
+            Err(Error::Ambiguous)
+        ));
     }
 
     #[tokio::test]

@@ -80,6 +80,10 @@ const SEARCH: &str = "/rest/api/3/search/jql";
 /// names.
 const MYSELF: &str = "/rest/api/3/myself";
 
+/// Finds people by what they are called. Used to turn a name into an account
+/// id, since a name is not something JQL can be trusted with.
+const USER_SEARCH: &str = "/rest/api/3/user/search";
+
 /// Confluence's CQL search, which is under `/wiki` like everything else of
 /// its.
 const SEARCH_PAGES: &str = "/wiki/rest/api/search";
@@ -213,6 +217,51 @@ impl Rest {
         token: &str,
     ) -> Result<Vec<Issue>, Error> {
         self.search(site, email, token, ASSIGNED, true).await
+    }
+
+    /// What is assigned to somebody else and not finished, found by their exact
+    /// display name.
+    ///
+    /// **The name is turned into an account id first, and only the id goes
+    /// into the search.** JQL splices text, so a typed name never does.
+    /// Exactly one active person must be called that: two, or none, is
+    /// [`Error::NotOnePerson`], because a wrong name beside somebody's work is
+    /// worse than no sheet.
+    pub async fn assigned_to(
+        &self,
+        site: &str,
+        email: &str,
+        token: &str,
+        name: &str,
+    ) -> Result<Vec<Issue>, Error> {
+        let people: Vec<UserHit> = self
+            .get(site, USER_SEARCH, email, token, &[("query", name)])
+            .await?;
+
+        let mut matching = people
+            .iter()
+            .filter(|person| person.active && person.display_name.eq_ignore_ascii_case(name));
+        let (Some(person), None) = (matching.next(), matching.next()) else {
+            return Err(Error::NotOnePerson);
+        };
+
+        // An account id is letters, digits, colons and hyphens. Anything else
+        // is not one, and does not go near a query.
+        if person.account_id.is_empty()
+            || !person
+                .account_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '-')
+        {
+            return Err(Error::Decode);
+        }
+
+        let jql = format!(
+            "assignee = \"{}\" AND resolution = EMPTY ORDER BY updated DESC",
+            person.account_id
+        );
+
+        self.search(site, email, token, &jql, true).await
     }
 
     /// What this person resolved since `since`.
@@ -381,6 +430,17 @@ struct MyselfReply {
     account_id: String,
     #[serde(default)]
     display_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserHit {
+    #[serde(default)]
+    account_id: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -572,6 +632,74 @@ mod tests {
             sent.contains("issuelinks") && sent.contains("duedate") && sent.contains("changelog"),
             "{sent}"
         );
+    }
+
+    fn people(list: serde_json::Value) -> (&'static str, String) {
+        ("HTTP/1.1 200 OK", list.to_string())
+    }
+
+    #[tokio::test]
+    async fn finds_somebody_by_name_then_searches_by_their_account_id() {
+        let found = serde_json::json!({ "issues": [{ "key": "ENG-9", "fields": {
+            "summary": "s", "status": { "name": "Doing" } } }] });
+        let (host, server) = serve(vec![
+            people(serde_json::json!([
+                { "accountId": "5b10:abc-1", "displayName": "Dana Vance", "active": true },
+                { "accountId": "5b10:zzz-2", "displayName": "Dana Vance-Smith", "active": true }
+            ])),
+            ("HTTP/1.1 200 OK", found.to_string()),
+        ]);
+        let rest = Rest::new().expect("client");
+
+        let issues = rest
+            .assigned_to(&host, "boss@example.com", "a-token", "dana vance")
+            .await
+            .expect("should read");
+
+        assert_eq!(issues[0].key, "ENG-9");
+        let sent = server.await.expect("server").join("");
+        assert!(sent.contains("5b10:abc-1"), "{sent}");
+        // The typed name looked somebody up and went no further.
+        assert!(!sent.contains("assignee = \\\"dana"), "{sent}");
+    }
+
+    /// Proved by dropping the second `matching.next()` check: two people with
+    /// one name were then read as the first of them.
+    #[tokio::test]
+    async fn a_name_two_people_share_or_nobody_has_is_refused() {
+        let twins = serde_json::json!([
+            { "accountId": "a1", "displayName": "Dana Vance", "active": true },
+            { "accountId": "a2", "displayName": "Dana Vance", "active": true }
+        ]);
+        let (host, _server) = serve(vec![people(twins)]);
+        let rest = Rest::new().expect("client");
+        assert!(matches!(
+            rest.assigned_to(&host, "b@example.com", "t", "Dana Vance")
+                .await,
+            Err(Error::NotOnePerson)
+        ));
+
+        let (host, _server) = serve(vec![people(serde_json::json!([]))]);
+        assert!(matches!(
+            rest.assigned_to(&host, "b@example.com", "t", "Dana Vance")
+                .await,
+            Err(Error::NotOnePerson)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_account_id_that_could_carry_query_text_is_refused() {
+        let hostile = serde_json::json!([
+            { "accountId": "a\" OR project = X", "displayName": "Dana Vance", "active": true }
+        ]);
+        let (host, _server) = serve(vec![people(hostile)]);
+        let rest = Rest::new().expect("client");
+
+        assert!(matches!(
+            rest.assigned_to(&host, "b@example.com", "t", "Dana Vance")
+                .await,
+            Err(Error::Decode)
+        ));
     }
 
     #[tokio::test]

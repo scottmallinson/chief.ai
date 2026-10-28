@@ -262,6 +262,10 @@ pub enum Error {
     Answered { host: String, status: u16 },
     #[error("Atlassian answered with something unexpected")]
     Decode,
+    /// Somebody was looked up by name and the site does not have exactly one
+    /// person by it, so whose work it is cannot be told from the name.
+    #[error("Jira does not have exactly one person with that name")]
+    NotOnePerson,
     #[error("Atlassian refused the sign-in: {0}")]
     Refused(String),
     #[error("that Atlassian sign-in was declined or expired")]

@@ -47,7 +47,7 @@ pub const FILE: &str = "team.md";
 const MAX_REPOS: usize = 5;
 
 /// The most people read in one answer, for the same reason.
-const MAX_PEOPLE: usize = 10;
+pub(crate) const MAX_PEOPLE: usize = 10;
 
 /// Pull requests read per repository. A repository that fills this says so.
 const PER_REPO: u8 = 50;
@@ -323,7 +323,7 @@ fn read_note(count: usize) -> Option<String> {
 }
 
 /// What `team.md` lists, or the answer to give when it lists nothing.
-async fn listed(context: &recipe::Context) -> Result<Watched, Report> {
+pub(crate) async fn listed(context: &recipe::Context) -> Result<Watched, Report> {
     let text = match context.corpus.read(FILE).await {
         Ok(text) => text,
         Err(corpus::Error::NoSuchFile(_)) => {
@@ -358,7 +358,10 @@ async fn listed(context: &recipe::Context) -> Result<Watched, Report> {
 
 /// Names by handle: those confirmed in `people.md`, then those written in
 /// `team.md`, which win. Everybody else is a handle.
-async fn known_names(context: &recipe::Context, watched: &Watched) -> HashMap<String, String> {
+pub(crate) async fn known_names(
+    context: &recipe::Context,
+    watched: &Watched,
+) -> HashMap<String, String> {
     let mut names: HashMap<String, String> = match context.corpus.read(people::FILE).await {
         Ok(file) => people::parse(&file)
             .confirmed
@@ -674,6 +677,10 @@ mod tests {
             decision,
             reviews: 0,
             requested: Vec::new(),
+            body: String::new(),
+            updated_at: String::new(),
+            checks: crate::github::Checks::None,
+            open_threads: 0,
         }
     }
 
