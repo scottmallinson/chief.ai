@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.23.0 (2026-10-28)
+
+### Features
+
+- **agent:** draft review requests only when the user turns it on ([f0db155](https://github.com/scottmallinson/chief.ai/commit/f0db1558f23e7a38f0f16615a0e74fec67c55aa9))
+
 ## 0.22.0 (2026-10-28)
 
 ### Features
