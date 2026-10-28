@@ -1014,14 +1014,35 @@ pub async fn ask_agent<R: Runtime>(
     // again between the wake and the question.
     let _waiting = attention.begin();
 
-    // `/items` reads the trackers in Rust, works out what moved, what is blocked
-    // and whether each item will make its date, and only then asks the model to
-    // word it. With nothing assigned it is answered here, before the engine
-    // starts; if the model cannot be reached the same facts are shown as found.
+    // `/items` (and `/items team`) reads the trackers in Rust, works out what
+    // moved, what is blocked and whether each item will make its date, and only
+    // then asks the model to word it. With nothing assigned it is answered
+    // here, before the engine starts; if the model cannot be reached the same
+    // facts are shown as found.
     if let Some(question) = messages.iter().rev().find(|turn| turn.role == Role::User) {
-        if intent::route(&question.content) == Some(intent::Intent::Items) {
+        let routed_to = intent::route(&question.content);
+
+        if matches!(
+            routed_to,
+            Some(intent::Intent::Items | intent::Intent::TeamItems)
+        ) {
             if let Ok(recipe) = recipe::context(&app).await {
-                if let Some(analysis) = items::analyse(&recipe, items::DEFAULT_DAYS).await {
+                let read = if routed_to == Some(intent::Intent::TeamItems) {
+                    match items::analyse_team(&recipe, items::DEFAULT_DAYS).await {
+                        Some(items::Team::Said(report)) => {
+                            return Ok(Answer {
+                                content: report.markdown,
+                                provenance: report.provenance,
+                            });
+                        }
+                        Some(items::Team::Analysis(analysis)) => Some(analysis),
+                        None => None,
+                    }
+                } else {
+                    items::analyse(&recipe, items::DEFAULT_DAYS).await
+                };
+
+                if let Some(analysis) = read {
                     let provenance = analysis.provenance.clone();
 
                     if analysis.parts.iter().all(|part| !part.worded) {

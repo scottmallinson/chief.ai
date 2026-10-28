@@ -55,8 +55,11 @@ pub enum Intent {
     /// what that person merged lately and has open. Opt-in, like [`Intent::Team`].
     OneOnOne,
     /// What is assigned to the user in whichever of GitHub, Jira and Linear
-    /// they have connected, and how it is going. Read live, no model.
+    /// they have connected, and how it is going. Read live.
     Items,
+    /// The same for each person listed in `team.md`: what is assigned to them,
+    /// found by the name written beside their handle, and how it is going.
+    TeamItems,
 }
 
 /// How far back a question is asking about.
@@ -200,6 +203,12 @@ pub fn route(question: &str) -> Option<Intent> {
     // whatever the user typed after it.
     if let Some(command) = asked.split_whitespace().next() {
         if let Some((_, intent)) = COMMANDS.iter().find(|(name, _)| *name == command) {
+            // The one command with a second word: `/items team` is the same
+            // report about the people listed in `team.md`.
+            if *intent == Intent::Items && asked.split_whitespace().nth(1) == Some("team") {
+                return Some(Intent::TeamItems);
+            }
+
             return Some(*intent);
         }
     }
@@ -260,7 +269,7 @@ impl Intent {
             Intent::Brief => Feeds::Corpus,
             Intent::Prep | Intent::OneOnOne => Feeds::Calendar,
             Intent::Log(_) | Intent::Waiting | Intent::Team => Feeds::Github,
-            Intent::Items => Feeds::Work,
+            Intent::Items | Intent::TeamItems => Feeds::Work,
         }
     }
 }
@@ -509,6 +518,7 @@ pub async fn answer(intent: Intent, context: &recipe::Context) -> Option<Answere
         Intent::Team => team(context).await,
         Intent::OneOnOne => one_on_one(context).await,
         Intent::Items => items(context).await,
+        Intent::TeamItems => team_items(context).await,
     }
     .filter(|answered| !answered.markdown.trim().is_empty());
 
@@ -781,6 +791,21 @@ async fn items(context: &recipe::Context) -> Option<Answered> {
     })
 }
 
+/// What is assigned to each person listed in `team.md`, with no model: the
+/// facts as found.
+async fn team_items(context: &recipe::Context) -> Option<Answered> {
+    match crate::items::analyse_team(context, crate::items::DEFAULT_DAYS).await? {
+        crate::items::Team::Said(report) => Some(Answered {
+            markdown: report.markdown,
+            provenance: report.provenance,
+        }),
+        crate::items::Team::Analysis(analysis) => Some(Answered {
+            markdown: analysis.markdown(),
+            provenance: analysis.provenance,
+        }),
+    }
+}
+
 /// A sheet for each of today's meetings that includes somebody the user manages.
 ///
 /// The meetings are read from the work log, like `/prep`; `None` when there are
@@ -951,6 +976,10 @@ mod tests {
         assert_eq!(route("/team"), Some(Intent::Team));
         assert_eq!(route("/1on1"), Some(Intent::OneOnOne));
         assert_eq!(route("/items"), Some(Intent::Items));
+        assert_eq!(route("/items team"), Some(Intent::TeamItems));
+        assert_eq!(route("/items Team please"), Some(Intent::TeamItems));
+        // Only a second word that is exactly `team` changes the command.
+        assert_eq!(route("/items teammates"), Some(Intent::Items));
     }
 
     #[test]
@@ -1588,6 +1617,128 @@ mod delivery {
             engine.await.expect("engine"),
             Vec::<String>::new(),
             "and it must cost zero model calls"
+        );
+    }
+
+    const NO_PULLS: &str = r#"{"data":{"search":{"nodes":[]}}}"#;
+    const NO_ISSUES: &str = r#"{"total_count":0,"items":[]}"#;
+
+    #[tokio::test]
+    async fn team_items_reads_each_listed_person_by_the_name_written_beside_their_handle() {
+        let (mut context, _scratch, engine) = silent("team-items").await;
+        let (linear_host, linear) = serve(vec![("HTTP/1.1 200 OK", LINEAR_ITEMS)]);
+        let (github_host, github) = serve(vec![
+            // Dana: assigned issues, then her open pull requests.
+            ("HTTP/1.1 200 OK", NO_ISSUES),
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"data":{"search":{"nodes":[
+                  {"number":131,"title":"Ship the report","body":"Closes REC-50","url":"u",
+                   "createdAt":"2026-10-20T09:00:00Z","updatedAt":"2026-10-27T09:00:00Z",
+                   "isDraft":false,"reviewDecision":"CHANGES_REQUESTED",
+                   "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]},
+                   "reviewThreads":{"nodes":[]},"author":{"login":"dvance"},
+                   "repository":{"nameWithOwner":"o/r"},"reviews":{"totalCount":1},
+                   "reviewRequests":{"nodes":[]}}]}}}"#,
+            ),
+            // prao has no name beside the handle: GitHub only.
+            ("HTTP/1.1 200 OK", NO_ISSUES),
+            ("HTTP/1.1 200 OK", NO_PULLS),
+        ]);
+        context.linear = crate::linear::Client::against(&linear_host).expect("client");
+        context.github = github::Client::against(&github_host).expect("client");
+        connect(&context, integrations::LINEAR).await;
+        connect(&context, integrations::GITHUB).await;
+        context
+            .corpus
+            .write(
+                crate::team::FILE,
+                "## People\n- Dana Vance = dvance\n- prao\n",
+            )
+            .await
+            .expect("file");
+
+        let answered = answer(Intent::TeamItems, &context)
+            .await
+            .expect("an answer");
+
+        assert!(
+            answered.markdown.contains("Dana Vance: Blocked (2)")
+                && answered.markdown.contains("REC-50")
+                && answered
+                    .markdown
+                    .contains("Pull request o/r#131 (checks failing, changes requested)"),
+            "{}",
+            answered.markdown
+        );
+        assert!(
+            answered
+                .markdown
+                .starts_with("Needs attention:\n- Dana Vance: 2 blocked"),
+            "{}",
+            answered.markdown
+        );
+        assert!(
+            answered
+                .markdown
+                .contains("prao: Jira could not be read: no name is written beside the handle"),
+            "{}",
+            answered.markdown
+        );
+
+        // Linear was asked about Dana by name, and not at all about prao.
+        let asked = linear.await.expect("linear");
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert!(asked[0].contains("Dana Vance"), "{}", asked[0]);
+        assert_eq!(github.await.expect("github").len(), 4);
+        assert_eq!(
+            engine.await.expect("engine"),
+            Vec::<String>::new(),
+            "and the facts-as-found path costs zero model calls"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_items_says_how_to_turn_it_on_before_reading_anything() {
+        let (mut context, _scratch, _engine) = silent("team-items-off").await;
+        let (host, github) = serve(vec![("HTTP/1.1 200 OK", NO_ISSUES)]);
+        context.github = github::Client::against(&host).expect("client");
+        connect(&context, integrations::GITHUB).await;
+
+        let answered = answer(Intent::TeamItems, &context)
+            .await
+            .expect("an answer");
+
+        assert!(
+            answered.markdown.contains("team.md"),
+            "{}",
+            answered.markdown
+        );
+        drop(github);
+    }
+
+    #[tokio::test]
+    async fn team_items_with_only_repositories_listed_asks_for_a_person() {
+        let (mut context, _scratch, _engine) = silent("team-items-repos").await;
+        let (host, _github) = serve(vec![("HTTP/1.1 200 OK", NO_ISSUES)]);
+        context.github = github::Client::against(&host).expect("client");
+        connect(&context, integrations::GITHUB).await;
+        context
+            .corpus
+            .write(crate::team::FILE, "## Repositories\n- acme/api\n")
+            .await
+            .expect("file");
+
+        let answered = answer(Intent::TeamItems, &context)
+            .await
+            .expect("an answer");
+
+        assert!(
+            answered
+                .markdown
+                .contains("List somebody as `- Name = handle`"),
+            "{}",
+            answered.markdown
         );
     }
 

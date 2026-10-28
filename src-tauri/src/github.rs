@@ -408,13 +408,7 @@ fn blockers_from(node: &Value) -> Option<Blockers> {
     let repository = node["repository"]["nameWithOwner"].as_str()?.to_string();
     let number = node["number"].as_i64()?;
 
-    let checks = match node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"].as_str()
-    {
-        Some("SUCCESS") => Checks::Passing,
-        Some("FAILURE" | "ERROR") => Checks::Failing,
-        Some("PENDING" | "EXPECTED") => Checks::Running,
-        _ => Checks::None,
-    };
+    let checks = checks_of(node);
 
     let decision = match node["reviewDecision"].as_str() {
         Some("APPROVED") => Decision::Approved,
@@ -423,14 +417,7 @@ fn blockers_from(node: &Value) -> Option<Blockers> {
         _ => Decision::None,
     };
 
-    let open_threads = node["reviewThreads"]["nodes"]
-        .as_array()
-        .map_or(0, |threads| {
-            threads
-                .iter()
-                .filter(|thread| thread["isResolved"].as_bool() == Some(false))
-                .count()
-        });
+    let open_threads = open_threads_of(node);
 
     Some(Blockers {
         repository,
@@ -443,7 +430,9 @@ fn blockers_from(node: &Value) -> Option<Blockers> {
 }
 
 const TEAM_QUERY: &str = "query($q: String!, $first: Int!) { search(query: $q, type: ISSUE, \
-first: $first) { nodes { ... on PullRequest { number title url createdAt mergedAt isDraft reviewDecision \
+first: $first) { nodes { ... on PullRequest { number title body url createdAt updatedAt mergedAt isDraft reviewDecision \
+commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } \
+reviewThreads(first: 50) { nodes { isResolved } } \
 author { login } repository { nameWithOwner } reviews { totalCount } \
 reviewRequests(first: 5) { nodes { requestedReviewer { ... on User { login } \
 ... on Team { name } } } } } } } }";
@@ -467,6 +456,33 @@ pub struct TeamPull {
     pub reviews: i64,
     /// Who a review has been asked of: `@login`, or `team name`.
     pub requested: Vec<String>,
+    /// The description the author wrote, which is where a ticket key is named.
+    pub body: String,
+    /// ISO-8601: a push, a review or a comment.
+    pub updated_at: String,
+    pub checks: Checks,
+    /// Review threads nobody has marked resolved.
+    pub open_threads: usize,
+}
+
+fn checks_of(node: &Value) -> Checks {
+    match node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"].as_str() {
+        Some("SUCCESS") => Checks::Passing,
+        Some("FAILURE" | "ERROR") => Checks::Failing,
+        Some("PENDING" | "EXPECTED") => Checks::Running,
+        _ => Checks::None,
+    }
+}
+
+fn open_threads_of(node: &Value) -> usize {
+    node["reviewThreads"]["nodes"]
+        .as_array()
+        .map_or(0, |threads| {
+            threads
+                .iter()
+                .filter(|thread| thread["isResolved"].as_bool() == Some(false))
+                .count()
+        })
 }
 
 fn team_pull_from(node: &Value) -> Option<TeamPull> {
@@ -508,6 +524,10 @@ fn team_pull_from(node: &Value) -> Option<TeamPull> {
         decision,
         reviews: node["reviews"]["totalCount"].as_i64().unwrap_or(0),
         requested,
+        body: node["body"].as_str().unwrap_or_default().to_string(),
+        updated_at: node["updatedAt"].as_str().unwrap_or_default().to_string(),
+        checks: checks_of(node),
+        open_threads: open_threads_of(node),
     })
 }
 
@@ -906,13 +926,31 @@ impl Client {
     /// `is:issue` rather than `is:pr`, so this and [`Self::pull_requests`]
     /// never return the same thing twice from the one endpoint they share.
     pub async fn assigned_issues(&self, token: &str, limit: u8) -> Result<Vec<Issue>, Error> {
+        self.assigned_issues_to(token, "@me", limit).await
+    }
+
+    /// The open issues assigned to somebody else, as far as the token can see.
+    ///
+    /// The login is checked before it goes into the query, because a value that
+    /// could carry another qualifier would read somewhere nobody listed.
+    pub async fn assigned_issues_to(
+        &self,
+        token: &str,
+        login: &str,
+        limit: u8,
+    ) -> Result<Vec<Issue>, Error> {
+        if login != "@me" && !is_login(login) {
+            return Err(Error::Decode(format!("\"{login}\" is not a GitHub login")));
+        }
+
         let url = format!("{}/search/issues", self.api_host);
+        let query = format!("is:issue assignee:{login} is:open");
 
         let response = self
             .http
             .get(url)
             .query(&[
-                ("q", "is:issue assignee:@me is:open"),
+                ("q", query.as_str()),
                 ("sort", "updated"),
                 ("order", "desc"),
                 ("per_page", &limit.clamp(1, 100).to_string()),
@@ -1772,6 +1810,37 @@ mod waiting_on_me {
         assert!(line.contains("assignee%3A%40me"), "{line}");
     }
 
+    #[tokio::test]
+    async fn reads_the_issues_assigned_to_somebody_else_by_login() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ONE_ISSUE)]);
+        let client = Client::against(&host).expect("client");
+
+        let issues = client
+            .assigned_issues_to("gho_token", "dvance", 25)
+            .await
+            .expect("should read");
+
+        assert_eq!(issues.len(), 1);
+        let received = server.await.expect("server");
+        let (line, _) = split(&received[0]);
+        assert!(line.contains("assignee%3Advance"), "{line}");
+    }
+
+    /// Proved by deleting the `is_login` check: a login carrying another
+    /// qualifier reached the search.
+    #[tokio::test]
+    async fn a_login_that_could_carry_another_qualifier_never_reaches_the_search() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ONE_ISSUE)]);
+        let client = Client::against(&host).expect("client");
+
+        let result = client
+            .assigned_issues_to("gho_token", "dvance repo:private/secret", 25)
+            .await;
+
+        assert!(result.is_err());
+        drop(server);
+    }
+
     /// The two searches share one endpoint, so this is what keeps them apart.
     #[tokio::test]
     async fn never_returns_a_pull_request_as_an_assigned_issue() {
@@ -1804,6 +1873,25 @@ mod team_tests {
     //! Open pull requests in a repository the user chose to watch.
 
     use super::*;
+
+    #[test]
+    fn reads_what_holds_a_listed_persons_pull_request_up() {
+        let node = serde_json::json!({
+            "number": 4, "title": "t", "body": "Closes ENG-1", "createdAt": "2026-10-20T09:00:00Z",
+            "updatedAt": "2026-10-27T09:00:00Z", "isDraft": false,
+            "reviewDecision": "CHANGES_REQUESTED",
+            "repository": { "nameWithOwner": "o/r" },
+            "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] },
+            "reviewThreads": { "nodes": [{ "isResolved": false }, { "isResolved": true }] }
+        });
+
+        let pull = team_pull_from(&node).expect("a pull request");
+
+        assert_eq!(pull.body, "Closes ENG-1");
+        assert_eq!(pull.updated_at, "2026-10-27T09:00:00Z");
+        assert_eq!(pull.checks, Checks::Failing);
+        assert_eq!(pull.open_threads, 1);
+    }
     use crate::llama::test_support::{serve, split};
 
     const ANSWER: &str = r#"{"data":{"search":{"nodes":[

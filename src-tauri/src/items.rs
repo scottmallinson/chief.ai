@@ -146,15 +146,23 @@ impl Pull {
 /// The words a pull request's hold-ups are reported in.
 #[must_use]
 pub fn holds(blockers: &github::Blockers) -> Vec<String> {
+    holds_of(blockers.checks, blockers.decision, blockers.open_threads)
+}
+
+fn holds_of(
+    checks: github::Checks,
+    decision: github::Decision,
+    open_threads: usize,
+) -> Vec<String> {
     let mut holds = Vec::new();
 
-    if blockers.checks == github::Checks::Failing {
+    if checks == github::Checks::Failing {
         holds.push("checks failing".to_string());
     }
-    if blockers.decision == github::Decision::ChangesRequested {
+    if decision == github::Decision::ChangesRequested {
         holds.push("changes requested".to_string());
     }
-    match blockers.open_threads {
+    match open_threads {
         0 => {}
         1 => holds.push("1 unresolved comment".to_string()),
         many => holds.push(format!("{many} unresolved comments")),
@@ -584,6 +592,12 @@ fn order(left: &Placed<'_>, right: &Placed<'_>) -> std::cmp::Ordering {
 /// saying nothing rather than by a reassuring line.
 #[must_use]
 pub fn headline(items: &[Item], pulls: &[Pull], window: Window) -> Option<String> {
+    attention(items, pulls, window).map(|counts| format!("Needs attention: {counts}."))
+}
+
+/// What needs attention, counted: `1 blocked (ENG-1); 2 overdue (ENG-2, ENG-3)`.
+#[must_use]
+fn attention(items: &[Item], pulls: &[Pull], window: Window) -> Option<String> {
     let placed: Vec<Placed<'_>> = items
         .iter()
         .map(|item| stand(item, pulls, window.today))
@@ -614,7 +628,7 @@ pub fn headline(items: &[Item], pulls: &[Pull], window: Window) -> Option<String
         }
     }
 
-    (!parts.is_empty()).then(|| format!("Needs attention: {}.", parts.join("; ")))
+    (!parts.is_empty()).then(|| parts.join("; "))
 }
 
 /// One headed list of the report.
@@ -897,7 +911,7 @@ impl Analysis {
 /// What the model is asked to do with each batch of lines.
 fn instruction(days: i64, lines: &str) -> String {
     format!(
-        "These lines are the user's assigned work, read just now:\n{lines}\n\nWrite one or \
+        "These lines are assigned work, read just now:\n{lines}\n\nWrite one or \
          two short plain sentences for each line, starting with a dash and keeping its key. \
          Say what has moved in the last {days} days or that nothing has, what blocks it and \
          since when, and, where the line has an Outlook, whether it will make its date, \
@@ -1023,6 +1037,295 @@ pub async fn read(context: &recipe::Context) -> Option<Report> {
         markdown: analysis.markdown(),
         provenance: analysis.provenance,
     })
+}
+
+/// What a read of the listed people came to.
+pub enum Team {
+    /// Answered without reading anything: the file lists nobody, or could not
+    /// be read.
+    Said(Report),
+    Analysis(Analysis),
+}
+
+/// One listed person's pull request, as an item's pull request.
+fn pull_of(team: &github::TeamPull) -> Pull {
+    Pull {
+        id: format!("{}#{}", team.repository, team.number),
+        title: team.title.clone(),
+        body: team.body.clone(),
+        draft: team.draft,
+        updated: day(Some(&team.updated_at)),
+        holds: holds_of(team.checks, team.decision, team.open_threads),
+    }
+}
+
+/// Linear issues assigned to somebody by name, from every connected workspace.
+async fn linear_items_of(context: &impl Reach, name: &str) -> Found<linear::Item> {
+    let mut found = Found::default();
+
+    let Ok(accounts) = integrations::accounts(context.pool(), integrations::LINEAR).await else {
+        return found;
+    };
+
+    for account in accounts {
+        found.connected = true;
+
+        let Ok(Some(credentials)) = integrations::credentials(context.pool(), account.id).await
+        else {
+            found.fail("Linear has no key saved");
+            continue;
+        };
+
+        match context
+            .linear()
+            .items_of(&credentials.access_token, name)
+            .await
+        {
+            Ok(read) => found.ok(read),
+            Err(error) => found.fail(error),
+        }
+    }
+
+    found
+}
+
+/// Jira issues assigned to somebody by name.
+///
+/// Only over a pasted token: finding a person by name is a lookup the Remote
+/// MCP route has no deterministic tool for, so an account connected that way
+/// is said to be unable rather than asked something it would send to Rovo.
+async fn jira_items_of(context: &impl Reach, name: &str) -> Found<atlassian::Issue> {
+    let mut found = Found::default();
+
+    let Ok(accounts) = integrations::accounts(context.pool(), integrations::ATLASSIAN).await else {
+        return found;
+    };
+
+    for account in accounts {
+        found.connected = true;
+
+        let Ok(Some(credentials)) = integrations::credentials(context.pool(), account.id).await
+        else {
+            found.fail("Jira has no credential saved");
+            continue;
+        };
+
+        match recipe::route(&account, &credentials) {
+            recipe::Route::Rest { site, email } => match context
+                .atlassian_rest()
+                .assigned_to(&site, &email, &credentials.access_token, name)
+                .await
+            {
+                Ok(issues) => found.ok(issues),
+                Err(error) => found.fail(error),
+            },
+            recipe::Route::Mcp => found.fail(
+                "Jira is connected by sign-in, which cannot look up other people; \
+                 connect it with an API token to read theirs",
+            ),
+        }
+    }
+
+    found
+}
+
+/// Everything assigned to one listed person, from whichever sources can say.
+async fn gather_person(
+    context: &recipe::Context,
+    session: Option<&GithubSession<'_>>,
+    handle: &str,
+    name: Option<&str>,
+) -> Gathered {
+    let mut gathered = Gathered {
+        items: Vec::new(),
+        pulls: Vec::new(),
+        read: Vec::new(),
+        unread: Vec::new(),
+        connected: false,
+    };
+
+    // Named in the tracker only by what the user wrote beside the handle. A
+    // handle alone is not what a tracker says, and a wrong name beside
+    // somebody's work is worse than no sheet.
+    match name {
+        Some(name) => {
+            let linear = linear_items_of(context, name).await;
+            let jira = jira_items_of(context, name).await;
+
+            for (tracker, connected, answered, failed, items) in [
+                (
+                    Tracker::Linear,
+                    linear.connected,
+                    linear.answered,
+                    linear.failed,
+                    linear.items.iter().map(from_linear).collect::<Vec<_>>(),
+                ),
+                (
+                    Tracker::Jira,
+                    jira.connected,
+                    jira.answered,
+                    jira.failed,
+                    jira.items.iter().map(from_jira).collect::<Vec<_>>(),
+                ),
+            ] {
+                gathered.connected |= connected;
+                if answered {
+                    gathered.read.push((tracker, items.len()));
+                    gathered.items.extend(items);
+                }
+                for why in failed {
+                    gathered.unread.push((tracker, why));
+                }
+            }
+        }
+        None => gathered.unread.push((
+            Tracker::Jira,
+            "no name is written beside the handle in team.md, so Jira and Linear were not \
+             searched"
+                .to_string(),
+        )),
+    }
+
+    if let Some(session) = session {
+        gathered.connected = true;
+        let mut issues = 0;
+        let mut answered = false;
+
+        match session.assigned_issues_to(handle, recipe::PER_SOURCE).await {
+            Ok(found) => {
+                answered = true;
+                issues = found.len();
+                gathered.items.extend(found.iter().map(from_github));
+            }
+            Err(error) => gathered.unread.push((Tracker::Github, error.to_string())),
+        }
+
+        match session
+            .team_pulls(
+                github::TeamScope::Author(handle),
+                github::TeamKind::Open,
+                30,
+            )
+            .await
+        {
+            Ok(found) => {
+                answered = true;
+                gathered.pulls.extend(found.iter().map(pull_of));
+            }
+            Err(error) => gathered.unread.push((Tracker::Github, error.to_string())),
+        }
+
+        if answered {
+            gathered.read.push((Tracker::Github, issues));
+        }
+    }
+
+    gathered
+}
+
+/// What is assigned to each person in `team.md`, and how it is going.
+///
+/// `None` when no GitHub account is connected, which the caller says.
+pub async fn analyse_team(context: &recipe::Context, days: i64) -> Option<Team> {
+    let watched = match crate::team::listed(context).await {
+        Ok(watched) => watched,
+        Err(report) => {
+            return Some(Team::Said(Report {
+                markdown: report.markdown,
+                provenance: report.provenance,
+            }))
+        }
+    };
+
+    if watched.people.is_empty() {
+        return Some(Team::Said(Report {
+            markdown: "`team.md` lists repositories but nobody by name, and this reads what is \
+                       assigned to people. List somebody as `- Name = handle`."
+                .to_string(),
+            provenance: None,
+        }));
+    }
+
+    let account = recipe::github_accounts(context).await.first().copied()?;
+    let session = GithubSession::new(&context.pool, &context.github, account);
+    let names = crate::team::known_names(context, &watched).await;
+
+    let window = Window {
+        today: chrono::Local::now().date_naive(),
+        days,
+    };
+
+    let mut parts_all = Vec::new();
+    let mut attention_lines = Vec::new();
+    let mut unread = Vec::new();
+    let mut sources: Vec<Tracker> = Vec::new();
+
+    for member in watched.people.iter().take(crate::team::MAX_PEOPLE) {
+        let name = names.get(&member.handle.to_lowercase()).map(String::as_str);
+        let label = name.unwrap_or(member.handle.as_str());
+
+        let gathered = gather_person(context, Some(&session), &member.handle, name).await;
+
+        for (tracker, _) in &gathered.read {
+            if !sources.contains(tracker) {
+                sources.push(*tracker);
+            }
+        }
+        for (tracker, why) in &gathered.unread {
+            unread.push(format!(
+                "{label}: {} could not be read: {why}.",
+                tracker.name()
+            ));
+        }
+
+        if let Some(counts) = attention(&gathered.items, &gathered.pulls, window) {
+            attention_lines.push(format!("- {label}: {counts}"));
+        }
+
+        let mut parts = parts(&gathered.items, &gathered.pulls, window);
+        if parts.is_empty() {
+            parts.push(Part {
+                heading: "Nothing assigned or open that this account can see".to_string(),
+                lines: Vec::new(),
+                note: None,
+                worded: false,
+            });
+        }
+        for mut part in parts {
+            part.heading = format!("{label}: {}", part.heading);
+            parts_all.push(part);
+        }
+    }
+
+    if watched.people.len() > crate::team::MAX_PEOPLE {
+        unread.push(format!(
+            "Only the first {} of {} listed people were read.",
+            crate::team::MAX_PEOPLE,
+            watched.people.len()
+        ));
+    }
+
+    let headline = (!attention_lines.is_empty())
+        .then(|| format!("Needs attention:\n{}", attention_lines.join("\n")));
+
+    let provenance = Some(if sources.is_empty() {
+        format!("Read just now, for who is listed in {}.", crate::team::FILE)
+    } else {
+        let names: Vec<&str> = sources.iter().map(|tracker| tracker.name()).collect();
+        format!(
+            "Read just now from {}, for who is listed in {}.",
+            names.join(", "),
+            crate::team::FILE
+        )
+    });
+
+    Some(Team::Analysis(Analysis {
+        headline,
+        parts: parts_all,
+        unread,
+        provenance,
+        window,
+    }))
 }
 
 #[cfg(test)]

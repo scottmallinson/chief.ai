@@ -65,7 +65,8 @@ pub const fn strategy_for(intent: Option<Intent>) -> ExecutionStrategy {
             | Intent::Waiting
             | Intent::Team
             | Intent::OneOnOne
-            | Intent::Items,
+            | Intent::Items
+            | Intent::TeamItems,
         ) => ExecutionStrategy::DirectContextInjection,
         None => ExecutionStrategy::NativeToolCall,
     }
@@ -151,6 +152,7 @@ mod tests {
             Intent::Team,
             Intent::OneOnOne,
             Intent::Items,
+            Intent::TeamItems,
         ] {
             assert_eq!(
                 strategy_for(Some(intent)),
