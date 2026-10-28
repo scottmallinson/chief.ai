@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.0 (2026-10-28)
+
+### Features
+
+- **agent:** report what is assigned to the people listed in team.md ([8bb1443](https://github.com/scottmallinson/chief.ai/commit/8bb14432cd1fbe819aa14cd0442aa9864e85fdbd))
+
 ## 0.25.0 (2026-10-28)
 
 ### Features
