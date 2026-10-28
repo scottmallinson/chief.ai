@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.25.0 (2026-10-28)
+
+### Features
+
+- **agent:** say what moved, what is blocked and whether it will make its date ([5323116](https://github.com/scottmallinson/chief.ai/commit/532311685582db66823ce505cae446da1e8790e6))
+- **agent:** report what is assigned across GitHub, Jira and Linear ([9f39c27](https://github.com/scottmallinson/chief.ai/commit/9f39c27d6fdc5e2312b94abc35237f3618dc1425))
+
 ## 0.24.0 (2026-10-28)
 
 ### Features
