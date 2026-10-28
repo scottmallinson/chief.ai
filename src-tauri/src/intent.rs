@@ -54,6 +54,9 @@ pub enum Intent {
     /// Today's meetings that include someone listed in `team.md`, each with
     /// what that person merged lately and has open. Opt-in, like [`Intent::Team`].
     OneOnOne,
+    /// What is assigned to the user in whichever of GitHub, Jira and Linear
+    /// they have connected, and how it is going. Read live, no model.
+    Items,
 }
 
 /// How far back a question is asking about.
@@ -119,7 +122,7 @@ fn monday_of(date: chrono::NaiveDate) -> chrono::NaiveDate {
 }
 
 /// The slash commands, matched before anything else and matched exactly.
-const COMMANDS: [(&str, Intent); 7] = [
+const COMMANDS: [(&str, Intent); 8] = [
     ("/brief", Intent::Brief),
     ("/prep", Intent::Prep),
     ("/log", Intent::Log(Window::Recent)),
@@ -127,6 +130,7 @@ const COMMANDS: [(&str, Intent); 7] = [
     ("/waiting", Intent::Waiting),
     ("/team", Intent::Team),
     ("/1on1", Intent::OneOnOne),
+    ("/items", Intent::Items),
 ];
 
 /// The natural-language phrases that route, written out in full.
@@ -241,6 +245,8 @@ enum Feeds {
     Calendar,
     /// GitHub, which is where pull requests and reviews come from.
     Github,
+    /// GitHub, Jira or Linear: wherever assigned work lives.
+    Work,
     /// Nothing in particular — the corpus, which is always there.
     Corpus,
 }
@@ -254,6 +260,7 @@ impl Intent {
             Intent::Brief => Feeds::Corpus,
             Intent::Prep | Intent::OneOnOne => Feeds::Calendar,
             Intent::Log(_) | Intent::Waiting | Intent::Team => Feeds::Github,
+            Intent::Items => Feeds::Work,
         }
     }
 }
@@ -264,6 +271,11 @@ impl Feeds {
         let services: &[&str] = match self {
             Feeds::Calendar => &[integrations::MICROSOFT, integrations::CALENDAR],
             Feeds::Github => &[integrations::GITHUB],
+            Feeds::Work => &[
+                integrations::GITHUB,
+                integrations::ATLASSIAN,
+                integrations::LINEAR,
+            ],
             Feeds::Corpus => return true,
         };
 
@@ -289,6 +301,10 @@ impl Feeds {
             }
             Feeds::Github => {
                 "No GitHub account is connected, so Chief has nothing to read. Connect GitHub in \
+                 Settings."
+            }
+            Feeds::Work => {
+                "Nothing that holds assigned work is connected. Connect GitHub, Jira or Linear in \
                  Settings."
             }
             Feeds::Corpus => "",
@@ -492,6 +508,7 @@ pub async fn answer(intent: Intent, context: &recipe::Context) -> Option<Answere
         Intent::Waiting => waiting(context).await,
         Intent::Team => team(context).await,
         Intent::OneOnOne => one_on_one(context).await,
+        Intent::Items => items(context).await,
     }
     .filter(|answered| !answered.markdown.trim().is_empty());
 
@@ -756,6 +773,14 @@ async fn team(context: &recipe::Context) -> Option<Answered> {
     })
 }
 
+/// What is assigned to the user across the trackers they have connected.
+async fn items(context: &recipe::Context) -> Option<Answered> {
+    crate::items::read(context).await.map(|report| Answered {
+        markdown: report.markdown,
+        provenance: report.provenance,
+    })
+}
+
 /// A sheet for each of today's meetings that includes somebody the user manages.
 ///
 /// The meetings are read from the work log, like `/prep`; `None` when there are
@@ -925,6 +950,7 @@ mod tests {
         assert_eq!(route("/waiting"), Some(Intent::Waiting));
         assert_eq!(route("/team"), Some(Intent::Team));
         assert_eq!(route("/1on1"), Some(Intent::OneOnOne));
+        assert_eq!(route("/items"), Some(Intent::Items));
     }
 
     #[test]
@@ -1493,6 +1519,111 @@ mod delivery {
         assert!(
             !github.is_finished(),
             "an unlisted repository must cost no request"
+        );
+    }
+
+    const LINEAR_ITEMS: &str = r#"{"data":{"viewer":{"name":"S","email":"s@example.com"},
+      "issues":{"nodes":[
+       {"identifier":"REC-50","title":"Ship the report","priority":1,"dueDate":"2020-01-01",
+        "state":{"name":"In Progress","type":"started"},
+        "inverseRelations":{"nodes":[]},
+        "attachments":{"nodes":[{"url":"https://github.com/o/r/pull/131"}]}},
+       {"identifier":"REC-51","title":"Plan the quarter","priority":0,
+        "state":{"name":"Todo","type":"unstarted"},
+        "inverseRelations":{"nodes":[{"type":"blocks","issue":
+          {"identifier":"REC-49","completedAt":null,"canceledAt":null}}]},
+        "attachments":{"nodes":[]}}
+      ]}}}"#;
+
+    #[tokio::test]
+    async fn items_reports_what_is_assigned_and_why_it_is_stuck_without_a_model() {
+        let (mut context, _scratch, engine) = silent("items").await;
+        let (linear_host, _linear) = serve(vec![("HTTP/1.1 200 OK", LINEAR_ITEMS)]);
+        let (github_host, github) = serve(vec![
+            ("HTTP/1.1 200 OK", r#"{"total_count":0,"items":[]}"#),
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"data":{"viewer":{"pullRequests":{"nodes":[{"number":131,"isDraft":false,
+                  "repository":{"nameWithOwner":"o/r"},"reviewDecision":"CHANGES_REQUESTED",
+                  "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]},
+                  "reviewThreads":{"nodes":[]}}]}}}}"#,
+            ),
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"total_count":1,"items":[{"number":131,"title":"Ship the report","state":"open",
+                  "draft":false,"html_url":"https://github.com/o/r/pull/131",
+                  "repository_url":"https://api.github.com/repos/o/r",
+                  "updated_at":"2026-10-27T09:00:00Z"}]}"#,
+            ),
+        ]);
+        context.linear = crate::linear::Client::against(&linear_host).expect("client");
+        context.github = github::Client::against(&github_host).expect("client");
+        connect(&context, integrations::LINEAR).await;
+        connect(&context, integrations::GITHUB).await;
+
+        let answered = answer(Intent::Items, &context).await.expect("an answer");
+
+        // The pull request is held up, so the issue it belongs to is blocked
+        // even though Linear itself lists no blocker for it.
+        assert!(
+            answered.markdown.contains("## Blocked (2)")
+                && answered
+                    .markdown
+                    .contains("Pull requests: o/r#131 (checks failing, changes requested).")
+                && answered.markdown.contains("Blocked by REC-49."),
+            "{}",
+            answered.markdown
+        );
+        assert!(
+            !answered.markdown.contains("tied to no item"),
+            "{}",
+            answered.markdown
+        );
+        assert_eq!(
+            answered.provenance.as_deref(),
+            Some("Read just now: Linear (2), GitHub (0).")
+        );
+        assert_eq!(github.await.expect("github").len(), 3);
+        assert_eq!(
+            engine.await.expect("engine"),
+            Vec::<String>::new(),
+            "and it must cost zero model calls"
+        );
+    }
+
+    #[tokio::test]
+    async fn items_says_so_when_nothing_that_holds_work_is_connected() {
+        let (context, _scratch, _engine) = silent("items-none").await;
+
+        let answered = answer(Intent::Items, &context).await.expect("an answer");
+
+        assert!(
+            answered.markdown.contains("Connect GitHub, Jira or Linear"),
+            "{}",
+            answered.markdown
+        );
+    }
+
+    #[tokio::test]
+    async fn items_still_answers_from_linear_when_github_cannot_be_read() {
+        let (mut context, _scratch, _engine) = silent("items-partial").await;
+        let (linear_host, _linear) = serve(vec![("HTTP/1.1 200 OK", LINEAR_ITEMS)]);
+        context.linear = crate::linear::Client::against(&linear_host).expect("client");
+        connect(&context, integrations::LINEAR).await;
+        // GitHub is connected but its host does not answer.
+        connect(&context, integrations::GITHUB).await;
+
+        let answered = answer(Intent::Items, &context).await.expect("an answer");
+
+        assert!(
+            answered.markdown.contains("REC-50"),
+            "{}",
+            answered.markdown
+        );
+        assert!(
+            answered.markdown.contains("GitHub could not be read"),
+            "{}",
+            answered.markdown
         );
     }
 

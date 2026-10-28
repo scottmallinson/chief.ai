@@ -671,6 +671,36 @@ requests waiting on review for the people and repositories they list.
   search query, because a value that could carry another qualifier would read somewhere the user
   never listed.
 
+## The work-items view
+
+`src-tauri/src/items.rs` answers `/items`: what is assigned to the user across GitHub, Jira and
+Linear, whichever of them are connected, and how it is going.
+
+- **One shape, no source assumed.** A Linear issue, a Jira issue and a GitHub issue all become an
+  `Item`; a source that is not connected is absent, and one that is connected and fails is named
+  under the report rather than read as empty. A user with only Linear gets the same report as one
+  with all three.
+- **Counted in code, no model called.** Sections are Blocked, Overdue or due this week, In
+  progress, Not started, then the user's open pull requests tied to no item. An item is blocked
+  only for a reason the report prints: an unfinished issue the tracker says blocks it, or a pull
+  request that belongs to it with failing checks or requested changes. Untouched is "not
+  started", never "blocked".
+- **A pull request belongs to an item** when Linear attached it (read from the address, not from
+  Linear's own source label) or when the item's key appears in the pull request's title or
+  description as a whole word, which is how Jira's GitHub integration matches them. Jira's own
+  development links come from an undocumented endpoint and are not used. `ENG-1` never matches
+  `ENG-12`, and a test proves it.
+- **Linear's detail is its own query.** `ITEMS_QUERY` is separate from `ASSIGNED_QUERY` on
+  purpose: a field Linear does not recognise fails the whole request, and the brief and the work
+  overview read the other one. It has been tested against stubs, not a live workspace.
+- **Jira's extra fields ride the existing search** (`SEARCH_FIELDS`): a field a site does not
+  have is left out of the answer and does not fail the search. Blocker links are matched on the
+  link type's name or its "is blocked by" wording, because sites rename link types.
+- **Routing was measured and refused.** A tickets choice in the embedding router could not tell
+  "my tickets" from "tickets as a topic" ("What is the difference between Jira and Linear?" won
+  at a margin of 0.15, above most correct questions) and took GitHub questions as well, so the
+  view is a slash command rather than a route.
+
 ## Calendars without a sign-in
 
 `src-tauri/src/ical.rs` parses iCalendar; `src-tauri/src/calendar.rs` fetches it. Together they are

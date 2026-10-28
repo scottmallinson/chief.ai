@@ -26,6 +26,7 @@ mod ical;
 mod ingest;
 mod integrations;
 mod intent;
+mod items;
 mod journal;
 mod linear;
 mod login;
