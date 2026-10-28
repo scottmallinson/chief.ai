@@ -395,6 +395,10 @@ function installBackend(setup: Setup) {
         case 'launch_at_login':
           return Promise.resolve(false);
 
+        // A boolean, never a list: the Settings box is ticked only by `true`.
+        case 'review_nudges':
+          return Promise.resolve(false);
+
         case 'generate_brief':
           return Promise.resolve(setup.brief);
 

@@ -31,6 +31,7 @@ use crate::llama::{self, ChatRequest, Message, Options};
 use crate::proposed::{self, NewProposal};
 use crate::recipe;
 use crate::session::GithubSession;
+use crate::settings;
 
 /// How many open pull requests a pass looks at before giving up on finding one
 /// that has not been proposed for.
@@ -48,6 +49,18 @@ const DRAFT_TOKENS: u32 = 300;
 
 /// What the whole prompt may cost, background included.
 const PROMPT_TOKENS: u32 = 1_800;
+
+/// The setting the box in Settings writes: `true` or `false`, absent until the
+/// user has chosen.
+const KEY: &str = "propose.review_nudges";
+
+/// Whether Chief drafts review requests on its own. **Off until the user turns
+/// it on.** A message to a colleague is the one thing Chief writes that is
+/// about somebody else, and a nudge nobody asked for reads as pressure on them,
+/// so the default is the quiet one. Asking for a draft by hand is not gated.
+pub async fn enabled(pool: &sqlx::SqlitePool) -> Result<bool, sqlx::Error> {
+    Ok(settings::get(pool, KEY).await?.as_deref() == Some("true"))
+}
 
 /// What can go wrong drafting.
 #[derive(Debug, thiserror::Error)]
@@ -78,6 +91,47 @@ listed, greet without a name. Never invent a name, a time or a promise.
 - Write it as the person whose style is described above. If no style is \
 described, write plainly.
 - Output the message only. No preamble, no sign-off block, no notes.";
+
+/// [`run_once`], unless the user has not turned drafting on, in which case it
+/// reads nothing and asks nothing: no request to GitHub, none to the engine.
+pub async fn run_if_enabled(
+    context: &recipe::Context,
+    attention: &crate::agent::Attention,
+) -> Result<Option<proposed::Proposal>, Error> {
+    if !enabled(&context.pool)
+        .await
+        .map_err(crate::db::Error::from)?
+    {
+        return Ok(None);
+    }
+
+    run_once(context, attention).await
+}
+
+/// Whether the box in Settings is ticked.
+#[tauri::command]
+pub async fn review_nudges<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<bool, String> {
+    let pool = crate::db::pool(&app)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    enabled(&pool).await.map_err(|error| error.to_string())
+}
+
+/// Tick or untick the box.
+#[tauri::command]
+pub async fn set_review_nudges<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    enabled: bool,
+) -> Result<(), String> {
+    let pool = crate::db::pool(&app)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    settings::set(&pool, KEY, &enabled.to_string())
+        .await
+        .map_err(|error| error.to_string())
+}
 
 /// One pass: draft for at most one item, and stop.
 ///
@@ -899,6 +953,62 @@ mod passes {
             "a pass drafts one thing, however many are waiting"
         );
         assert_eq!(engine.await.expect("engine").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn drafts_nothing_until_the_user_turns_it_on() {
+        let (github_host, github) = serve(vec![("HTTP/1.1 200 OK", open_prs(11))]);
+        let (engine_host, engine) = serve(vec![("HTTP/1.1 200 OK", DRAFTED.to_string())]);
+        let (context, _scratch) = context_for(&github_host, &engine_host, "default-off").await;
+
+        let proposal = run_if_enabled(&context, &Attention::default())
+            .await
+            .expect("should run");
+
+        assert!(proposal.is_none(), "nobody has asked for drafts yet");
+        assert!(
+            proposed::fetch(&context.pool, None)
+                .await
+                .expect("read")
+                .is_empty(),
+            "nothing should have been written"
+        );
+        // The spare replies are unanswered because nothing asked: a stub that
+        // had been reached would have finished.
+        assert!(!github.is_finished(), "GitHub should not have been read");
+        assert!(
+            !engine.is_finished(),
+            "the engine should not have been asked"
+        );
+    }
+
+    #[tokio::test]
+    async fn drafts_once_the_user_has_turned_it_on() {
+        let (github_host, _github) = serve(vec![("HTTP/1.1 200 OK", open_prs(11))]);
+        let (engine_host, _engine) = serve(vec![("HTTP/1.1 200 OK", DRAFTED.to_string())]);
+        let (context, _scratch) = context_for(&github_host, &engine_host, "turned-on").await;
+        settings::set(&context.pool, KEY, "true")
+            .await
+            .expect("store");
+
+        let proposal = run_if_enabled(&context, &Attention::default())
+            .await
+            .expect("should run");
+
+        assert!(proposal.is_some(), "a ticked box should let the pass draft");
+    }
+
+    #[tokio::test]
+    async fn unticking_it_stops_the_drafts_again() {
+        let pool = crate::db::test_support::migrated_pool().await;
+
+        assert!(!enabled(&pool).await.expect("read"), "off by default");
+
+        settings::set(&pool, KEY, "true").await.expect("store");
+        assert!(enabled(&pool).await.expect("read"));
+
+        settings::set(&pool, KEY, "false").await.expect("store");
+        assert!(!enabled(&pool).await.expect("read"));
     }
 
     fn item(number: i64, days: i64) -> String {

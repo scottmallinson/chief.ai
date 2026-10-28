@@ -1192,4 +1192,62 @@ describe('SettingsView', () => {
       expect(screen.queryByRole('checkbox', { name: 'Use graphics card' })).not.toBeInTheDocument();
     });
   });
+
+  describe('review requests', () => {
+    function drafting(answer: unknown) {
+      invoke.mockImplementation((command: string) => {
+        if (command === 'review_nudges') return Promise.resolve(answer);
+        if (command === 'set_review_nudges') return Promise.resolve(null);
+        if (command === 'window_behaviour') return Promise.resolve(KEEPS_RUNNING);
+        if (command === 'launch_at_login') return Promise.resolve(false);
+        if (command === 'gpu_status') return Promise.resolve(GPU_AUTOMATIC);
+        if (command === 'profile_plan') return Promise.resolve(NO_PLAN);
+        if (command === 'sign_in_registrations') return Promise.resolve(BUILT_IN);
+        return Promise.resolve([]);
+      });
+    }
+
+    it('is off until the person turns it on', async () => {
+      drafting(false);
+
+      render(<SettingsView />);
+
+      const box = await screen.findByRole('checkbox', { name: 'Draft review requests' });
+      await waitFor(() => expect(box).toBeEnabled());
+      expect(box).not.toBeChecked();
+    });
+
+    it('turns drafting on when the box is ticked', async () => {
+      drafting(false);
+
+      render(<SettingsView />);
+
+      const box = await screen.findByRole('checkbox', { name: 'Draft review requests' });
+      await waitFor(() => expect(box).toBeEnabled());
+      await userEvent.click(box);
+
+      expect(invoke).toHaveBeenCalledWith('set_review_nudges', { enabled: true });
+      expect(box).toBeChecked();
+    });
+
+    it('shows a box that is already on as ticked', async () => {
+      drafting(true);
+
+      render(<SettingsView />);
+
+      await waitFor(() =>
+        expect(screen.getByRole('checkbox', { name: 'Draft review requests' })).toBeChecked(),
+      );
+    });
+
+    it('stays unticked and locked rather than guess at an answer of the wrong shape', async () => {
+      drafting([]);
+
+      render(<SettingsView />);
+
+      const box = await screen.findByRole('checkbox', { name: 'Draft review requests' });
+      expect(box).toBeDisabled();
+      expect(box).not.toBeChecked();
+    });
+  });
 });

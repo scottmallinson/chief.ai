@@ -16,6 +16,7 @@ import { LinearKey } from '@/components/LinearKey';
 import { SignInRegistration } from '@/components/SignInRegistration';
 import { runDoctor, type Report } from '@/lib/doctor';
 import { gpuStatus, setUseGpu, type GpuStatus } from '@/lib/gpu';
+import { reviewNudges, setReviewNudges } from '@/lib/review-nudges';
 import {
   launchAtLogin,
   setKeepRunning,
@@ -632,6 +633,64 @@ function LaunchAtLogin({ behaviour }: { behaviour: WindowBehaviour }) {
 }
 
 /**
+ * Drafting a review request for a pull request that has been sitting.
+ *
+ * Off until the user turns it on: the message is about a colleague, and a nudge
+ * nobody asked for reads as pressure on them. Nothing is ever sent either way.
+ */
+function ReviewNudges() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    reviewNudges()
+      .then((current) => {
+        // Anything that is not a boolean is no answer at all.
+        if (!cancelled && typeof current === 'boolean') setEnabled(current);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setProblem(error instanceof Error ? error.message : String(error));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const choose = async (next: boolean) => {
+    try {
+      await setReviewNudges(next);
+      setEnabled(next);
+      setProblem(null);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  return (
+    <div className="mt-4 border-t border-border pt-3">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled === true}
+          disabled={enabled === null}
+          onChange={(event) => void choose(event.target.checked)}
+          className="size-4 accent-primary"
+        />
+        Draft review requests
+      </label>
+      <p className="mt-2 text-[13px] leading-snug text-muted-foreground">
+        When one of your pull requests has waited days for a review, Chief writes a short message
+        asking for one and keeps it for you to edit. It never sends anything.
+      </p>
+      {problem && <p className="mt-2 text-sm text-attention-text">{problem}</p>}
+    </div>
+  );
+}
+
+/**
  * The engine, and the model it is actually serving.
  *
  * The name was written into this file, which made it wrong the moment there
@@ -931,6 +990,7 @@ export function SettingsView() {
           >
             <ProfileBootstrap />
             <FactsEditor />
+            <ReviewNudges />
           </SettingsSection>
           <ThisMachine />
           <WhenClosed />

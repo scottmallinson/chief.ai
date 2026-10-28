@@ -539,7 +539,7 @@ async fn propose_for_one_thing<R: Runtime>(app: &AppHandle<R>) -> bool {
         }
     };
 
-    match propose::run_once(&context, &attention).await {
+    match propose::run_if_enabled(&context, &attention).await {
         Ok(Some(proposal)) => eprintln!("drafted {} at {}", proposal.title, proposal.path),
         Ok(None) => {}
         Err(error) => eprintln!("no draft this pass: {error}"),

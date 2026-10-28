@@ -171,6 +171,8 @@ pub fn run() {
             corpus::set_corpus_root,
             probe::run_doctor,
             propose::refine_draft,
+            propose::review_nudges,
+            propose::set_review_nudges,
             proposed::dismiss_proposal,
             proposed::list_proposals,
             proposed::save_proposal,
