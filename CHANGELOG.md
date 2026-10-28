@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.24.0 (2026-10-28)
+
+### Features
+
+- **tauri:** draw the installers in the Chief design system ([04ba574](https://github.com/scottmallinson/chief.ai/commit/04ba574c067bb37e98ac1b6cff345b40b41f0d66))
+
 ## 0.23.0 (2026-10-28)
 
 ### Features
