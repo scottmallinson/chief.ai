@@ -212,7 +212,7 @@ impl Rest {
         email: &str,
         token: &str,
     ) -> Result<Vec<Issue>, Error> {
-        self.search(site, email, token, ASSIGNED).await
+        self.search(site, email, token, ASSIGNED, true).await
     }
 
     /// What this person resolved since `since`.
@@ -223,7 +223,7 @@ impl Rest {
         token: &str,
         since: chrono::NaiveDate,
     ) -> Result<Vec<Issue>, Error> {
-        self.search(site, email, token, &super::completed_jql(since))
+        self.search(site, email, token, &super::completed_jql(since), false)
             .await
     }
 
@@ -233,26 +233,22 @@ impl Rest {
         email: &str,
         token: &str,
         jql: &str,
+        history: bool,
     ) -> Result<Vec<Issue>, Error> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "jql": jql,
             "maxResults": READ_LIMIT,
-            "fields": ["summary", "status", "resolutiondate"],
+            "fields": super::SEARCH_FIELDS,
         });
+        // The changelog roughly doubles an issue's size, so the search for what
+        // was resolved, which has no use for it, does not ask.
+        if history {
+            body["expand"] = "changelog".into();
+        }
 
-        let found: SearchReply = self.post(site, SEARCH, email, token, &body).await?;
+        let found: serde_json::Value = self.post(site, SEARCH, email, token, &body).await?;
 
-        Ok(found
-            .issues
-            .into_iter()
-            .map(|issue| Issue {
-                url: Some(format!("{site}/browse/{}", issue.key)),
-                key: issue.key,
-                summary: issue.fields.summary,
-                status: issue.fields.status.map(|it| it.name).unwrap_or_default(),
-                resolved: issue.fields.resolutiondate,
-            })
-            .collect())
+        Ok(super::issues_at(&found, site))
     }
 
     /// Pages this person has been writing.
@@ -385,36 +381,6 @@ struct MyselfReply {
     account_id: String,
     #[serde(default)]
     display_name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct SearchReply {
-    #[serde(default)]
-    issues: Vec<IssueNode>,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueNode {
-    #[serde(default)]
-    key: String,
-    #[serde(default)]
-    fields: Fields,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct Fields {
-    #[serde(default)]
-    summary: String,
-    #[serde(default)]
-    status: Option<Named>,
-    #[serde(default)]
-    resolutiondate: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Named {
-    #[serde(default)]
-    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -578,6 +544,33 @@ mod tests {
         assert!(
             sent.contains("resolution = EMPTY"),
             "open is the absence of a resolution, not a state called Done: {sent}"
+        );
+    }
+
+    #[tokio::test]
+    async fn asks_for_the_fields_that_say_how_an_issue_is_going() {
+        let body = serde_json::json!({ "issues": [{ "key": "ENG-3", "fields": {
+            "summary": "s", "status": { "name": "Doing", "statusCategory": { "key": "indeterminate" } },
+            "duedate": "2026-11-02", "priority": { "name": "Low" } },
+            "changelog": { "histories": [{ "created": "2026-10-26T09:00:00.000+0000",
+              "items": [{ "field": "status", "fromString": "To Do", "toString": "Doing" }] }] } }] })
+        .to_string();
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", body)]);
+        let rest = Rest::new().expect("client");
+
+        let found = rest
+            .assigned(&host, "scott@example.com", "a-token")
+            .await
+            .expect("should read");
+
+        assert_eq!(found[0].detail.due.as_deref(), Some("2026-11-02"));
+        assert_eq!(found[0].detail.status_kind, "indeterminate");
+        assert_eq!(found[0].detail.changes.len(), 1);
+
+        let sent = server.await.expect("server").join("");
+        assert!(
+            sent.contains("issuelinks") && sent.contains("duedate") && sent.contains("changelog"),
+            "{sent}"
         );
     }
 

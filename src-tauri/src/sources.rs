@@ -46,12 +46,12 @@ impl<T> Default for Found<T> {
 }
 
 impl<T> Found<T> {
-    fn ok(&mut self, mut items: Vec<T>) {
+    pub(crate) fn ok(&mut self, mut items: Vec<T>) {
         self.answered = true;
         self.items.append(&mut items);
     }
 
-    fn fail(&mut self, why: impl ToString) {
+    pub(crate) fn fail(&mut self, why: impl ToString) {
         self.failed.push(why.to_string());
     }
 }

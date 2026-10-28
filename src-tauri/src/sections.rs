@@ -96,6 +96,15 @@ fn break_loop(text: &str) -> String {
 /// for. A line with none is looked for by its longest word. `None` is a line
 /// with nothing distinctive to look for, which is not held to it.
 fn marker(line: &str) -> Option<String> {
+    // A line that opens with a ticket key is about that ticket, even when it
+    // goes on to name a pull request: a model paraphrasing "its pull request"
+    // drops the number and keeps the key.
+    if let Some(first) = line.split_whitespace().next() {
+        if is_ticket_key(first) {
+            return Some(first.to_lowercase());
+        }
+    }
+
     if let Some((_, after)) = line.split_once('#') {
         let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
 
@@ -122,6 +131,16 @@ fn marker(line: &str) -> Option<String> {
         .filter(|word| word.chars().filter(|c| c.is_alphabetic()).count() >= 5)
         .max_by_key(|word| word.chars().count())
         .map(|word| word.to_lowercase())
+}
+
+/// `ENG-12`: capital letters, a hyphen, digits and nothing else.
+fn is_ticket_key(word: &str) -> bool {
+    word.split_once('-').is_some_and(|(project, number)| {
+        !project.is_empty()
+            && project.chars().all(|c| c.is_ascii_uppercase())
+            && !number.is_empty()
+            && number.chars().all(|c| c.is_ascii_digit())
+    })
 }
 
 /// A line mentioned in `written`, or one with nothing to look for.
@@ -278,6 +297,11 @@ mod tests {
             "a line with nothing to look for is not held to it"
         );
         assert_eq!(marker("Trailing hash #"), Some("trailing".to_string()));
+        assert_eq!(
+            marker("ENG-107 Add SSO. Pull request acme/api#88 is held up").as_deref(),
+            Some("eng-107"),
+            "a line about a ticket is looked for by its key, not by the pull request it names"
+        );
     }
 
     #[test]

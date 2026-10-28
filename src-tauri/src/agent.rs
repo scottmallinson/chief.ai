@@ -19,6 +19,7 @@ use crate::db;
 use crate::engine;
 use crate::github;
 use crate::intent;
+use crate::items;
 use crate::llama::{self, ChatRequest, Client, Message, Role};
 use crate::microsoft;
 use crate::recipe;
@@ -1012,6 +1013,71 @@ pub async fn ask_agent<R: Runtime>(
     // Taken before the engine is woken, so the idle supervisor cannot stop it
     // again between the wake and the question.
     let _waiting = attention.begin();
+
+    // `/items` reads the trackers in Rust, works out what moved, what is blocked
+    // and whether each item will make its date, and only then asks the model to
+    // word it. With nothing assigned it is answered here, before the engine
+    // starts; if the model cannot be reached the same facts are shown as found.
+    if let Some(question) = messages.iter().rev().find(|turn| turn.role == Role::User) {
+        if intent::route(&question.content) == Some(intent::Intent::Items) {
+            if let Ok(recipe) = recipe::context(&app).await {
+                if let Some(analysis) = items::analyse(&recipe, items::DEFAULT_DAYS).await {
+                    let provenance = analysis.provenance.clone();
+
+                    if analysis.parts.iter().all(|part| !part.worded) {
+                        return Ok(Answer {
+                            content: analysis.markdown(),
+                            provenance,
+                        });
+                    }
+
+                    let emit = |update| {
+                        let _ = app.emit(
+                            STREAM_EVENT,
+                            StreamEvent {
+                                request_id: request_id.clone(),
+                                update,
+                            },
+                        );
+                    };
+
+                    let engine = app.state::<engine::Engine>();
+                    if !engine.is_running() {
+                        emit(Update::Waking);
+                    }
+
+                    let written = match engine.start_and_wait(client.inner()).await {
+                        Ok(()) => {
+                            emit(Update::Tool {
+                                name: "Working out how your items are going".to_string(),
+                            });
+                            items::write(&client, &analysis, |prompt| {
+                                ChatRequest::new(
+                                    &model,
+                                    adapter::Adapter::for_tier(engine.tier()).assemble(
+                                        vec![Turn {
+                                            role: Role::User,
+                                            content: prompt,
+                                        }],
+                                        &clock::present(),
+                                    ),
+                                )
+                            })
+                            .await
+                            .map(|written| written.text)
+                            .ok()
+                        }
+                        Err(_) => None,
+                    };
+
+                    return Ok(Answer {
+                        content: written.unwrap_or_else(|| analysis.markdown()),
+                        provenance,
+                    });
+                }
+            }
+        }
+    }
 
     // Before the engine, not after it. A question this machine can answer from
     // its own disk should not wait several seconds for a couple of gigabytes of

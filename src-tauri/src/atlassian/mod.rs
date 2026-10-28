@@ -421,6 +421,20 @@ pub struct Site {
     pub name: String,
 }
 
+/// What a search asks Jira to return. A field a site does not have is left
+/// out of the answer rather than failing the search.
+pub(crate) const SEARCH_FIELDS: [&str; 9] = [
+    "summary",
+    "status",
+    "resolutiondate",
+    "priority",
+    "duedate",
+    "updated",
+    "issuelinks",
+    "assignee",
+    "labels",
+];
+
 /// One Jira issue, reduced to what a brief says about it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Issue {
@@ -434,6 +448,134 @@ pub struct Issue {
     /// When it was resolved, as Jira wrote it. Set only by the reads that ask
     /// for finished work; an open issue has none.
     pub resolved: Option<String>,
+    /// What a report on work in progress needs beyond the brief's line.
+    pub detail: Detail,
+}
+
+/// The parts of a Jira issue that say how it is going.
+///
+/// Every one is optional because a site can leave any of them off a project's
+/// screens, and a field the search did not return costs that field and not the
+/// issue.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Detail {
+    /// The priority's name, as the site calls it.
+    pub priority: Option<String>,
+    /// `YYYY-MM-DD`.
+    pub due: Option<String>,
+    /// When it last changed, as Jira wrote it.
+    pub updated: Option<String>,
+    /// Jira's own status category: `new`, `indeterminate` or `done`. Every
+    /// site renames its statuses and none of them can rename these three.
+    pub status_kind: String,
+    /// Keys of the unfinished issues that block this one.
+    pub blocked_by: Vec<String>,
+    /// Who it is assigned to, by display name.
+    pub assignee: Option<String>,
+    /// Status moves and blocks, from the changelog. Empty when the search did
+    /// not ask for it, as the Remote MCP one does not, which is different from
+    /// nothing having happened.
+    pub changes: Vec<crate::items::Change>,
+    /// Whether the search returned a changelog at all.
+    pub history: bool,
+}
+
+/// The dated status moves and blocks in an issue's changelog.
+///
+/// Jira writes a link change as the sentence it shows, so a block is read
+/// from "This issue is blocked by ENG-4" and the key is its last word. A site
+/// that words it otherwise reads as no block: a block Chief cannot date is
+/// left undated rather than guessed at.
+#[must_use]
+pub(crate) fn changes_of(issue: &serde_json::Value) -> Vec<crate::items::Change> {
+    use crate::items::{Change, ChangeKind};
+
+    let text = |value: &serde_json::Value| value.as_str().map(str::to_string);
+
+    issue["changelog"]["histories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|history| {
+            let at = text(&history["created"]);
+
+            history["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| {
+                    let at = at.clone()?;
+                    let field = item["field"].as_str()?;
+
+                    if field.eq_ignore_ascii_case("status") {
+                        Some(Change {
+                            at,
+                            kind: ChangeKind::Moved {
+                                from: text(&item["fromString"]).unwrap_or_default(),
+                                to: text(&item["toString"])?,
+                            },
+                        })
+                    } else if field.eq_ignore_ascii_case("link") {
+                        let sentence = item["toString"].as_str()?;
+                        let by = sentence.split_whitespace().last()?;
+
+                        (sentence.to_lowercase().contains("is blocked by") && by.contains('-'))
+                            .then(|| Change {
+                                at,
+                                kind: ChangeKind::Blocked { by: by.to_string() },
+                            })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Read [`Detail`] out of an issue's `fields`.
+#[must_use]
+pub(crate) fn detail_of(fields: Option<&serde_json::Value>) -> Detail {
+    let Some(fields) = fields else {
+        return Detail::default();
+    };
+
+    let text = |value: &serde_json::Value| value.as_str().map(str::to_string);
+
+    let blocked_by = fields
+        .get("issuelinks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|link| {
+            // `inwardIssue` is the other end when this issue is the one being
+            // blocked. The link type is the site's to rename, so the standard
+            // pair of words is matched and anything else is not a blocker.
+            let kind = &link["type"];
+            kind["name"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case("blocks"))
+                || kind["inward"]
+                    .as_str()
+                    .is_some_and(|words| words.eq_ignore_ascii_case("is blocked by"))
+        })
+        .filter_map(|link| link.get("inwardIssue"))
+        .filter(|blocker| {
+            blocker["fields"]["status"]["statusCategory"]["key"].as_str() != Some("done")
+        })
+        .filter_map(|blocker| text(&blocker["key"]))
+        .collect();
+
+    Detail {
+        priority: text(&fields["priority"]["name"]),
+        due: text(&fields["duedate"]),
+        updated: text(&fields["updated"]),
+        status_kind: text(&fields["status"]["statusCategory"]["key"]).unwrap_or_default(),
+        blocked_by,
+        assignee: text(&fields["assignee"]["displayName"]),
+        changes: Vec::new(),
+        history: false,
+    }
 }
 
 /// A sign-in in flight.
@@ -1213,7 +1355,7 @@ impl Mcp<'_> {
                     "cloudId": site.id,
                     "jql": jql,
                     "maxResults": READ_LIMIT,
-                    "fields": ["summary", "status", "resolutiondate"],
+                    "fields": SEARCH_FIELDS,
                 }),
             )
             .await?;
@@ -1231,6 +1373,13 @@ impl Mcp<'_> {
 /// nothing said. Anything unrecognised is skipped and the rest still arrives.
 #[must_use]
 fn issues(value: &serde_json::Value, site: &Site) -> Vec<Issue> {
+    issues_at(value, &site.url)
+}
+
+/// [`issues`] for a site known only by its address, which is what the token
+/// route has.
+#[must_use]
+pub(crate) fn issues_at(value: &serde_json::Value, site_url: &str) -> Vec<Issue> {
     let found = value
         .get("issues")
         .and_then(serde_json::Value::as_array)
@@ -1261,8 +1410,8 @@ fn issues(value: &serde_json::Value, site: &Site) -> Vec<Issue> {
                 .unwrap_or_default()
                 .to_string();
 
-            let url = (!site.url.is_empty())
-                .then(|| format!("{}/browse/{key}", site.url.trim_end_matches('/')));
+            let url = (!site_url.is_empty())
+                .then(|| format!("{}/browse/{key}", site_url.trim_end_matches('/')));
 
             let resolved = fields
                 .and_then(|fields| fields.get("resolutiondate"))
@@ -1275,6 +1424,11 @@ fn issues(value: &serde_json::Value, site: &Site) -> Vec<Issue> {
                 status,
                 url,
                 resolved,
+                detail: Detail {
+                    changes: changes_of(issue),
+                    history: issue.get("changelog").is_some(),
+                    ..detail_of(fields)
+                },
             })
         })
         .collect()
@@ -2269,6 +2423,97 @@ mod tests {
     }
 
     #[test]
+    fn reads_dated_moves_and_blocks_out_of_the_changelog() {
+        use crate::items::{Change, ChangeKind};
+
+        let issue = serde_json::json!({ "key": "ENG-3", "changelog": { "histories": [
+            { "created": "2026-10-20T09:00:00.000+0000", "items": [
+                { "field": "status", "fromString": "To Do", "toString": "In Progress" },
+                { "field": "assignee", "fromString": "A", "toString": "B" } ] },
+            { "created": "2026-10-15T09:00:00.000+0000", "items": [
+                { "field": "Link", "toString": "This issue is blocked by ENG-4" } ] },
+            { "created": "2026-10-14T09:00:00.000+0000", "items": [
+                { "field": "Link", "toString": "This issue relates to ENG-9" } ] }
+        ] } });
+
+        assert_eq!(
+            changes_of(&issue),
+            [
+                Change {
+                    at: "2026-10-20T09:00:00.000+0000".to_string(),
+                    kind: ChangeKind::Moved {
+                        from: "To Do".to_string(),
+                        to: "In Progress".to_string()
+                    }
+                },
+                Change {
+                    at: "2026-10-15T09:00:00.000+0000".to_string(),
+                    kind: ChangeKind::Blocked {
+                        by: "ENG-4".to_string()
+                    }
+                },
+            ]
+        );
+        assert!(changes_of(&serde_json::json!({ "key": "ENG-3" })).is_empty());
+    }
+
+    fn detailed_issue() -> serde_json::Value {
+        serde_json::json!({ "issues": [{ "key": "PROJ-7", "fields": {
+            "summary": "Migrate the tenant",
+            "status": { "name": "In Review", "statusCategory": { "key": "indeterminate" } },
+            "priority": { "name": "High" },
+            "duedate": "2026-10-30",
+            "updated": "2026-10-27T09:00:00.000+0000",
+            "assignee": { "displayName": "Dana Vance" },
+            "issuelinks": [
+                { "type": { "name": "Blocks", "inward": "is blocked by", "outward": "blocks" },
+                  "inwardIssue": { "key": "PROJ-3", "fields": { "status": { "statusCategory": { "key": "new" } } } } },
+                { "type": { "name": "Blocks", "inward": "is blocked by", "outward": "blocks" },
+                  "inwardIssue": { "key": "PROJ-2", "fields": { "status": { "statusCategory": { "key": "done" } } } } },
+                { "type": { "name": "Blocks", "inward": "is blocked by", "outward": "blocks" },
+                  "outwardIssue": { "key": "PROJ-9", "fields": { "status": { "statusCategory": { "key": "new" } } } } },
+                { "type": { "name": "Relates", "inward": "relates to", "outward": "relates to" },
+                  "inwardIssue": { "key": "PROJ-1", "fields": { "status": { "statusCategory": { "key": "new" } } } } }
+            ]
+        } }] })
+    }
+
+    #[test]
+    fn reads_how_an_issue_is_going() {
+        let site = Site {
+            id: "c".to_string(),
+            url: "https://acme.atlassian.net".to_string(),
+            name: "acme".to_string(),
+        };
+
+        let found = issues(&detailed_issue(), &site);
+
+        let detail = &found[0].detail;
+        assert_eq!(detail.priority.as_deref(), Some("High"));
+        assert_eq!(detail.due.as_deref(), Some("2026-10-30"));
+        assert_eq!(detail.status_kind, "indeterminate");
+        assert_eq!(detail.assignee.as_deref(), Some("Dana Vance"));
+    }
+
+    #[test]
+    fn only_an_unfinished_issue_that_blocks_this_one_is_a_blocker() {
+        let found = issues_at(&detailed_issue(), "https://acme.atlassian.net");
+
+        // PROJ-2 is done, PROJ-9 is blocked *by* this issue, PROJ-1 only relates.
+        assert_eq!(found[0].detail.blocked_by, ["PROJ-3"]);
+    }
+
+    #[test]
+    fn an_issue_with_none_of_the_extra_fields_still_reads() {
+        let bare =
+            serde_json::json!({ "issues": [{ "key": "A-1", "fields": { "summary": "s" } }] });
+
+        let found = issues_at(&bare, "");
+
+        assert_eq!(found[0].detail, Detail::default());
+    }
+
+    #[test]
     fn describes_an_issue_as_one_line() {
         let issue = Issue {
             key: "PROJ-7".to_string(),
@@ -2276,6 +2521,7 @@ mod tests {
             status: "In Review".to_string(),
             url: None,
             resolved: None,
+            detail: Detail::default(),
         };
 
         assert_eq!(describe(&issue), "PROJ-7 Migrate the tenant [In Review]");
