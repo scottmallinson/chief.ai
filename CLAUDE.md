@@ -563,6 +563,7 @@ from here to GitHub.
 of it. The item is one of the user's own open pull requests that has been sitting, and the draft is
 a short message asking for a review.
 
+- **Off until the user turns it on.** `propose.review_nudges` in `settings` is absent by default and the daemon calls `run_if_enabled`, which reads nothing and asks nothing while it is. A message about a colleague that nobody requested reads as pressure on them, so the quiet default is the product decision. The box is in Settings under "Your profile"; `drafts_nothing_until_the_user_turns_it_on` was proven to fail with the gate removed.
 - **Nothing here sends anything, and that boundary is a test.**
   `never_reaches_the_network_to_draft` asserts every request the pass makes to GitHub is a `GET`,
   having first asserted the request list is not empty — a loop over nothing passes without checking
