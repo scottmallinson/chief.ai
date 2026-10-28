@@ -951,6 +951,13 @@ opens Chief, not started by opening it.
   and a moved one still is. `login::refresh` points an existing Linux entry at the running copy
   on every launch, because an AppImage carries its version in its file name. The CI app build
   bundles the Windows installers, not just the app, because nothing else compiles those two hooks.
+- **Never set `bundle.publisher`.** Tauri's NSIS installer files where Chief is installed under
+  `Software\<publisher>\Chief`, and the publisher it uses when none is set is the second part of
+  the bundle identifier (`scottmallinson`). Setting one moves that key, so an upgrade cannot find
+  the folder of the copy it is replacing, runs the old uninstaller with an empty `_?=` and stops
+  with "Error launching installer". 0.24.0 to 0.26.0 shipped with it set and could not be
+  installed over an earlier version. The name shown in Add or Remove Programs is therefore
+  `scottmallinson` until a migration exists.
 
 ## First-run setup
 

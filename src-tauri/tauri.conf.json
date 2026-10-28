@@ -56,7 +56,6 @@
         "dialogImagePath": "installer/wix-dialog.bmp"
       }
     },
-    "publisher": "Scott Mallinson",
     "macOS": {
       "dmg": {
         "background": "installer/dmg-background.png",
