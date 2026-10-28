@@ -640,6 +640,30 @@ when it had gone out of date.
 `#[serde(skip_serializing)]` so it cannot leak into `as_tool_entries` — a list of pull request
 bodies would swamp the prompt budget, and the model does not need one to say what is waiting.
 
+## The team view
+
+`src-tauri/src/team.rs` answers `/team` for somebody whose work is other people's work: open pull
+requests waiting on review for the people and repositories they list.
+
+- **People first.** A manager answers for their reports and for what those reports deliver, and a
+  report may land one feature across repositories the manager has never listed. A person's open
+  pull requests are found with `author:<login>` across every repository the token can see, so
+  nobody has to know where the work is. A repository list is for a codebase a team owns.
+- **Opt-in, and a file.** Nothing is read until `team.md` in the corpus lists someone (`- handle`
+  or `- Name = handle`) or somewhere (`- owner/name`). The first `/team` creates the file with its
+  example inside an HTML comment (`people::outside_comments` hides comments from the parser), and
+  an unlisted file costing no request is a test. A line is read by what it is, so a file of bare
+  `owner/name` lines works.
+- **Only what the user's own token can see.** One GraphQL search per person or repository, at most
+  10 people and 5 repositories, 50 pull requests each. GitHub's search answers something the token
+  cannot read with no pull requests, so an empty answer says it may be either.
+- **Counted in code.** Groups, order and ages come from the data; no model is called. A pull request
+  with no decision but a review already given is "reviewed", not "waiting". People are named when
+  `team.md` or a confirmed line in `people.md` gives a name.
+- A repository or login is checked (`github::is_repository`, `is_login`) before it goes into the
+  search query, because a value that could carry another qualifier would read somewhere the user
+  never listed.
+
 ## Calendars without a sign-in
 
 `src-tauri/src/ical.rs` parses iCalendar; `src-tauri/src/calendar.rs` fetches it. Together they are
