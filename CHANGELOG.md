@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.21.0 (2026-10-28)
+
+### Features
+
+- **agent:** read /team by the people the user manages, not only by repository ([60748c2](https://github.com/scottmallinson/chief.ai/commit/60748c200221f7429ddc7c5fb5d515313a35da5a))
+- **agent:** list pull requests waiting on review across repositories you choose ([15bf670](https://github.com/scottmallinson/chief.ai/commit/15bf670bb76a1a2fb20be6061139c941e5e8a5f9))
+
 ## 0.20.0 (2026-10-27)
 
 ### Features
