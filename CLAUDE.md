@@ -660,7 +660,13 @@ requests waiting on review for the people and repositories they list.
 - **Counted in code.** Groups, order and ages come from the data; no model is called. A pull request
   with no decision but a review already given is "reviewed", not "waiting". People are named when
   `team.md` or a confirmed line in `people.md` gives a name.
-- A repository or login is checked (`github::is_repository`, `is_login`) before it goes into the
+- **`/1on1` is the same list, read per meeting.** The day's meetings come from the work log, as in
+  `/prep`; a meeting is matched to a person only by the **name** beside their handle in `team.md`
+  (`- Dana Vance = dvance`) or confirmed in `people.md`, appearing whole in the meeting. A handle
+  alone is never matched, because it is not what a calendar says and a wrong name beside somebody's
+  work is worse than no sheet. Each matched person costs two searches (merged in the last 14 days,
+  and open), once however many meetings they are in; an unmatched meeting costs none.
+- A repository or login is checked (`github::is_repository`, `is_login`, and the `YYYY-MM-DD` date) before it goes into the
   search query, because a value that could carry another qualifier would read somewhere the user
   never listed.
 

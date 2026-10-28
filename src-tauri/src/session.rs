@@ -415,6 +415,7 @@ impl<'a> GithubSession<'a> {
     pub async fn team_pulls(
         &self,
         scope: github::TeamScope<'_>,
+        kind: github::TeamKind<'_>,
         limit: u8,
     ) -> Result<Vec<github::TeamPull>, github::Error> {
         let token = self
@@ -425,7 +426,7 @@ impl<'a> GithubSession<'a> {
 
         self.session
             .renewing(token, |token| async move {
-                self.client.team_pulls(&token, scope, limit).await
+                self.client.team_pulls(&token, scope, kind, limit).await
             })
             .await
     }

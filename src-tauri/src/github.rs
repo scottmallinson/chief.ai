@@ -443,7 +443,7 @@ fn blockers_from(node: &Value) -> Option<Blockers> {
 }
 
 const TEAM_QUERY: &str = "query($q: String!, $first: Int!) { search(query: $q, type: ISSUE, \
-first: $first) { nodes { ... on PullRequest { number title url createdAt isDraft reviewDecision \
+first: $first) { nodes { ... on PullRequest { number title url createdAt mergedAt isDraft reviewDecision \
 author { login } repository { nameWithOwner } reviews { totalCount } \
 reviewRequests(first: 5) { nodes { requestedReviewer { ... on User { login } \
 ... on Team { name } } } } } } } }";
@@ -459,6 +459,8 @@ pub struct TeamPull {
     pub author: String,
     /// ISO-8601.
     pub created_at: String,
+    /// ISO-8601, for a pull request that was merged.
+    pub merged_at: Option<String>,
     pub draft: bool,
     pub decision: Decision,
     /// Reviews given so far, of any kind.
@@ -501,6 +503,7 @@ fn team_pull_from(node: &Value) -> Option<TeamPull> {
             .unwrap_or_default()
             .to_string(),
         created_at: node["createdAt"].as_str()?.to_string(),
+        merged_at: node["mergedAt"].as_str().map(ToString::to_string),
         draft: node["isDraft"].as_bool().unwrap_or(false),
         decision,
         reviews: node["reviews"]["totalCount"].as_i64().unwrap_or(0),
@@ -514,6 +517,19 @@ fn team_pull_from(node: &Value) -> Option<TeamPull> {
 pub enum TeamScope<'a> {
     Repository(&'a str),
     Author(&'a str),
+}
+
+/// Which of somebody's pull requests to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamKind<'a> {
+    Open,
+    /// Merged on or after this `YYYY-MM-DD` date.
+    MergedSince(&'a str),
+}
+
+/// Is this a calendar date written `YYYY-MM-DD` and nothing else?
+fn is_date(text: &str) -> bool {
+    chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok() && text.len() == 10
 }
 
 /// Is this a GitHub login and nothing else?
@@ -961,8 +977,18 @@ impl Client {
         &self,
         token: &str,
         scope: TeamScope<'_>,
+        kind: TeamKind<'_>,
         limit: u8,
     ) -> Result<Vec<TeamPull>, Error> {
+        let state = match kind {
+            TeamKind::Open => "is:open".to_string(),
+            TeamKind::MergedSince(date) if is_date(date) => {
+                format!("is:merged merged:>={date}")
+            }
+            TeamKind::MergedSince(date) => {
+                return Err(Error::Decode(format!("\"{date}\" is not a date")));
+            }
+        };
         let qualifier = match scope {
             TeamScope::Repository(repository) if is_repository(repository) => {
                 format!("repo:{repository}")
@@ -984,7 +1010,7 @@ impl Client {
             .json(&serde_json::json!({
                 "query": TEAM_QUERY,
                 "variables": {
-                    "q": format!("{qualifier} is:pr is:open sort:created-asc"),
+                    "q": format!("{qualifier} is:pr {state} sort:created-asc"),
                     "first": limit.clamp(1, 50),
                 },
             }))
@@ -1819,7 +1845,12 @@ mod team_tests {
         let client = Client::against(&host).expect("client");
 
         let found = client
-            .team_pulls("gho_token", TeamScope::Repository("acme/api"), 50)
+            .team_pulls(
+                "gho_token",
+                TeamScope::Repository("acme/api"),
+                TeamKind::Open,
+                50,
+            )
             .await
             .expect("should read");
 
@@ -1828,6 +1859,7 @@ mod team_tests {
         assert_eq!(found[0].decision, Decision::Required);
         assert_eq!(found[0].requested, vec!["@prao", "team platform"]);
         assert!(found[1].draft);
+        assert_eq!(found[0].merged_at, None);
         assert_eq!(found[1].author, "", "a deleted account has no login");
 
         let received = server.await.expect("server");
@@ -1869,7 +1901,7 @@ mod team_tests {
         let client = Client::against(&host).expect("client");
 
         client
-            .team_pulls("gho_token", TeamScope::Author("dvance"), 50)
+            .team_pulls("gho_token", TeamScope::Author("dvance"), TeamKind::Open, 50)
             .await
             .expect("should read");
 
@@ -1893,7 +1925,12 @@ mod team_tests {
         let client = Client::against(&host).expect("client");
 
         let error = client
-            .team_pulls("gho_token", TeamScope::Author("dvance org:other"), 50)
+            .team_pulls(
+                "gho_token",
+                TeamScope::Author("dvance org:other"),
+                TeamKind::Open,
+                50,
+            )
             .await
             .expect_err("should refuse");
 
@@ -1905,13 +1942,70 @@ mod team_tests {
     }
 
     #[tokio::test]
+    async fn asks_for_what_somebody_merged_since_a_date() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        client
+            .team_pulls(
+                "gho_token",
+                TeamScope::Author("dvance"),
+                TeamKind::MergedSince("2026-10-14"),
+                50,
+            )
+            .await
+            .expect("should read");
+
+        let received = server.await.expect("server");
+        assert!(
+            received[0]
+                .contains("author:dvance is:pr is:merged merged:>=2026-10-14 sort:created-asc")
+                && !received[0].contains("is:open"),
+            "{}",
+            received[0]
+        );
+    }
+
+    /// Proved by letting any text through as a date:
+    ///
+    /// ```text
+    /// a date that could carry another qualifier must cost no request
+    /// ```
+    #[tokio::test]
+    async fn a_date_that_could_carry_another_qualifier_costs_no_request() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        let error = client
+            .team_pulls(
+                "gho_token",
+                TeamScope::Author("dvance"),
+                TeamKind::MergedSince("2026-10-14 org:other"),
+                50,
+            )
+            .await
+            .expect_err("should refuse");
+
+        assert!(matches!(error, Error::Decode(_)), "{error}");
+        assert!(
+            !server.is_finished(),
+            "a date that could carry another qualifier must cost no request"
+        );
+    }
+
+    #[tokio::test]
     async fn a_repository_that_could_carry_another_qualifier_costs_no_request() {
         // A spare reply that is never fetched, so a request would show.
         let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
         let client = Client::against(&host).expect("client");
 
         let error = client
-            .team_pulls("gho_token", TeamScope::Repository("acme/api is:closed"), 50)
+            .team_pulls(
+                "gho_token",
+                TeamScope::Repository("acme/api is:closed"),
+                TeamKind::Open,
+                50,
+            )
             .await
             .expect_err("should refuse");
 

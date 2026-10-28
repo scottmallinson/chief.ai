@@ -279,6 +279,12 @@ pub fn attending<'a>(people: &'a People, meeting: &str) -> Vec<&'a Person> {
         .collect()
 }
 
+/// Does the whole of `name` appear in `meeting`, as its own words?
+#[must_use]
+pub(crate) fn mentions(meeting: &str, name: &str) -> bool {
+    names(&key(meeting), &key(name))
+}
+
 /// Does `name` occur in `text` with no letter or digit against either end?
 fn names(text: &str, name: &str) -> bool {
     if name.is_empty() {
