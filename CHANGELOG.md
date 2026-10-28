@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.1 (2026-10-28)
+
+### Fixes
+
+- **tauri:** stop setting a publisher so the Windows installer can upgrade ([3e2aa30](https://github.com/scottmallinson/chief.ai/commit/3e2aa306bb9266de948b26ff3a084ae686fcd5bf))
+
 ## 0.26.0 (2026-10-28)
 
 ### Features
