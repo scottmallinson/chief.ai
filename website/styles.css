@@ -1819,3 +1819,132 @@ pre {
 .meter span.is-62 {
   width: 62%;
 }
+
+/* ---- Feature list ---- */
+
+.section-sub {
+  margin-top: 14px;
+  max-width: 640px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.features {
+  margin-top: 36px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+
+.feature {
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+}
+
+.feature h3 {
+  margin-top: 10px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.feature > p:not(.micro):not(.feature-ask):not(.feature-needs) {
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.feature-ask {
+  margin-top: auto;
+  padding-top: 18px;
+  font-size: 12px;
+  color: var(--slate);
+}
+
+.feature-needs {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tools {
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tools li {
+  border: 1px solid var(--rule-strong);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 14px;
+  background: var(--surface);
+}
+
+@media (max-width: 900px) {
+  .features {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- Feature colour ---- */
+
+.feature {
+  --accent: var(--slate);
+  --accent-text: var(--slate);
+  --accent-tint: rgba(44, 92, 122, 0.1);
+  border-top: 3px solid var(--accent);
+}
+
+.feature.is-amber {
+  --accent: var(--attention);
+  --accent-text: var(--attention-text);
+  --accent-tint: var(--attention-surface);
+}
+
+.feature.is-green {
+  --accent: var(--verified);
+  --accent-text: var(--verified-text);
+  --accent-tint: rgba(63, 107, 79, 0.12);
+}
+
+.feature-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 14px;
+  border-radius: 6px;
+  background: var(--accent-tint);
+  color: var(--accent-text);
+}
+
+.feature .micro {
+  color: var(--accent-text);
+}
+
+.feature .feature-ask {
+  color: var(--accent-text);
+}
+
+.tools li {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tools li svg {
+  color: var(--graphite);
+}
