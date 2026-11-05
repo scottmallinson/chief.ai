@@ -31,7 +31,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 /** The llama.cpp build Chief ships. Bump deliberately, not automatically. */
-const BUILD = 'b10545';
+const BUILD = 'b11454';
 
 const RELEASE = `https://github.com/ggml-org/llama.cpp/releases/download/${BUILD}`;
 
@@ -233,6 +233,7 @@ async function buildMacos12Server(scratch) {
       '-DGGML_BLAS=OFF',
       '-DGGML_METAL=OFF',
       '-DLLAMA_BUILD_UI=OFF',
+      '-DLLAMA_USE_PREBUILT_UI=OFF',
       '-DLLAMA_BUILD_SERVER=ON',
       '-DLLAMA_BUILD_TESTS=OFF',
       '-DLLAMA_BUILD_EXAMPLES=OFF',

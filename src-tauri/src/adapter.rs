@@ -58,9 +58,16 @@ pub enum ExecutionStrategy {
 #[must_use]
 pub const fn strategy_for(intent: Option<Intent>) -> ExecutionStrategy {
     match intent {
-        Some(Intent::Brief | Intent::Prep | Intent::Log(_) | Intent::Waiting) => {
-            ExecutionStrategy::DirectContextInjection
-        }
+        Some(
+            Intent::Brief
+            | Intent::Prep
+            | Intent::Log(_)
+            | Intent::Waiting
+            | Intent::Team
+            | Intent::OneOnOne
+            | Intent::Items
+            | Intent::TeamItems,
+        ) => ExecutionStrategy::DirectContextInjection,
         None => ExecutionStrategy::NativeToolCall,
     }
 }
@@ -142,6 +149,10 @@ mod tests {
             Intent::Log(crate::intent::Window::Recent),
             Intent::Log(crate::intent::Window::ThisWeek),
             Intent::Waiting,
+            Intent::Team,
+            Intent::OneOnOne,
+            Intent::Items,
+            Intent::TeamItems,
         ] {
             assert_eq!(
                 strategy_for(Some(intent)),

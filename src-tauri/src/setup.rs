@@ -6,8 +6,9 @@
 //! is the engine answering?
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
+use crate::embedder;
 use crate::engine::{self, Engine};
 use crate::llama::{Client, Health};
 use crate::weights::{self, DownloadProgress};
@@ -26,7 +27,7 @@ pub struct Readiness {
     /// share of their memory is entitled to know which of them they are getting
     /// and that something looked at their machine before deciding.
     pub tier: String,
-    /// Roughly what the model holds once loaded, in mebibytes. "2400" is the
+    /// Roughly what the model holds once loaded, in mebibytes. "3600" is the
     /// number that answers "will this slow my laptop down"; "Q4_K_M" is not.
     pub model_size_mb: u32,
     /// Whether the weights have been downloaded to this machine.
@@ -112,6 +113,20 @@ pub async fn download_model<R: Runtime>(
     )
     .await?;
 
+    // The router's embedding model, best-effort. A failure here costs the
+    // router and nothing else, so it never fails the download the user asked
+    // for.
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let destination = embedder::weights_path(&data_dir);
+        if !destination.is_file() {
+            let fetched = weights::download(&weights::EMBEDDER, &destination, |_| {}).await;
+            if let Err(error) = fetched {
+                eprintln!("the router's model was not downloaded: {error}");
+            }
+        }
+    }
+    embedder::start(&app);
+
     engine.ensure_running(client.inner()).await?;
 
     Ok(())
@@ -171,9 +186,9 @@ mod tests {
     #[test]
     fn describes_readiness_for_the_setup_screen() {
         let readiness = Readiness {
-            model: weights::STANDARD.describe(),
+            model: weights::GEMMA.describe(),
             tier: crate::probe::Tier::Standard.to_string(),
-            model_size_mb: weights::STANDARD.approx_resident_mb,
+            model_size_mb: weights::GEMMA.approx_resident_mb,
             model_installed: false,
             engine: Health::Down,
             problem: problem(Health::Down, true, false),
@@ -183,11 +198,8 @@ mod tests {
 
         assert_eq!(body["modelInstalled"], serde_json::json!(false));
         assert_eq!(body["tier"], serde_json::json!("standard"));
-        assert_eq!(body["modelSizeMb"], serde_json::json!(2400));
+        assert_eq!(body["modelSizeMb"], serde_json::json!(3600));
         assert_eq!(body["engine"], serde_json::json!("down"));
-        assert_eq!(
-            body["model"],
-            serde_json::json!(weights::STANDARD.describe())
-        );
+        assert_eq!(body["model"], serde_json::json!(weights::GEMMA.describe()));
     }
 }

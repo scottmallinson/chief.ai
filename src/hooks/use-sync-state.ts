@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { syncStatus, type SyncState } from '@/lib/sync-state';
+import { onSyncStateChanged, syncStatus, type SyncState } from '@/lib/sync-state';
 
 /**
  * Take the answer only if it is one.
@@ -38,10 +38,9 @@ interface UseSyncState {
  * is. An empty map degrades every row to "Never synced", which is the same
  * thing a fresh install shows and is never wrong in a way that misleads.
  *
- * It is read once on mount rather than polled. The daemon writes these on its
- * own cadence and the difference between a timestamp that is current and one
- * that is a few minutes stale is not worth a timer per screen; anything that
- * changes a state in the foreground — connecting, disconnecting — reloads it.
+ * It is read on mount and again whenever a pass says it has recorded
+ * something, so a manual or background sync moves the header the moment it
+ * finishes. There is no timer: nothing is asked until there is news.
  */
 export function useSyncState(): UseSyncState {
   const [all, setAll] = useState<readonly SyncState[]>([]);
@@ -61,8 +60,24 @@ export function useSyncState(): UseSyncState {
       })
       .catch(() => undefined);
 
+    let stop: (() => void) | undefined;
+
+    onSyncStateChanged(() => {
+      syncStatus()
+        .then((loaded) => {
+          if (!cancelled) setAll(usable(loaded));
+        })
+        .catch(() => undefined);
+    })
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else stop = unlisten;
+      })
+      .catch(() => undefined);
+
     return () => {
       cancelled = true;
+      stop?.();
     };
   }, []);
 

@@ -1,5 +1,139 @@
 # Changelog
 
+## 0.26.1 (2026-10-28)
+
+### Fixes
+
+- **tauri:** stop setting a publisher so the Windows installer can upgrade ([3e2aa30](https://github.com/scottmallinson/chief.ai/commit/3e2aa306bb9266de948b26ff3a084ae686fcd5bf))
+
+## 0.26.0 (2026-10-28)
+
+### Features
+
+- **agent:** report what is assigned to the people listed in team.md ([8bb1443](https://github.com/scottmallinson/chief.ai/commit/8bb14432cd1fbe819aa14cd0442aa9864e85fdbd))
+
+## 0.25.0 (2026-10-28)
+
+### Features
+
+- **agent:** say what moved, what is blocked and whether it will make its date ([5323116](https://github.com/scottmallinson/chief.ai/commit/532311685582db66823ce505cae446da1e8790e6))
+- **agent:** report what is assigned across GitHub, Jira and Linear ([9f39c27](https://github.com/scottmallinson/chief.ai/commit/9f39c27d6fdc5e2312b94abc35237f3618dc1425))
+
+## 0.24.0 (2026-10-28)
+
+### Features
+
+- **tauri:** draw the installers in the Chief design system ([04ba574](https://github.com/scottmallinson/chief.ai/commit/04ba574c067bb37e98ac1b6cff345b40b41f0d66))
+
+## 0.23.0 (2026-10-28)
+
+### Features
+
+- **agent:** draft review requests only when the user turns it on ([f0db155](https://github.com/scottmallinson/chief.ai/commit/f0db1558f23e7a38f0f16615a0e74fec67c55aa9))
+
+## 0.22.0 (2026-10-28)
+
+### Features
+
+- **agent:** show what the people you manage merged and have open before each meeting ([41182c3](https://github.com/scottmallinson/chief.ai/commit/41182c3405316e39827c5cee5f68d39b47999078))
+
+## 0.21.0 (2026-10-28)
+
+### Features
+
+- **agent:** read /team by the people the user manages, not only by repository ([60748c2](https://github.com/scottmallinson/chief.ai/commit/60748c200221f7429ddc7c5fb5d515313a35da5a))
+- **agent:** list pull requests waiting on review across repositories you choose ([15bf670](https://github.com/scottmallinson/chief.ai/commit/15bf670bb76a1a2fb20be6061139c941e5e8a5f9))
+
+## 0.20.0 (2026-10-27)
+
+### Features
+
+- **agent:** show how people.md is written in a commented example ([c643ae8](https://github.com/scottmallinson/chief.ai/commit/c643ae8e982d6af7f766bb9e121e3d9fa56136c5))
+- **agent:** name who is in a meeting from the people the user confirmed ([bbe9a3f](https://github.com/scottmallinson/chief.ai/commit/bbe9a3ff3aa77b67d793ee25a5ee3c21f7c5a72d))
+
+## 0.19.0 (2026-10-27)
+
+### Features
+
+- **agent:** suggest who is who across the tools in a file the user owns ([8c19a81](https://github.com/scottmallinson/chief.ai/commit/8c19a81a513961c7ff5bbbcf5d17de30e55871b3))
+
+## 0.18.0 (2026-10-27)
+
+### Features
+
+- **agent:** say what has happened since a recurring meeting last ran ([2e6b348](https://github.com/scottmallinson/chief.ai/commit/2e6b3488313abcef8508bea1aa7321c50ffcbf5b))
+
+## 0.17.0 (2026-10-27)
+
+### Features
+
+- **agent:** say what is holding up the user's open pull requests in answers ([d5ad891](https://github.com/scottmallinson/chief.ai/commit/d5ad891c67cdfb1e103bc9ed5eb9bd9185ce8db6))
+- **integrations:** say what is holding up the user's own pull requests ([8167068](https://github.com/scottmallinson/chief.ai/commit/81670685f8d4553450981a3945060c9f66417bac))
+
+### Fixes
+
+- **agent:** list a period's merged pull requests in full ([019aab9](https://github.com/scottmallinson/chief.ai/commit/019aab98e1e66116c383bbe39ee8185f49a781c7))
+
+## 0.16.1 (2026-10-27)
+
+### Fixes
+
+- **agent:** keep the work overview tool in the connected-only offer ([d0e26b0](https://github.com/scottmallinson/chief.ai/commit/d0e26b077f04fec0ba114d465910f5f03e984273))
+- **agent:** offer only the tools of services the user has connected ([99da894](https://github.com/scottmallinson/chief.ai/commit/99da894e43bd26e7775f12cb55d0b64dd651cba3))
+
+## 0.16.0 (2026-10-26)
+
+### Features
+
+- **agent:** draw the brief and standup from every connected source, in full ([73e186d](https://github.com/scottmallinson/chief.ai/commit/73e186df30ca5a2444852231c4a884befce0846e))
+
+### Fixes
+
+- **agent:** look back as far as the question asks ([6449985](https://github.com/scottmallinson/chief.ai/commit/6449985c1e8107202bc3982b82a0e8b850df8b9b))
+- **agent:** answer prioritise, yesterday and standup questions from live work ([6e47899](https://github.com/scottmallinson/chief.ai/commit/6e47899a0e0981a2c04c6530eeb15db7bf960bdf))
+
+## 0.15.0 (2026-10-26)
+
+### Features
+
+- **agent:** keep the model on the CPU on Windows and Linux until the graphics card is switched on ([0b5ea5a](https://github.com/scottmallinson/chief.ai/commit/0b5ea5af3170e0fca0fc51d61091a9487357919c))
+
+## 0.14.2 (2026-10-23)
+
+### Fixes
+
+- **agent:** read review requests live and refresh the header sync time ([f0e297f](https://github.com/scottmallinson/chief.ai/commit/f0e297f8a0443193592f7d127aa5a073625fdfba))
+
+## 0.14.1 (2026-10-21)
+
+### Fixes
+
+- **agent:** keep the engine off the GPU by default on Windows ([927e5cf](https://github.com/scottmallinson/chief.ai/commit/927e5cf5ea6719ea2a92c646332ec3869cba0ed6))
+- **agent:** keep the embedding server off the GPU ([358469f](https://github.com/scottmallinson/chief.ai/commit/358469f8f487590caafbcb2e7d1a430fe7f494f7))
+
+## 0.14.0 (2026-10-21)
+
+### Features
+
+- **agent:** run Gemma 4 E2B on both tiers with the router on ([a07bcb5](https://github.com/scottmallinson/chief.ai/commit/a07bcb52ad604b858785df13572b782cae7b0a7b))
+- **agent:** write a short day's brief in code instead of asking the model ([d5f6a93](https://github.com/scottmallinson/chief.ai/commit/d5f6a93aba7db18a64cdccb167612dda1b74ce5a))
+- **agent:** check a brief against everything the material shows, not only times ([4a7a11a](https://github.com/scottmallinson/chief.ai/commit/4a7a11ace6d4e644a5914fa1090af1a5e4704d6e))
+- **agent:** answer a read that found nothing in code, before the engine starts ([2076f85](https://github.com/scottmallinson/chief.ai/commit/2076f8537ca8527d05b5e25695bdda0d5b5e6b6f))
+- **agent:** never file a brief that names a time, number or person the material lacks ([477ea7b](https://github.com/scottmallinson/chief.ai/commit/477ea7ba96dec3a1f7162724f5d0d27283545d01))
+- **agent:** route review requests and day ranges by meaning ([c14e64a](https://github.com/scottmallinson/chief.ai/commit/c14e64a77ec3c67ede2e8d705a6550a6dc650d45))
+- **agent:** pick the GitHub view by meaning when routing ([06aa136](https://github.com/scottmallinson/chief.ai/commit/06aa1367846c13731e53886c1f9be75c8133ef5e))
+- **agent:** route a question to its source by meaning, behind an env switch ([4029c16](https://github.com/scottmallinson/chief.ai/commit/4029c16f9127b3c16dcea6a0149996dba6f0caba))
+
+### Fixes
+
+- **agent:** stop filing a cut-off brief, name attendees once, route open pull requests ([43a67e6](https://github.com/scottmallinson/chief.ai/commit/43a67e65973bd04db1561225801f24d11c7cbabe))
+
+## 0.13.2 (2026-10-16)
+
+### Fixes
+
+- **agent:** restate the question after a tool result and block answers that only describe it ([cf85b3a](https://github.com/scottmallinson/chief.ai/commit/cf85b3aad6ff023c2c0e1834070f499943b1b401))
+
 ## 0.13.1 (2026-10-16)
 
 ### Fixes

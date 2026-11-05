@@ -1,0 +1,3546 @@
+{
+  "note": "Merged routing fixtures. labels = what each origin set said (replay old numbers from these); source/tool/args = resolved expectation; args null = any argument acceptable.",
+  "cases": [
+    {
+      "question": "Which pull requests of mine are still open?",
+      "labels": {
+        "source36": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Which pull requests of mine are still open?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R001",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What's waiting for my review?",
+      "labels": {
+        "source36": "github",
+        "embed40": "github",
+        "views24": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["source36", "embed40", "views24"],
+      "texts": {
+        "source36": "What's waiting for my review?",
+        "embed40": "What's waiting for my review?",
+        "views24": "What's waiting for my review?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R002",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What did I ship last week?",
+      "labels": {
+        "source36": "github",
+        "embed40": "none",
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["source36", "embed40", "views24"],
+      "texts": {
+        "source36": "What did I ship last week?",
+        "embed40": "What did I ship last week?",
+        "views24": "What did I ship last week?"
+      },
+      "contested": true,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R003",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Has anyone reviewed my change to the billing service yet?",
+      "labels": {
+        "source36": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Has anyone reviewed my change to the billing service yet?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R004",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Anything blocking the release on the code side?",
+      "labels": {
+        "source36": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Anything blocking the release on the code side?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R005",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which of my branches are merged now?",
+      "labels": {
+        "source36": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Which of my branches are merged now?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R006",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Do I owe anyone a code review?",
+      "labels": {
+        "source36": "github",
+        "embed40": "github",
+        "views24": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["source36", "embed40", "views24"],
+      "texts": {
+        "source36": "Do I owe anyone a code review?",
+        "embed40": "Do I owe anyone a code review?",
+        "views24": "Do I owe anyone a code review?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R007",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "what code did i get merged this month",
+      "labels": {
+        "source36": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "what code did i get merged this month"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R008",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is my retry-webhooks change approved?",
+      "labels": {
+        "source36": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Is my retry-webhooks change approved?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R009",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What meetings do I have tomorrow?",
+      "labels": {
+        "source36": "calendar",
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "tomorrow"
+      },
+      "group": "calendar-range",
+      "origins": ["source36", "ranges18"],
+      "texts": {
+        "source36": "What meetings do I have tomorrow?",
+        "ranges18": "What meetings do I have tomorrow?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R010",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Am I double booked on Thursday?",
+      "labels": {
+        "source36": "calendar",
+        "embed40": "calendar",
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "week"
+      },
+      "group": "calendar-range",
+      "origins": ["source36", "embed40", "ranges18"],
+      "texts": {
+        "source36": "Am I double booked on Thursday?",
+        "embed40": "Am I double booked on Thursday?",
+        "ranges18": "Am I double booked on Thursday?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R011",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "When is my next call?",
+      "labels": {
+        "source36": "calendar"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "When is my next call?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R012",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Who am I seeing this afternoon?",
+      "labels": {
+        "source36": "calendar"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Who am I seeing this afternoon?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R013",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is there room in my day for a long focus block?",
+      "labels": {
+        "source36": "calendar"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Is there room in my day for a long focus block?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R014",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What's on my plate for the week ahead, meeting-wise?",
+      "labels": {
+        "source36": "calendar"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "What's on my plate for the week ahead, meeting-wise?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R015",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Do I have a 1:1 with Priya this week?",
+      "labels": {
+        "source36": "calendar"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Do I have a 1:1 with Priya this week?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R016",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "how busy is friday",
+      "labels": {
+        "source36": "calendar",
+        "embed40": "calendar",
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "week"
+      },
+      "group": "calendar-range",
+      "origins": ["source36", "embed40", "ranges18"],
+      "texts": {
+        "source36": "how busy is friday",
+        "embed40": "How busy is Friday?",
+        "ranges18": "How busy is Friday?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R017",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "When does my standup start?",
+      "labels": {
+        "source36": "calendar"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "When does my standup start?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R018",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Has anyone emailed me today?",
+      "labels": {
+        "source36": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Has anyone emailed me today?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R019",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Did Priya get back to me?",
+      "labels": {
+        "source36": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Did Priya get back to me?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R020",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Any messages from the school?",
+      "labels": {
+        "source36": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Any messages from the school?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R021",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Who is waiting on a reply from me?",
+      "labels": {
+        "source36": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Who is waiting on a reply from me?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R022",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Did the energy company send the October statement?",
+      "labels": {
+        "source36": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Did the energy company send the October statement?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R023",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "what came in overnight",
+      "labels": {
+        "source36": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "what came in overnight"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R024",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is there an email about the offsite?",
+      "labels": {
+        "source36": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Is there an email about the offsite?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R025",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Any unread mail from my manager?",
+      "labels": {
+        "source36": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Any unread mail from my manager?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R026",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Write me a short thank-you note for a colleague who covered my on-call shift.",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Write me a short thank-you note for a colleague who covered my on-call shift."
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R027",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Tell me a joke.",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Tell me a joke."
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R028",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What's the capital of Australia?",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "What's the capital of Australia?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R029",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Explain what a mutex is in two sentences.",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Explain what a mutex is in two sentences."
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R030",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "How do I politely decline a meeting invite?",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "How do I politely decline a meeting invite?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R031",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Give me three tips for writing a good commit message.",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Give me three tips for writing a good commit message."
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R032",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Hello!",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Hello!"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R033",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Summarise the idea of technical debt.",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Summarise the idea of technical debt."
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R034",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What is 17 times 23?",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "What is 17 times 23?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R035",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Rewrite this to sound friendlier: send the report now.",
+      "labels": {
+        "source36": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Rewrite this to sound friendlier: send the report now."
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R036",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What should I prioritise today?",
+      "labels": {
+        "source36": "ambiguous"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "What should I prioritise today?"
+      },
+      "contested": false,
+      "source": "ambiguous",
+      "tool": null,
+      "id": "R037",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Draft my standup",
+      "labels": {
+        "source36": "ambiguous",
+        "embed40": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36", "embed40"],
+      "texts": {
+        "source36": "Draft my standup",
+        "embed40": "Draft my standup"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R038",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Brief me for my day",
+      "labels": {
+        "source36": "ambiguous"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Brief me for my day"
+      },
+      "contested": false,
+      "source": "ambiguous",
+      "tool": null,
+      "id": "R039",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What's urgent?",
+      "labels": {
+        "source36": "ambiguous"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "What's urgent?"
+      },
+      "contested": false,
+      "source": "ambiguous",
+      "tool": null,
+      "id": "R040",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Catch me up",
+      "labels": {
+        "source36": "ambiguous"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["source36"],
+      "texts": {
+        "source36": "Catch me up"
+      },
+      "contested": false,
+      "source": "ambiguous",
+      "tool": null,
+      "id": "R041",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which of my changes are still open?",
+      "labels": {
+        "embed40": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Which of my changes are still open?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R042",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Has anyone looked at my retry-webhooks work yet?",
+      "labels": {
+        "embed40": "github",
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["embed40", "views24"],
+      "texts": {
+        "embed40": "Has anyone looked at my retry-webhooks work yet?",
+        "views24": "Has anyone looked at my retry-webhooks work yet?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R043",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is the migration branch ready to merge?",
+      "labels": {
+        "embed40": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Is the migration branch ready to merge?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R044",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Show me the issues assigned to me",
+      "labels": {
+        "embed40": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Show me the issues assigned to me"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R045",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Did CI pass on my latest push?",
+      "labels": {
+        "embed40": "github",
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["embed40", "views24"],
+      "texts": {
+        "embed40": "Did CI pass on my latest push?",
+        "views24": "Did CI pass on my latest push?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R046",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which teammates are blocked on me?",
+      "labels": {
+        "embed40": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Which teammates are blocked on me?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R047",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What did the dependency bot open this week?",
+      "labels": {
+        "embed40": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "What did the dependency bot open this week?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R048",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Has my API change been approved?",
+      "labels": {
+        "embed40": "github"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Has my API change been approved?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R049",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What's on my plate tomorrow morning?",
+      "labels": {
+        "embed40": "calendar",
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "tomorrow"
+      },
+      "group": "calendar-range",
+      "origins": ["embed40", "ranges18"],
+      "texts": {
+        "embed40": "What's on my plate tomorrow morning?",
+        "ranges18": "What's on my plate tomorrow morning?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R050",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "When does my next meeting start?",
+      "labels": {
+        "embed40": "calendar",
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "today"
+      },
+      "group": "calendar-range",
+      "origins": ["embed40", "ranges18"],
+      "texts": {
+        "embed40": "When does my next meeting start?",
+        "ranges18": "When does my next meeting start?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R051",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Do I have any free time this afternoon?",
+      "labels": {
+        "embed40": "calendar",
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "today"
+      },
+      "group": "calendar-range",
+      "origins": ["embed40", "ranges18"],
+      "texts": {
+        "embed40": "Do I have any free time this afternoon?",
+        "ranges18": "Do I have any free time this afternoon?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R052",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Who is in my 1:1 later?",
+      "labels": {
+        "embed40": "calendar"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Who is in my 1:1 later?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R053",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What time do I finish today?",
+      "labels": {
+        "embed40": "calendar",
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "today"
+      },
+      "group": "calendar-range",
+      "origins": ["embed40", "ranges18"],
+      "texts": {
+        "embed40": "What time do I finish today?",
+        "ranges18": "What time do I finish today?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R054",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is there anything recurring on Mondays?",
+      "labels": {
+        "embed40": "calendar",
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "week"
+      },
+      "group": "calendar-range",
+      "origins": ["embed40", "ranges18"],
+      "texts": {
+        "embed40": "Is there anything recurring on Mondays?",
+        "ranges18": "Is there anything recurring on Mondays?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R055",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Where is the planning session being held?",
+      "labels": {
+        "embed40": "calendar"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Where is the planning session being held?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R056",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "How long until my next call?",
+      "labels": {
+        "embed40": "calendar",
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "today"
+      },
+      "group": "calendar-range",
+      "origins": ["embed40", "ranges18"],
+      "texts": {
+        "embed40": "How long until my next call?",
+        "ranges18": "How long until my next call?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R057",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Did anyone reply to my message about the offsite?",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Did anyone reply to my message about the offsite?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R058",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Anything urgent in my inbox?",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Anything urgent in my inbox?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R059",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Who emailed me this morning?",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Who emailed me this morning?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R060",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Are there unread messages from my manager?",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Are there unread messages from my manager?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R061",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Did the vendor send the contract back?",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Did the vendor send the contract back?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R062",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Find the email about the invoice",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Find the email about the invoice"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R063",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Have I got any messages I haven't answered?",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Have I got any messages I haven't answered?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R064",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What did Priya write to me yesterday?",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "What did Priya write to me yesterday?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R065",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is there a reply from finance yet?",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Is there a reply from finance yet?"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R066",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Summarise what is sitting unread",
+      "labels": {
+        "embed40": "mail"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Summarise what is sitting unread"
+      },
+      "contested": false,
+      "source": "mail",
+      "tool": "fetch_recent_mail",
+      "id": "R067",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Explain what a rebase does",
+      "labels": {
+        "embed40": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Explain what a rebase does"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R068",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "How should I prioritise today?",
+      "labels": {
+        "embed40": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "How should I prioritise today?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R069",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Write a short thank-you note to the team",
+      "labels": {
+        "embed40": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Write a short thank-you note to the team"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R070",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What is Chief?",
+      "labels": {
+        "embed40": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "What is Chief?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R071",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Hello, are you there?",
+      "labels": {
+        "embed40": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Hello, are you there?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R072",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Give me three tips for running a better meeting",
+      "labels": {
+        "embed40": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Give me three tips for running a better meeting"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R073",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Rewrite this sentence to sound friendlier: send me the report",
+      "labels": {
+        "embed40": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "Rewrite this sentence to sound friendlier: send me the report"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R074",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What have I accomplished this month?",
+      "labels": {
+        "embed40": "none"
+      },
+      "args": null,
+      "group": "source",
+      "origins": ["embed40"],
+      "texts": {
+        "embed40": "What have I accomplished this month?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R075",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which pull requests are waiting for my review?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Which pull requests are waiting for my review?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R076",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Has anyone asked me to look at their code?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Has anyone asked me to look at their code?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R077",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Any review requests for me today?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Any review requests for me today?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R078",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Whose PRs am I supposed to review?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Whose PRs am I supposed to review?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R079",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Do I have reviews to do?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Do I have reviews to do?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R080",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which teammates are blocked on my review?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Which teammates are blocked on my review?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R081",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which of my PRs are still open?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Which of my PRs are still open?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R082",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What pull requests of mine haven't merged yet?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "What pull requests of mine haven't merged yet?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R083",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Show my open pull requests",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Show my open pull requests"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R084",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is my API change approved yet?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Is my API change approved yet?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R085",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which of my changes are awaiting review?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Which of my changes are awaiting review?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R086",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What have I got in flight?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "What have I got in flight?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R087",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What did I merge this week?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "What did I merge this week?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R088",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which of my PRs got merged last week?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Which of my PRs got merged last week?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R089",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Show my merged pull requests",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Show my merged pull requests"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R090",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What have I shipped recently?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "What have I shipped recently?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R091",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Did my payment fix land?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "Did my payment fix land?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R092",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What of mine went into main yesterday?",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "What of mine went into main yesterday?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R093",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "List the changes I got merged this month",
+      "labels": {
+        "views24": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views24"],
+      "texts": {
+        "views24": "List the changes I got merged this month"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R094",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Whose code reviews are overdue on my side?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Whose code reviews are overdue on my side?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R095",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is there anything I need to approve?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Is there anything I need to approve?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R096",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Show me review requests assigned to me",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Show me review requests assigned to me"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R097",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Who is waiting on me to sign off a change?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Who is waiting on me to sign off a change?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R098",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Have I got pull requests from others to look at?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Have I got pull requests from others to look at?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R099",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which review requests have I not answered?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Which review requests have I not answered?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R100",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "List my draft and open pull requests",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "List my draft and open pull requests"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R101",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Are any of my pull requests still unmerged?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Are any of my pull requests still unmerged?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R102",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Where do my pending PRs stand?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Where do my pending PRs stand?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R103",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Has my migration PR been picked up by a reviewer?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Has my migration PR been picked up by a reviewer?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R104",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What changes of mine are waiting to be merged?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "What changes of mine are waiting to be merged?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R105",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which pull requests have I opened that are not done?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Which pull requests have I opened that are not done?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R106",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which of my pull requests were merged today?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Which of my pull requests were merged today?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R107",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What have I landed in the last two weeks?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "What have I landed in the last two weeks?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R108",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Give me a list of what I delivered this sprint",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Give me a list of what I delivered this sprint"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R109",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which pull requests of mine are already in main?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Which pull requests of mine are already in main?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R110",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What code of mine went out recently?",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "What code of mine went out recently?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R111",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Show what I've merged since Monday",
+      "labels": {
+        "views-heldout18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-heldout18"],
+      "texts": {
+        "views-heldout18": "Show what I've merged since Monday"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R112",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Anything I should be reviewing for the team?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Anything I should be reviewing for the team?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R113",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which colleagues are waiting for me to look at their pull request?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Which colleagues are waiting for me to look at their pull request?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R114",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Do I have outstanding review requests?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Do I have outstanding review requests?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R115",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What code review work is queued up for me?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "What code review work is queued up for me?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R116",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Show me the pull requests I was asked to check",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Show me the pull requests I was asked to check"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R117",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is anyone blocked until I approve their change?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Is anyone blocked until I approve their change?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R118",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which of my pull requests are still waiting to be merged?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Which of my pull requests are still waiting to be merged?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R119",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What's the status of the pull requests I opened?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "What's the status of the pull requests I opened?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R120",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Are my open pull requests passing checks?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Are my open pull requests passing checks?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R121",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Show me my unmerged work",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Show me my unmerged work"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R122",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which pull requests of mine are in draft?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Which pull requests of mine are in draft?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R123",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Has anyone commented on my open pull request?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Has anyone commented on my open pull request?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R124",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What did I get merged this week?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "What did I get merged this week?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R125",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Show me the pull requests I finished and merged recently",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Show me the pull requests I finished and merged recently"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R126",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What has landed from me since last Friday?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "What has landed from me since last Friday?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R127",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "List my merged changes from last month",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "List my merged changes from last month"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R128",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which of my changes shipped this sprint?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "Which of my changes shipped this sprint?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R129",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What pull requests of mine were merged yesterday?",
+      "labels": {
+        "views-fresh18": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "github-view",
+      "origins": ["views-fresh18"],
+      "texts": {
+        "views-fresh18": "What pull requests of mine were merged yesterday?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R130",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What meetings do I have today?",
+      "labels": {
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "today"
+      },
+      "group": "calendar-range",
+      "origins": ["ranges18"],
+      "texts": {
+        "ranges18": "What meetings do I have today?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R131",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Am I in any meetings this morning?",
+      "labels": {
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "today"
+      },
+      "group": "calendar-range",
+      "origins": ["ranges18"],
+      "texts": {
+        "ranges18": "Am I in any meetings this morning?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R132",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Is my calendar clear tomorrow afternoon?",
+      "labels": {
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "tomorrow"
+      },
+      "group": "calendar-range",
+      "origins": ["ranges18"],
+      "texts": {
+        "ranges18": "Is my calendar clear tomorrow afternoon?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R133",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Who am I meeting with tomorrow?",
+      "labels": {
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "tomorrow"
+      },
+      "group": "calendar-range",
+      "origins": ["ranges18"],
+      "texts": {
+        "ranges18": "Who am I meeting with tomorrow?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R134",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What time does my day start tomorrow?",
+      "labels": {
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "tomorrow"
+      },
+      "group": "calendar-range",
+      "origins": ["ranges18"],
+      "texts": {
+        "ranges18": "What time does my day start tomorrow?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R135",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Do I have a 1:1 tomorrow?",
+      "labels": {
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "tomorrow"
+      },
+      "group": "calendar-range",
+      "origins": ["ranges18"],
+      "texts": {
+        "ranges18": "Do I have a 1:1 tomorrow?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R136",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "How busy is my week?",
+      "labels": {
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "week"
+      },
+      "group": "calendar-range",
+      "origins": ["ranges18"],
+      "texts": {
+        "ranges18": "How busy is my week?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R137",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What's coming up this week?",
+      "labels": {
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "week"
+      },
+      "group": "calendar-range",
+      "origins": ["ranges18"],
+      "texts": {
+        "ranges18": "What's coming up this week?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R138",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "When is the planning session this week?",
+      "labels": {
+        "ranges18": "calendar"
+      },
+      "args": {
+        "range": "week"
+      },
+      "group": "calendar-range",
+      "origins": ["ranges18"],
+      "texts": {
+        "ranges18": "When is the planning session this week?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R139",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What pull requests do I have open?",
+      "labels": {
+        "bench": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "open"
+      },
+      "group": "bench",
+      "origins": ["bench"],
+      "texts": {
+        "bench": "What pull requests do I have open?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R140",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What is waiting for my review?",
+      "labels": {
+        "bench": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "bench",
+      "origins": ["bench"],
+      "texts": {
+        "bench": "What is waiting for my review?"
+      },
+      "contested": false,
+      "source": "github",
+      "tool": "fetch_github_prs",
+      "id": "R141",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What is on my calendar tomorrow?",
+      "labels": {
+        "bench": "calendar"
+      },
+      "args": {
+        "range": "tomorrow"
+      },
+      "group": "bench",
+      "origins": ["bench"],
+      "texts": {
+        "bench": "What is on my calendar tomorrow?"
+      },
+      "contested": false,
+      "source": "calendar",
+      "tool": "fetch_calendar",
+      "id": "R142",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Say thank you to the team in two sentences.",
+      "labels": {
+        "bench": "none"
+      },
+      "args": null,
+      "group": "bench",
+      "origins": ["bench"],
+      "texts": {
+        "bench": "Say thank you to the team in two sentences."
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R143",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What day is it today?",
+      "labels": {
+        "new": "none"
+      },
+      "args": null,
+      "group": "time-and-date",
+      "origins": ["new"],
+      "texts": {
+        "new": "What day is it today?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R144",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What is today's date?",
+      "labels": {
+        "new": "none"
+      },
+      "args": null,
+      "group": "time-and-date",
+      "origins": ["new"],
+      "texts": {
+        "new": "What is today's date?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R145",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What time is it right now?",
+      "labels": {
+        "new": "none"
+      },
+      "args": null,
+      "group": "time-and-date",
+      "origins": ["new"],
+      "texts": {
+        "new": "What time is it right now?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R146",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What is the date next Friday?",
+      "labels": {
+        "new": "none"
+      },
+      "args": null,
+      "group": "time-and-date",
+      "origins": ["new"],
+      "texts": {
+        "new": "What is the date next Friday?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R147",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "How many days until the end of the month?",
+      "labels": {
+        "new": "none"
+      },
+      "args": null,
+      "group": "time-and-date",
+      "origins": ["new"],
+      "texts": {
+        "new": "How many days until the end of the month?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R148",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "Which weekday was it yesterday?",
+      "labels": {
+        "new": "none"
+      },
+      "args": null,
+      "group": "time-and-date",
+      "origins": ["new"],
+      "texts": {
+        "new": "Which weekday was it yesterday?"
+      },
+      "contested": false,
+      "source": "none",
+      "tool": null,
+      "id": "R149",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": true
+      }
+    },
+    {
+      "question": "What meetings do I have tomorrow?",
+      "labels": {
+        "new": "calendar"
+      },
+      "args": {
+        "range": "tomorrow"
+      },
+      "group": "not-connected",
+      "origins": ["new"],
+      "texts": {
+        "new": "What meetings do I have tomorrow?"
+      },
+      "not_connected": true,
+      "contested": false,
+      "source": "calendar",
+      "tool": null,
+      "id": "R150",
+      "connected": {
+        "github": true,
+        "calendar": false,
+        "mail": true
+      },
+      "expect": "say the source is not connected; call nothing"
+    },
+    {
+      "question": "What is on my calendar this week?",
+      "labels": {
+        "new": "calendar"
+      },
+      "args": {
+        "range": "week"
+      },
+      "group": "not-connected",
+      "origins": ["new"],
+      "texts": {
+        "new": "What is on my calendar this week?"
+      },
+      "not_connected": true,
+      "contested": false,
+      "source": "calendar",
+      "tool": null,
+      "id": "R151",
+      "connected": {
+        "github": true,
+        "calendar": false,
+        "mail": true
+      },
+      "expect": "say the source is not connected; call nothing"
+    },
+    {
+      "question": "Any new email from my manager?",
+      "labels": {
+        "new": "mail"
+      },
+      "args": null,
+      "group": "not-connected",
+      "origins": ["new"],
+      "texts": {
+        "new": "Any new email from my manager?"
+      },
+      "not_connected": true,
+      "contested": false,
+      "source": "mail",
+      "tool": null,
+      "id": "R152",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": false
+      },
+      "expect": "say the source is not connected; call nothing"
+    },
+    {
+      "question": "What is sitting unread in my inbox?",
+      "labels": {
+        "new": "mail"
+      },
+      "args": null,
+      "group": "not-connected",
+      "origins": ["new"],
+      "texts": {
+        "new": "What is sitting unread in my inbox?"
+      },
+      "not_connected": true,
+      "contested": false,
+      "source": "mail",
+      "tool": null,
+      "id": "R153",
+      "connected": {
+        "github": true,
+        "calendar": true,
+        "mail": false
+      },
+      "expect": "say the source is not connected; call nothing"
+    },
+    {
+      "question": "Which pull requests are waiting for my review?",
+      "labels": {
+        "new": "github"
+      },
+      "args": {
+        "whose": "reviewing",
+        "state": "open"
+      },
+      "group": "not-connected",
+      "origins": ["new"],
+      "texts": {
+        "new": "Which pull requests are waiting for my review?"
+      },
+      "not_connected": true,
+      "contested": false,
+      "source": "github",
+      "tool": null,
+      "id": "R154",
+      "connected": {
+        "github": false,
+        "calendar": true,
+        "mail": true
+      },
+      "expect": "say the source is not connected; call nothing"
+    },
+    {
+      "question": "What did I merge last week?",
+      "labels": {
+        "new": "github"
+      },
+      "args": {
+        "whose": "mine",
+        "state": "merged"
+      },
+      "group": "not-connected",
+      "origins": ["new"],
+      "texts": {
+        "new": "What did I merge last week?"
+      },
+      "not_connected": true,
+      "contested": false,
+      "source": "github",
+      "tool": null,
+      "id": "R155",
+      "connected": {
+        "github": false,
+        "calendar": true,
+        "mail": true
+      },
+      "expect": "say the source is not connected; call nothing"
+    }
+  ]
+}

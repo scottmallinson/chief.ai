@@ -174,6 +174,7 @@ pub async fn sync_now<R: Runtime>(app: AppHandle<R>) -> Result<Pass, Error> {
     };
 
     let accounts = sync_state::all(&context.pool).await?;
+    sync_state::announce(&app);
 
     Ok(Pass {
         written: outcome.written + meetings,
@@ -304,6 +305,8 @@ async fn one_pass<R: Runtime>(app: AppHandle<R>) -> Outcome {
             Ok(recipe) => outcome.written += ingest_calendar(&recipe).await,
             Err(error) => eprintln!("the calendars could not be read: {error}"),
         }
+
+        sync_state::announce(&app);
     }
 
     outcome.yielded |= brief_if_the_day_has_none(&app).await;
@@ -454,16 +457,9 @@ async fn brief_if_the_day_has_none<R: Runtime>(app: &AppHandle<R>) -> bool {
     let date = now.format("%Y-%m-%d").to_string();
 
     match recipe::written_at(&pool, &date).await {
-        // Written — unless it was told about only part of the day and the
-        // clock has since moved the rest into range.
-        Ok(Some(_)) => match recipe::refresh_due(&pool, &date, &now).await {
-            Ok(true) => {}
-            Ok(false) => return false,
-            Err(error) => {
-                eprintln!("could not tell whether the brief is due a refresh: {error}");
-                return false;
-            }
-        },
+        // Written: a brief lists everything it found, so there is nothing for
+        // the clock to bring in later.
+        Ok(Some(_)) => return false,
         Ok(None) => {}
         Err(error) => {
             eprintln!("could not tell whether today has a brief: {error}");
@@ -543,7 +539,7 @@ async fn propose_for_one_thing<R: Runtime>(app: &AppHandle<R>) -> bool {
         }
     };
 
-    match propose::run_once(&context, &attention).await {
+    match propose::run_if_enabled(&context, &attention).await {
         Ok(Some(proposal)) => eprintln!("drafted {} at {}", proposal.title, proposal.path),
         Ok(None) => {}
         Err(error) => eprintln!("no draft this pass: {error}"),
@@ -1502,6 +1498,7 @@ mod calendar_tests {
             atlassian_rest: crate::atlassian::rest::Rest::new().expect("client"),
             engine: llama::Client::with_base_url(&engine_host).expect("client"),
             corpus,
+            short_brief_lines: 0,
         };
 
         (context, Scratch(root))

@@ -267,6 +267,18 @@ the user to install a runtime, which is the whole reason the engine is a module 
   the CPU for the rest of the run: a machine that ran Chief on its CPU before there was a GPU build
   must go on doing so, whatever its driver does. `CHIEF_ENGINE_GPU=off` does the same from the
   start, for a driver that answers wrongly rather than failing, which nothing can detect.
+  **On Windows and Linux the model runs on the CPU until the person ticks "Use graphics card" in
+  Settings.** 0.14.0 froze a Core Ultra 7 268V laptop (Arc 140V, memory shared with the system) on
+  follow-on questions; a Vulkan driver that hangs rather than fails freezes the whole machine, which
+  is not a failed start, so nothing falls back, and a trial run of the model is the hang. Nothing
+  can promise a driver is stable, so the default is the one that cannot involve it. Apple silicon
+  keeps Metal. Precedence: `CHIEF_ENGINE_GPU` (a developer override) over the Settings box
+  (`engine.use_gpu`) over the platform default. `gpu.rs` runs `llama-server --list-devices` only
+  when Settings opens, to say what the box would switch on; nothing is decided from it. **Choosing
+  between a card and integrated graphics by size or name was built and dropped**: the engine's list
+  prints no integrated/discrete flag (checked with `--verbose` on the Arc 140V laptop), so it was a
+  guess about a flag the driver already holds, and reading that flag needs Vulkan loaded in
+  Chief. llama.cpp itself uses an integrated GPU when it is the only one.
 - **ggml loads its backends from the server's own directory and the current directory — not the
   loader path.** That includes the CPU backend, which the Windows and Linux builds pick per
   instruction set at run time. So the server is started in the library directory
@@ -378,10 +390,59 @@ the user to install a runtime, which is the whole reason the engine is a module 
   `review-requested:@me`, and `assigned_issues` adds `is:issue assignee:@me`. The brief keeps them
   in separate buckets under separate headings, because a review somebody requested of you is a
   request and your own open pull request is not.
-- **The catalogue is at 515 of D2's 600 tokens.** REC-41 added the `whose` parameter for 71 and
-  recovered 33 by cutting redundancy from the description, so it cost 38 net. **85 tokens of
-  headroom is roughly half a parameter**, so measure before adding anything — the number is in the
-  PR each time it moves, not assumed.
+- **The catalogue is at 598 of D2's 600 tokens, with four tools.** `fetch_work_overview` took 81 of
+  the headroom, so the next tool or parameter has to be paid for by trimming a description. It is
+  there because the questions about all of someone's work ("what should I prioritise", "what did I
+  complete yesterday") are not about one tool, and routing them by meaning was measured and
+  refused: a "my work" description in the embedding router took "how do I prioritise a backlog?"
+  and "write a standup process doc" with margins of 0.09 and 0.06, a false positive nobody sees.
+  The model chooses the tool instead, which works only because the system prompt says it knows
+  nothing about their work except through the tools: with thinking off, as Chief runs it, the same
+  Gemma 4 E2B called a tool for those questions 1 time in 5 before that sentence and 15 of 15 after
+  it, and invented pull requests and meetings the other times. A joke still takes no tool call.
+- `work.rs` reads someone's work **live, from every source they have connected**, and none of them
+  is special. GitHub pull requests and issues, Linear and Jira issues (open and recently
+  completed), today's Outlook and subscribed-calendar meetings and unread mail all arrive as
+  one-line strings under the same keys, so a user with only Linear gets the same answer shape as
+  one with only GitHub. `sources.rs` is the readers: each returns `Found{items, connected,
+answered, failed}`, which keeps "not connected" (silent), "nothing there" (said) and "could not
+  be read" (reported under `not_read`) apart. **Nothing is capped for the model's convenience.**
+  A read that came back full says so under `not_shown` rather than looking complete.
+  **A period is the model's to name, and GitHub is asked with the date.** `fetch_work_overview`
+  and `fetch_github_prs` take `days`; the model reads "past month" as 30 (measured on Gemma 4 E2B
+  against the real catalogue: 30 of 30 right, and no tool call for "how do I prioritise a backlog?"),
+  the code only clamps it to 1–92, and a period lifts the per-source limit from 8 to 60. The merged
+  search carries `merged:>=DATE`, because search sorts by last update and "the latest 25, minus the
+  old ones" answered a month with whatever fitted. The result says how far back it covers
+  (`my_recently_completed_work_covers`), so "how far back did you look?" has an answer.
+  **The router does not read merged pull requests.** It places a question by meaning and cannot
+  read "past month" out of one, so a merged question read there had no period: the latest 25,
+  cut oldest-first to a token budget that shrank with every follow-up (20, 15, then 7 entries
+  measured), which looked like "nothing before 16 October". `routed` declines the Merged view and
+  the model makes the call, naming the period. **A long list for a period is not handed back to
+  the model.** `tools::period_listing` turns a merged-pull-request or completed-work result for a
+  named period, longer than `BATCH`, into lines, and `write_listing` writes it through
+  `sections.rs` — the tool result is otherwise trimmed to the same budget and the answer written
+  in one request, which was cut off at the length ceiling. What triggers it is the period the
+  model chose, never words in the question.
+- **Anything long is written a section at a time, by `sections.rs`.** One request per section and
+  eight lines per request (`BATCH`), the headings written in code, so a long queue costs more short
+  requests instead of one answer that hits the length ceiling. Each batch is checked: a reply that
+  names what its lines do not (`check::unsupported_by`), is empty, or was cut off is replaced by
+  the lines themselves, and a line the model dropped (found by its pull request number, issue key
+  or time) is put back. A part of one line is written in code without asking the model. The daily
+  brief and the standup both go through it, which is why `Not listed: 3 more…` no longer exists
+  and why the brief takes several short requests where it used to take one; the shared prefix is
+  cached by llama.cpp, so the extra requests are cheap. The old scheduled refresh (`refresh_after`,
+  `refresh_due`) is gone with the window it served: the brief lists the rest of the day, and
+  meetings that have finished drop out when it is next read.
+- **A standup is read live and not tied to GitHub.** `intent::standup` takes whatever sources are
+  connected (the log is only the fallback when none could be read, and the answer says so), and
+  `write_standup` uses the section writer. Done reaches back to the last working day, not seven
+  days. Nothing to write is answered in code before the engine starts.
+- **Answers are plain text.** The chat draws text as it is, so `src/lib/plain-text.ts` strips
+  Markdown marks at display time, which also covers an answer still arriving; the system prompt
+  asks for plain text too, but a small model forgets.
 - `agent::Attention` counts the questions the user is waiting on. The engine decodes one request at
   a time, so the daemon reads this and steps aside rather than putting a background summary ahead of
   a person.
@@ -502,6 +563,7 @@ from here to GitHub.
 of it. The item is one of the user's own open pull requests that has been sitting, and the draft is
 a short message asking for a review.
 
+- **Off until the user turns it on.** `propose.review_nudges` in `settings` is absent by default and the daemon calls `run_if_enabled`, which reads nothing and asks nothing while it is. A message about a colleague that nobody requested reads as pressure on them, so the quiet default is the product decision. The box is in Settings under "Your profile"; `drafts_nothing_until_the_user_turns_it_on` was proven to fail with the gate removed.
 - **Nothing here sends anything, and that boundary is a test.**
   `never_reaches_the_network_to_draft` asserts every request the pass makes to GitHub is a `GET`,
   having first asserted the request list is not empty — a loop over nothing passes without checking
@@ -578,6 +640,95 @@ when it had gone out of date.
 `github::PullRequest` carries `body` for style counting and nothing else. It is
 `#[serde(skip_serializing)]` so it cannot leak into `as_tool_entries` — a list of pull request
 bodies would swamp the prompt budget, and the model does not need one to say what is waiting.
+
+## The team view
+
+`src-tauri/src/team.rs` answers `/team` for somebody whose work is other people's work: open pull
+requests waiting on review for the people and repositories they list.
+
+- **People first.** A manager answers for their reports and for what those reports deliver, and a
+  report may land one feature across repositories the manager has never listed. A person's open
+  pull requests are found with `author:<login>` across every repository the token can see, so
+  nobody has to know where the work is. A repository list is for a codebase a team owns.
+- **Opt-in, and a file.** Nothing is read until `team.md` in the corpus lists someone (`- handle`
+  or `- Name = handle`) or somewhere (`- owner/name`). The first `/team` creates the file with its
+  example inside an HTML comment (`people::outside_comments` hides comments from the parser), and
+  an unlisted file costing no request is a test. A line is read by what it is, so a file of bare
+  `owner/name` lines works.
+- **Only what the user's own token can see.** One GraphQL search per person or repository, at most
+  10 people and 5 repositories, 50 pull requests each. GitHub's search answers something the token
+  cannot read with no pull requests, so an empty answer says it may be either.
+- **Counted in code.** Groups, order and ages come from the data; no model is called. A pull request
+  with no decision but a review already given is "reviewed", not "waiting". People are named when
+  `team.md` or a confirmed line in `people.md` gives a name.
+- **`/1on1` is the same list, read per meeting.** The day's meetings come from the work log, as in
+  `/prep`; a meeting is matched to a person only by the **name** beside their handle in `team.md`
+  (`- Dana Vance = dvance`) or confirmed in `people.md`, appearing whole in the meeting. A handle
+  alone is never matched, because it is not what a calendar says and a wrong name beside somebody's
+  work is worse than no sheet. Each matched person costs two searches (merged in the last 14 days,
+  and open), once however many meetings they are in; an unmatched meeting costs none.
+- A repository or login is checked (`github::is_repository`, `is_login`, and the `YYYY-MM-DD` date) before it goes into the
+  search query, because a value that could carry another qualifier would read somewhere the user
+  never listed.
+
+## The work-items view
+
+`src-tauri/src/items.rs` answers `/items`: what is assigned to the user across GitHub, Jira and
+Linear, whichever of them are connected, and how it is going.
+
+- **One shape, no source assumed.** A Linear issue, a Jira issue and a GitHub issue all become an
+  `Item`; a source that is not connected is absent, and one that is connected and fails is named
+  under the report rather than read as empty. A user with only Linear gets the same report as one
+  with all three.
+- **Worked out in code, worded by the model, checked against the facts.** Sections are Blocked,
+  Overdue or due this week, In progress, Not started, then the user's open pull requests tied to no
+  item, under a "Needs attention" headline counted by the same rules. Each item's line carries what
+  moved in the last 7 days, when it was last touched (the newest of the tracker's own update and its
+  pull requests'), what blocks it and since when, and an **Outlook** from a rule: overdue, at risk
+  (blocked, not started with a date inside a week, or quiet for a week with a date inside two), on
+  track, or unclear. The reason is in the sentence, and an item with no date gets no forecast.
+  Every number and date is computed before the model sees the line, because `check::unsupported_by`
+  refuses an answer containing one the lines do not.
+- **Where the history comes from.** Linear's `history` and relation `createdAt`, and Jira's
+  changelog (REST only: the Remote MCP search does not ask for it, and an absent history is never
+  read as a quiet week). A blocker the tracker never dated is said to be undated, not given a date.
+  Jira's block is read from the changelog's own sentence ("is blocked by KEY"), tested against a
+  stub and not a live site.
+- **Measured on Gemma 4 E2B, and the measurement changed the design.** First version: the model
+  wrote a block date for a pull request that was merely held up (the date was real, in the line, so
+  the check could not see it), refused outright on a line with no Outlook, and garbled a section of
+  one line. Now a pull request is its own sentence, the prompt names the Outlook only where there
+  is one, a one-line section is written in code, and a line opening with a ticket key is looked for
+  by that key (`sections::marker`). A check on values cannot see a true value in the wrong place;
+  that is why the facts are phrased so each date has one obvious owner. ~30 s for two requests on a
+  4-core x86 box; slower on the Mac mini.
+- **Nothing streams.** A batch is held until the check has read it, so the answer arrives whole;
+  if the engine cannot be reached the same facts are shown as found.
+- **`/items team` is the same report for each person in `team.md`.** GitHub is read by handle (their
+  open pull requests with checks, review decision and unresolved threads, and their assigned
+  issues); Linear and Jira only by the **exact name written beside the handle**, found with a
+  `name` variable on Linear and a user search on Jira that yields an account id, and only the id
+  goes into the JQL. A name two people share (Linear) or that is not exactly one active person
+  (Jira) reads as nothing and says so, because a wrong name beside somebody's work is worse than no
+  sheet. A handle with no name is read from GitHub only and the report says Jira and Linear were not
+  searched. **Jira over the sign-in route cannot do this**: looking a person up by name is not one
+  of the deterministic Remote MCP tools, so those accounts say they need an API token. The headline
+  lists each person's counts. Tested against stubs for Linear and Jira, not a live workspace.
+- **A pull request belongs to an item** when Linear attached it (read from the address, not from
+  Linear's own source label) or when the item's key appears in the pull request's title or
+  description as a whole word, which is how Jira's GitHub integration matches them. Jira's own
+  development links come from an undocumented endpoint and are not used. `ENG-1` never matches
+  `ENG-12`, and a test proves it.
+- **Linear's detail is its own query.** `ITEMS_QUERY` is separate from `ASSIGNED_QUERY` on
+  purpose: a field Linear does not recognise fails the whole request, and the brief and the work
+  overview read the other one. It has been tested against stubs, not a live workspace.
+- **Jira's extra fields ride the existing search** (`SEARCH_FIELDS`): a field a site does not
+  have is left out of the answer and does not fail the search. Blocker links are matched on the
+  link type's name or its "is blocked by" wording, because sites rename link types.
+- **Routing was measured and refused.** A tickets choice in the embedding router could not tell
+  "my tickets" from "tickets as a topic" ("What is the difference between Jira and Linear?" won
+  at a margin of 0.15, above most correct questions) and took GitHub questions as well, so the
+  view is a slash command rather than a route.
 
 ## Calendars without a sign-in
 
@@ -800,6 +951,13 @@ opens Chief, not started by opening it.
   and a moved one still is. `login::refresh` points an existing Linux entry at the running copy
   on every launch, because an AppImage carries its version in its file name. The CI app build
   bundles the Windows installers, not just the app, because nothing else compiles those two hooks.
+- **Never set `bundle.publisher`.** Tauri's NSIS installer files where Chief is installed under
+  `Software\<publisher>\Chief`, and the publisher it uses when none is set is the second part of
+  the bundle identifier (`scottmallinson`). Setting one moves that key, so an upgrade cannot find
+  the folder of the copy it is replacing, runs the old uninstaller with an empty `_?=` and stops
+  with "Error launching installer". 0.24.0 to 0.26.0 shipped with it set and could not be
+  installed over an earlier version. The name shown in Add or Remove Programs is therefore
+  `scottmallinson` until a migration exists.
 
 ## First-run setup
 
@@ -834,6 +992,20 @@ and waits until it can answer.
   the engine, which would fail in a much less obvious way.
 - Progress is reported every few megabytes, not every chunk: a progress event per packet is
   thousands a second and tells the user nothing more.
+
+- **Both tiers run Gemma 4 E2B** (`weights::GEMMA`); the tier decides only the context window. It
+  was chosen over seven other models on the 8 GB Intel Mac mini: top score (95.4 to 96.6 over
+  four runs), no invented content on a day with nothing in it, 0 of 480 runs swapped from a clean
+  start. The pull request that made the change carries the whole benchmark record. What was not
+  measured is Apple silicon, Windows and Linux, and `tool-reviews` tool-call validity was 88%
+  (bar 90%) in one of four runs.
+- **A second, optional download: EmbeddingGemma 2 Q8_0 (`weights::EMBEDDER`, 310 MB).** It is fetched
+  after the main weights, from the same host under the same rules, and a failure never fails the
+  download the user asked for. `embedder.rs` starts it as `llama-server --embedding` on loopback
+  port 11436 and registers its address once it answers `/health`; `router::configured` reads that.
+  With no weights, no server binary or a server that will not start the router is simply off and
+  the tool loop runs as before. `CHIEF_ROUTER=off` switches it off by name; `CHIEF_ROUTER_URL`
+  still points Chief at a server of the user's own and stops `embedder` starting one.
 
 ## The design system
 

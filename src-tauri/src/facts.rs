@@ -295,6 +295,71 @@ pub async fn people_for(
     Ok(people)
 }
 
+/// What the facts say about one reviewer across every repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reviewer {
+    /// Reviews of the user's recent pull requests, summed over repositories.
+    pub count: i64,
+    /// How many pull requests were counted. Every repository's row carries the
+    /// same window, so this is the largest, not a sum.
+    pub total: i64,
+    /// The oldest count behind the figures, so a stale one is said to be.
+    pub seen_on: String,
+    /// True when every row was typed by the user and none was counted.
+    pub told: bool,
+}
+
+/// How often `login` reviews the user's pull requests, or `None` when the facts
+/// hold nothing about them. A person who is not in the facts is not described
+/// as someone who never reviews.
+pub async fn reviewer(pool: &SqlitePool, login: &str) -> Result<Option<Reviewer>, Error> {
+    let rows = sqlx::query_as::<_, Fact>(&format!(
+        "SELECT {COLUMNS} FROM facts WHERE what = '{REVIEWS}' AND about = ? \
+         AND origin != 'hidden'"
+    ))
+    .bind(login.to_lowercase())
+    .fetch_all(pool)
+    .await?;
+
+    let Some(oldest) = rows.iter().map(|row| row.seen_on.clone()).min() else {
+        return Ok(None);
+    };
+
+    Ok(Some(Reviewer {
+        count: rows.iter().map(|row| row.count).sum(),
+        total: rows.iter().map(|row| row.total).max().unwrap_or(0),
+        seen_on: oldest,
+        told: rows.iter().all(|row| row.origin == YOURS && row.total == 0),
+    }))
+}
+
+/// How a meeting's attendee reads under it, with a warning when the count is old.
+pub fn reviewer_line(
+    name: &str,
+    login: &str,
+    reviewer: &Reviewer,
+    today: chrono::NaiveDate,
+) -> String {
+    let mut line = if reviewer.told {
+        format!("  {name} (@{login}) reviews your pull requests. You told Chief this.")
+    } else {
+        format!(
+            "  {name} (@{login}) reviewed {} of your last {} pull requests (counted {}).",
+            reviewer.count, reviewer.total, reviewer.seen_on
+        )
+    };
+
+    if let Some(days) =
+        age_in_days(&reviewer.seen_on, today).filter(|days| *days > STALE_DAYS && !reviewer.told)
+    {
+        line.push_str(&format!(
+            " That was {days} days ago and may be out of date."
+        ));
+    }
+
+    line
+}
+
 /// Is there anything to write a draft from?
 ///
 /// Style or a reviewer; a meeting count on its own does not make a draft sound

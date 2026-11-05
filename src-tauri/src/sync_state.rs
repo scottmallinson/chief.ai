@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::db::Error;
 
@@ -103,6 +103,19 @@ impl From<Row> for SyncState {
             error_message: row.error_message,
         }
     }
+}
+
+/// Sent to the window when a pass has finished recording, so the header and the
+/// settings cards read the new times instead of the ones they loaded at start.
+pub const CHANGED_EVENT: &str = "sync-state-changed";
+
+/// Tell the window that [`record`] has been written to.
+///
+/// An event rather than a timer: the interface asks nothing until a pass has
+/// something to say. A window that is not listening loses nothing, because it
+/// reads the table fresh when it next mounts.
+pub fn announce<R: Runtime>(app: &AppHandle<R>) {
+    let _ = app.emit(CHANGED_EVENT, ());
 }
 
 /// Record what just happened to an account.

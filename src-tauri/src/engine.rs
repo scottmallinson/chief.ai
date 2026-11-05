@@ -27,6 +27,7 @@ use tokio::task::JoinHandle;
 use crate::llama::{self, Health};
 use crate::probe::{Machine, Tier};
 use crate::weights;
+use crate::{db, gpu};
 
 /// The name the loaded model answers to.
 ///
@@ -72,6 +73,17 @@ const SERVER_VAR: &str = "CHIEF_LLAMA_SERVER";
 /// wrongly rather than failing outright — the one case the fallback in
 /// [`Engine::start_and_wait`] cannot see.
 const GPU_VAR: &str = "CHIEF_ENGINE_GPU";
+
+/// Let a model that reasons before it answers do so. Unset, the server is
+/// started with `--reasoning-budget 0` and answers at once.
+///
+/// Chief's requests already send `enable_thinking: false`, which Qwen3's
+/// template honours. LFM2.5 does not read it: it wrote 500 tokens of reasoning
+/// before every answer and was cut off at the ceiling, so each "answer" was
+/// 51 characters. The budget is the switch the server itself applies whatever
+/// the template says. `on` (or `1`, `true`, `yes`) removes it, for measuring
+/// what the reasoning buys.
+pub(crate) const THINKING_VAR: &str = "CHIEF_ENGINE_THINKING";
 
 /// How long to wait for a freshly spawned server to start answering before
 /// giving up on it. Reading a couple of gigabytes off a cold disk is slow, and
@@ -290,7 +302,7 @@ pub(crate) fn library_path_variable() -> &'static str {
 }
 
 /// Put `directories` in front of whatever the loader already searches.
-fn library_path(directories: &[PathBuf], inherited: Option<OsString>) -> OsString {
+pub(crate) fn library_path(directories: &[PathBuf], inherited: Option<OsString>) -> OsString {
     let mut entries: Vec<OsString> = directories.iter().map(OsString::from).collect();
 
     if let Some(inherited) = inherited.filter(|value| !value.is_empty()) {
@@ -351,20 +363,67 @@ pub(crate) fn arguments(weights: &Path, port: u16, tier: Tier) -> Vec<OsString> 
     ]
 }
 
-/// Whether the engine may put the model on a GPU, from [`GPU_VAR`].
-///
-/// Anything but an explicit no leaves it on: the bundled build decides for
-/// itself whether there is a GPU worth using, and a typo should not quietly
-/// cost somebody their graphics card.
-fn gpu_allowed(setting: Option<&OsString>) -> bool {
-    let Some(setting) = setting.and_then(|value| value.to_str()) else {
-        return true;
-    };
+/// The flag that stops a model reasoning before it answers, from
+/// [`THINKING_VAR`]. Anything but an explicit yes keeps it off.
+pub(crate) fn thinking_arguments(setting: Option<&OsString>) -> Vec<OsString> {
+    let allowed = setting
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "on" | "1" | "true" | "yes"
+            )
+        });
 
-    !matches!(
-        setting.trim().to_ascii_lowercase().as_str(),
-        "off" | "0" | "false" | "no" | "cpu"
-    )
+    if allowed {
+        Vec::new()
+    } else {
+        vec![OsString::from("--reasoning-budget"), OsString::from("0")]
+    }
+}
+
+/// What [`GPU_VAR`] says, if it says anything plain.
+///
+/// An unset, unreadable or unrecognised setting is no opinion, and only a plain
+/// yes or no moves it: a typo should not quietly decide where the model runs.
+/// It outranks both the switch in Settings and [`crate::gpu`]'s own detection,
+/// which is what makes it an override for a developer rather than a setting.
+fn gpu_override(setting: Option<&OsString>) -> Option<bool> {
+    match setting?.to_str()?.trim().to_ascii_lowercase().as_str() {
+        "off" | "0" | "false" | "no" | "cpu" => Some(false),
+        "on" | "1" | "true" | "yes" | "gpu" => Some(true),
+        _ => None,
+    }
+}
+
+/// Where the model runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    /// Every tensor on the CPU.
+    Cpu,
+    /// Whatever the engine picks for itself.
+    Engine,
+}
+
+/// Decide where the model runs.
+///
+/// `forced` is a plain yes or no from the environment or from Settings. With
+/// neither, `cpu_by_default` decides.
+///
+/// It is true on Windows and Linux, where the model runs on the CPU until
+/// somebody asks for the graphics card. Their GPU build is Vulkan, and a
+/// Vulkan driver that hangs rather than fails freezes the whole machine,
+/// which no fallback sees and no trial run can avoid; an integrated GPU also
+/// shares the memory the rest of the system is using. Nothing can promise a
+/// driver is stable, so the default is the one that cannot involve it. Apple
+/// silicon's Metal is fine.
+fn place(forced: Option<bool>, cpu_by_default: bool) -> Placement {
+    match forced {
+        Some(true) => Placement::Engine,
+        Some(false) => Placement::Cpu,
+        None if cpu_by_default => Placement::Cpu,
+        None => Placement::Engine,
+    }
 }
 
 /// The flags that decide where the model runs.
@@ -379,11 +438,10 @@ fn gpu_allowed(setting: Option<&OsString>) -> bool {
 ///
 /// Not offloading is `--device none`, which keeps every tensor on the CPU even
 /// where a GPU backend loaded.
-fn device_arguments(offload: bool) -> Vec<OsString> {
-    if offload {
-        Vec::new()
-    } else {
-        vec![OsString::from("--device"), OsString::from("none")]
+fn device_arguments(placement: &Placement) -> Vec<OsString> {
+    match placement {
+        Placement::Engine => Vec::new(),
+        Placement::Cpu => vec![OsString::from("--device"), OsString::from("none")],
     }
 }
 
@@ -403,7 +461,7 @@ fn device_arguments(offload: bool) -> Vec<OsString> {
 /// server runs. Nothing else it does depends on the working directory — the
 /// model is passed by absolute path. macOS links its backends in, so there this
 /// finds a directory and changes nothing.
-fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
+pub(crate) fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
     library_dirs
         .iter()
         .find(|dir| {
@@ -425,7 +483,7 @@ fn backend_dir(library_dirs: &[PathBuf]) -> Option<PathBuf> {
 /// release install and `tauri dev`. A `llama-server` on `PATH` is the last
 /// resort, so someone who already has one can work on Chief without fetching a
 /// second copy.
-fn find_server() -> Option<PathBuf> {
+pub(crate) fn find_server() -> Option<PathBuf> {
     if let Some(configured) = std::env::var_os(SERVER_VAR).map(PathBuf::from) {
         return configured.is_file().then_some(configured);
     }
@@ -461,7 +519,7 @@ fn on_path() -> bool {
 /// those the server's own `RUNPATH=$ORIGIN` resolves to a directory none of
 /// them are in, which is why the path is set explicitly here rather than left
 /// to it.
-fn library_dirs<R: Runtime>(app: &AppHandle<R>, server: Option<&Path>) -> Vec<PathBuf> {
+pub(crate) fn library_dirs<R: Runtime>(app: &AppHandle<R>, server: Option<&Path>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(resources) = app.path().resource_dir() {
@@ -509,9 +567,16 @@ pub struct Engine {
     /// Where the server is started from, so it finds the backends it loads at
     /// run time. See [`backend_dir`].
     backend_dir: Option<PathBuf>,
-    /// Whether the model may go on a GPU. Starts as the user's setting, and a
-    /// GPU start that failed turns it off for the rest of this run.
+    /// Whether a GPU has not been ruled out. True until a GPU start fails,
+    /// which turns it off for the rest of this run, whatever else was chosen.
     offload: AtomicBool,
+    /// What [`GPU_VAR`] said at launch, which outranks everything else.
+    gpu_override: Option<bool>,
+    /// What the user chose in Settings, or `None` while Chief decides.
+    gpu_choice: Mutex<Option<bool>>,
+    /// What the engine reported about the graphics hardware, kept for the run.
+    /// Only Settings asks, so nothing pays for it at launch.
+    found: Mutex<Option<String>>,
     weights: PathBuf,
     /// The model this tier runs, so the setup screen can name it and the
     /// download can fetch it without working the tier out a second time.
@@ -573,7 +638,10 @@ impl Engine {
             base_url,
             backend_dir: backend_dir(&library_dirs),
             library_dirs,
-            offload: AtomicBool::new(gpu_allowed(std::env::var_os(GPU_VAR).as_ref())),
+            offload: AtomicBool::new(true),
+            gpu_override: gpu_override(std::env::var_os(GPU_VAR).as_ref()),
+            gpu_choice: Mutex::new(None),
+            found: Mutex::new(None),
             server,
             weights: model.path(&data_dir),
             tier,
@@ -620,6 +688,89 @@ impl Engine {
     /// the installation, it is simply not ours to start.
     pub fn is_available(&self) -> bool {
         !self.owned || self.server.is_some()
+    }
+
+    /// Whether this platform keeps the model on the CPU until asked.
+    const CPU_BY_DEFAULT: bool = !cfg!(target_os = "macos");
+
+    /// What Settings, or the environment, forces: a plain yes or no.
+    fn forced(&self) -> Option<bool> {
+        self.gpu_override.or(*self
+            .gpu_choice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    /// What the engine reports about this machine's graphics, asked once, for
+    /// Settings to show. Nothing is decided from it: a server that cannot be
+    /// asked just leaves the sentence out.
+    async fn describe_graphics(&self) -> Option<String> {
+        let known = self
+            .found
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        if known.is_some() {
+            return known;
+        }
+
+        let server = self.server.as_ref()?;
+        let devices = gpu::list(server, self.backend_dir.as_deref(), &self.library_dirs).await?;
+        let found = gpu::describe(&devices);
+
+        *self
+            .found
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(found.clone());
+
+        Some(found)
+    }
+
+    /// Where the model runs, as it would be started now.
+    fn placement(&self) -> Placement {
+        if !self.offload.load(Ordering::SeqCst) {
+            return Placement::Cpu;
+        }
+
+        place(self.forced(), Self::CPU_BY_DEFAULT)
+    }
+
+    /// Record the user's choice from Settings and apply it: the running server
+    /// is stopped, and the next start uses the new one.
+    ///
+    /// A choice made after a GPU start failed gives the GPU another go, because
+    /// the person who made it has just said what they want.
+    pub fn choose_gpu(&self, choice: Option<bool>) {
+        self.set_gpu_choice(choice);
+        self.offload.store(true, Ordering::SeqCst);
+        self.stop();
+    }
+
+    /// Record the stored choice at launch, without touching the server.
+    pub(crate) fn set_gpu_choice(&self, choice: Option<bool>) {
+        *self
+            .gpu_choice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = choice;
+    }
+
+    /// What Settings shows about where the model runs.
+    pub async fn gpu_status(&self, chosen: Option<bool>) -> gpu::Status {
+        // Only where the default is the CPU is there anything to tell the
+        // person about what they would be switching on.
+        let summary = if Self::CPU_BY_DEFAULT {
+            self.describe_graphics().await
+        } else {
+            None
+        };
+
+        gpu::Status {
+            use_gpu: self.placement() != Placement::Cpu,
+            chosen,
+            overridden: self.gpu_override.is_some(),
+            summary,
+        }
     }
 
     /// Start the engine unless it is already answering.
@@ -670,7 +821,8 @@ impl Engine {
         let mut command = Command::new(server);
         command
             .args(arguments(&self.weights, port, self.tier))
-            .args(device_arguments(self.offload.load(Ordering::SeqCst)))
+            .args(thinking_arguments(std::env::var_os(THINKING_VAR).as_ref()))
+            .args(device_arguments(&self.placement()))
             .stdin(Stdio::null())
             // Read rather than inherited. A server that dies on the way up says
             // why on this stream, and inherited it goes to whatever terminal
@@ -742,7 +894,12 @@ impl Engine {
                 // the rest of this run, the engine is started again with the
                 // GPU left out; if that dies too, it is that death which is
                 // reported, since it has nothing to do with the GPU.
-                if self.offload.swap(false, Ordering::SeqCst) {
+                //
+                // Only if it was on the GPU: an engine that was already on
+                // the CPU has nothing to fall back to, and starting it again
+                // the same way would only repeat the wait.
+                if self.placement() != Placement::Cpu && self.offload.swap(false, Ordering::SeqCst)
+                {
                     eprintln!(
                         "the inference engine stopped on the way up; starting it again \
                          on the CPU alone. It said:\n{}",
@@ -940,6 +1097,16 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         let engine = app.state::<Engine>();
         let client = app.state::<llama::Client>();
+
+        // Before the first start, so a choice made in Settings last time is
+        // the one the model is started under.
+        match db::pool(&app).await {
+            Ok(pool) => match gpu::stored(&pool).await {
+                Ok(choice) => engine.set_gpu_choice(choice),
+                Err(error) => eprintln!("the graphics setting could not be read: {error}"),
+            },
+            Err(error) => eprintln!("the graphics setting could not be read: {error}"),
+        }
 
         if let Err(error) = engine.ensure_running(client.inner()).await {
             eprintln!("the inference engine did not start: {error}");
@@ -1150,19 +1317,66 @@ mod tests {
     }
 
     #[test]
-    fn leaves_the_gpu_on_unless_told_plainly_to_stop() {
-        assert!(gpu_allowed(None), "no setting is not a refusal");
+    fn takes_only_a_plain_yes_or_no_from_the_environment() {
+        assert_eq!(gpu_override(None), None);
 
-        for yes in ["on", "1", "true", "gpu", "", "of"] {
-            assert!(
-                gpu_allowed(Some(&OsString::from(yes))),
-                "{yes:?} is not a no"
+        for neither in ["", "of", "onn", "maybe"] {
+            assert_eq!(
+                gpu_override(Some(&OsString::from(neither))),
+                None,
+                "{neither:?} is no opinion"
             );
         }
 
         for no in ["off", "OFF", " 0 ", "false", "no", "cpu"] {
-            assert!(!gpu_allowed(Some(&OsString::from(no))), "{no:?} is a no");
+            assert_eq!(
+                gpu_override(Some(&OsString::from(no))),
+                Some(false),
+                "{no:?}"
+            );
         }
+
+        for yes in ["on", "ON", " 1 ", "true", "yes", "gpu"] {
+            assert_eq!(
+                gpu_override(Some(&OsString::from(yes))),
+                Some(true),
+                "{yes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_the_model_on_the_cpu_until_asked_where_the_default_is_the_cpu() {
+        assert_eq!(place(None, true), Placement::Cpu);
+        assert_eq!(place(Some(true), true), Placement::Engine);
+        assert_eq!(place(Some(false), true), Placement::Cpu);
+    }
+
+    /// The default is the guard: a Windows or Linux machine that has not been
+    /// asked anything must not be started on its graphics driver.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn starts_on_the_cpu_when_nobody_has_said_otherwise() {
+        let engine = engine_that_dies_at_once(&scratch("cpu-default"), None);
+
+        assert_eq!(engine.placement(), Placement::Cpu);
+        assert_eq!(
+            device_arguments(&engine.placement()),
+            [OsString::from("--device"), OsString::from("none")]
+        );
+
+        engine.set_gpu_choice(Some(true));
+        assert_eq!(engine.placement(), Placement::Engine);
+
+        engine.set_gpu_choice(None);
+        assert_eq!(engine.placement(), Placement::Cpu);
+    }
+
+    #[test]
+    fn leaves_the_choice_to_the_engine_where_the_default_is_the_gpu() {
+        assert_eq!(place(None, false), Placement::Engine);
+        assert_eq!(place(Some(true), false), Placement::Engine);
+        assert_eq!(place(Some(false), false), Placement::Cpu);
     }
 
     #[test]
@@ -1170,20 +1384,14 @@ mod tests {
         // `-ngl auto` with `--fit on` is the engine's default and the only
         // setting that is right for a card nobody here has seen. Any flag at
         // all would be a number chosen without it.
-        assert!(device_arguments(true).is_empty());
+        assert!(device_arguments(&Placement::Engine).is_empty());
 
         let everything = [
             arguments(Path::new("/models/model.gguf"), 11435, Tier::Standard),
-            device_arguments(true),
+            device_arguments(&Placement::Engine),
         ]
         .concat();
-        for flag in [
-            "-ngl",
-            "--gpu-layers",
-            "--n-gpu-layers",
-            "--fit",
-            "--device",
-        ] {
+        for flag in ["-ngl", "--gpu-layers", "--n-gpu-layers", "--fit"] {
             assert!(
                 !everything.iter().any(|argument| argument == flag),
                 "{flag} would override the engine's own fitting: {everything:?}"
@@ -1192,9 +1400,21 @@ mod tests {
     }
 
     #[test]
+    fn stops_a_model_reasoning_before_it_answers_unless_told_to() {
+        let off = [OsString::from("--reasoning-budget"), OsString::from("0")];
+
+        assert_eq!(thinking_arguments(None), off);
+        assert_eq!(thinking_arguments(Some(&OsString::from("off"))), off);
+        // A typo must not quietly turn minutes of reasoning back on.
+        assert_eq!(thinking_arguments(Some(&OsString::from("onn"))), off);
+        assert!(thinking_arguments(Some(&OsString::from("ON"))).is_empty());
+        assert!(thinking_arguments(Some(&OsString::from("true"))).is_empty());
+    }
+
+    #[test]
     fn keeps_every_tensor_on_the_cpu_when_the_gpu_is_not() {
         assert_eq!(
-            device_arguments(false),
+            device_arguments(&Placement::Cpu),
             [OsString::from("--device"), OsString::from("none")]
         );
     }
@@ -1234,9 +1454,12 @@ mod tests {
             library_dirs: Vec::new(),
             backend_dir: None,
             offload: AtomicBool::new(true),
+            gpu_override: None,
+            gpu_choice: Mutex::new(None),
+            found: Mutex::new(None),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1359,9 +1582,12 @@ mod tests {
             library_dirs: Vec::new(),
             backend_dir: None,
             offload: AtomicBool::new(true),
+            gpu_override: None,
+            gpu_choice: Mutex::new(None),
+            found: Mutex::new(None),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1381,9 +1607,12 @@ mod tests {
             library_dirs: Vec::new(),
             backend_dir: None,
             offload: AtomicBool::new(true),
+            gpu_override: None,
+            gpu_choice: Mutex::new(None),
+            found: Mutex::new(None),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: false,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1403,9 +1632,12 @@ mod tests {
             library_dirs: Vec::new(),
             backend_dir: None,
             offload: AtomicBool::new(true),
+            gpu_override: None,
+            gpu_choice: Mutex::new(None),
+            found: Mutex::new(None),
             weights: PathBuf::from("/models/model.gguf"),
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: false,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1570,9 +1802,12 @@ mod tests {
             library_dirs: Vec::new(),
             backend_dir: None,
             offload: AtomicBool::new(true),
+            gpu_override: None,
+            gpu_choice: Mutex::new(None),
+            found: Mutex::new(None),
             weights,
             tier: Tier::Standard,
-            model: weights::STANDARD,
+            model: weights::GEMMA,
             owned: true,
             child: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
@@ -1616,6 +1851,8 @@ mod tests {
         let mut engine = engine_that_dies_at_once(dir, None);
         engine.server = Some(recording_server(dir));
         engine.offload = AtomicBool::new(offload);
+        // Whatever this platform defaults to, these tests are about the GPU.
+        engine.gpu_override = Some(true);
         engine.backend_dir = backend_dir;
         engine
     }

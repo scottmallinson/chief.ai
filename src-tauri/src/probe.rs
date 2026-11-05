@@ -45,10 +45,10 @@ pub struct Machine {
 
 /// The memory below which the standard model is not worth offering.
 ///
-/// Llama 3.2 3B at Q4_K_M is about 1.9 GB of weights, plus a KV cache that
-/// reaches a few hundred megabytes at an 8192-token window — call it 2.4 GB
-/// resident. On a 16 GB machine already running a browser, a chat client and an
-/// editor that fits with room to spare. On 8 GB it does not, and the failure is
+/// Gemma 4 E2B at Q4_K_M is about 3.2 GB of weights, plus a KV cache of a few
+/// hundred megabytes at an 8192-token window — call it 3.5 GB resident, though
+/// the benchmark measured 2.8 to 3.1 GB. On a 16 GB machine already running a
+/// browser, a chat client and an editor that fits with room to spare. On 8 GB it does not, and the failure is
 /// not a slow answer but the operating system swapping while the user is typing.
 const STANDARD_MEMORY_MB: u64 = 15 * 1024;
 
@@ -308,11 +308,11 @@ mod tests {
     /// involved, so this cannot fail on a slow runner.
     #[test]
     fn reports_what_the_context_window_costs() {
-        use crate::weights::{KV_BYTES_F16, KV_BYTES_Q8, STANDARD};
+        use crate::weights::{GEMMA, KV_BYTES_F16, KV_BYTES_Q8};
 
-        assert_eq!(super::kv_cache_mb(STANDARD, 8192, KV_BYTES_F16), 896);
-        assert_eq!(super::kv_cache_mb(STANDARD, 4096, KV_BYTES_F16), 448);
-        assert_eq!(super::kv_cache_mb(STANDARD, 8192, KV_BYTES_Q8), 448);
+        assert_eq!(super::kv_cache_mb(GEMMA, 8192, KV_BYTES_F16), 240);
+        assert_eq!(super::kv_cache_mb(GEMMA, 4096, KV_BYTES_F16), 120);
+        assert_eq!(super::kv_cache_mb(GEMMA, 8192, KV_BYTES_Q8), 120);
     }
 
     /// A measurement stored before the warm figure existed must still read

@@ -107,57 +107,70 @@ pub const fn resident_mb(model: Model, context_size: u32, kv_bytes: u32) -> u32 
     model.weights_mb + (cache_mb as u32)
 }
 
-/// The model Chief would rather run, on a machine with room for it.
-pub const STANDARD: Model = Model {
-    name: "Llama 3.2 3B Instruct",
+/// The model both tiers run: Gemma 4 E2B.
+///
+/// **Chosen by measurement, across eight models.** On the Intel Mac mini with
+/// 8 GB, five repeats each, in the default configuration and with the router
+/// on, it had the highest score (95.4 to 96.6 over four runs after the
+/// scorer's false alarms were fixed), a valid tool call 100% of the time on
+/// four of the five runs it was measured in, and no invented content on a day
+/// with nothing in it. It peaked at 2.8 to 3.1 GB resident against a 5,080 MB
+/// budget, and 0 of 480 runs swapped from a clean start. The 3B Llama it
+/// replaces sent a valid tool call 74% of the time without the router, and
+/// Qwen3 1.7B gets the end time of a one-to-one wrong on every run of the
+/// "tomorrow" question. Details in the pull request that changed this.
+///
+/// The geometry is read from the GGUF: 15 layers hold a cache (the rest share
+/// it), one KV head, a head width of 512. The cache is therefore small, and the
+/// weights are what the download costs.
+pub const GEMMA: Model = Model {
+    name: "Gemma 4 E2B Instruct",
     quantisation: "Q4_K_M",
-    file_name: "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-    source: "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/5ab33fa94d1d04e903623ae72c95d1696f09f9e8/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-    approx_resident_mb: 2400,
-    weights_mb: 2000,
-    layers: 28,
-    kv_heads: 8,
-    head_dim: 128,
+    file_name: "google_gemma-4-E2B-it-Q4_K_M.gguf",
+    source: "https://huggingface.co/bartowski/google_gemma-4-E2B-it-GGUF/resolve/81012ba3538e061d5ee003f11f25335b17f82e2d/google_gemma-4-E2B-it-Q4_K_M.gguf",
+    approx_resident_mb: 3600,
+    weights_mb: 3302,
+    layers: 15,
+    kv_heads: 1,
+    head_dim: 512,
 };
 
-/// The model for a machine that cannot hold the other one: Qwen3 1.7B.
+/// The small model that places a question by meaning: EmbeddingGemma 2, Q8_0.
 ///
-/// **Chosen by measurement, not by family.** On an Intel Mac mini with 8 GB and
-/// two cores it read 15 tokens a second against the 1B's 22 and wrote 8 against
-/// 11, in 2.0 GB, and it was the only small model that was clean on the repeated
-/// pull request case, a day with nothing but school logistics and both tool
-/// calls. Llama 3.2 1B invented meetings on that school day in two runs of
-/// three. The 3B Llama is no better on that machine, at 7 tokens a second, and
-/// sent an invalid argument on every review request. Qwen3 thinks before it
-/// answers unless told not to; [`crate::llama::ChatRequest`] tells it.
-pub const LIGHT: Model = Model {
-    name: "Qwen3 1.7B",
-    quantisation: "Q4_K_M",
-    file_name: "Qwen_Qwen3-1.7B-Q4_K_M.gguf",
-    source: "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/dcb19155b962dbb6389f4691a982043a8e651022/Qwen_Qwen3-1.7B-Q4_K_M.gguf",
-    approx_resident_mb: 2000,
-    weights_mb: 1223,
-    layers: 28,
-    kv_heads: 8,
-    head_dim: 128,
+/// Fetched from the same host under the same rules as the main weights, and
+/// held to the same invariants by the same tests. It is optional: a machine
+/// where it is missing or will not start runs the tool loop exactly as before.
+pub const EMBEDDER: Model = Model {
+    name: "EmbeddingGemma 2",
+    quantisation: "Q8_0",
+    file_name: "embeddinggemma-2-Q8_0.gguf",
+    source: "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/58faf90940886df2d62be555c8765d00dac362c5/embeddinggemma-2-Q8_0.gguf",
+    approx_resident_mb: 320,
+    weights_mb: 296,
+    // An embedding model keeps no cache between requests, so there is no
+    // per-token cost to size.
+    layers: 0,
+    kv_heads: 0,
+    head_dim: 0,
 };
 
-/// Everything Chief can run.
+/// Everything Chief downloads.
 ///
-/// Test-only: production reaches a model through [`for_tier`], and this exists
-/// so the invariants every entry must hold — a pinned HTTPS source on the model
-/// host, a file name nothing else shares — are asserted across the whole
-/// catalogue rather than against whichever one someone remembered.
+/// Test-only: production reaches a model through [`for_tier`] or [`EMBEDDER`],
+/// and this exists so the invariants every entry must hold — a pinned HTTPS
+/// source on the model host, a file name nothing else shares — are asserted
+/// across the whole catalogue rather than against whichever one someone
+/// remembered.
 #[cfg(test)]
-const CATALOGUE: [Model; 2] = [STANDARD, LIGHT];
+const CATALOGUE: [Model; 2] = [GEMMA, EMBEDDER];
 
 /// The model this machine gets.
+///
+/// Both tiers run the same model. The tier still decides the context window,
+/// which is what differs in what the machine holds.
 #[must_use]
-pub const fn for_tier(tier: Tier) -> Model {
-    match tier {
-        Tier::Standard => STANDARD,
-        Tier::Light => LIGHT,
-    }
+pub const fn for_tier(_tier: Tier) -> Model {
+    GEMMA
 }
 
 /// The only host these weights are ever fetched from.
@@ -440,10 +453,10 @@ mod tests {
         }
     }
 
-    /// The figure the plan quotes, derived rather than remembered.
+    /// The figure the cache is sized by, derived rather than remembered.
     ///
-    /// Llama 3.2 3B is 28 layers × 8 KV heads × 128 head dim, K and V, at two
-    /// bytes each: 114,688 bytes, or 112 KiB a token.
+    /// Gemma 4 E2B is 15 layers × 1 KV head × 512 head dim, K and V, at two
+    /// bytes each: 30,720 bytes, or 30 KiB a token.
     ///
     /// Proved by dropping the factor of two — sizing the cache for K and
     /// forgetting V, which is the mistake this arithmetic is most likely to
@@ -455,13 +468,8 @@ mod tests {
     /// ```
     #[test]
     fn one_token_of_context_costs_what_the_geometry_says() {
-        assert_eq!(kv_bytes_per_token(STANDARD, KV_BYTES_F16), 114_688);
-        assert_eq!(kv_bytes_per_token(STANDARD, KV_BYTES_F16) / 1024, 112);
-
-        // The light model has the same geometry per token as the standard one
-        // (28 layers, 8 heads of 128), so a token of context costs the same.
-        // What makes it lighter is its weights, and the tier's window being half.
-        assert_eq!(kv_bytes_per_token(LIGHT, KV_BYTES_F16), 114_688);
+        assert_eq!(kv_bytes_per_token(GEMMA, KV_BYTES_F16), 30_720);
+        assert_eq!(kv_bytes_per_token(GEMMA, KV_BYTES_F16) / 1024, 30);
     }
 
     /// **Resident memory is chosen, not capped.** The DLE specification asked
@@ -469,22 +477,23 @@ mod tests {
     /// so what there is instead is this arithmetic and the three levers that
     /// move it — the tier, the context window, and KV precision.
     ///
-    /// At the standard tier's 8192 the cache is 896 MiB on top of 2,000 MiB of
-    /// weights: about 2.9 GB, which fits under 4 GB with less headroom than
-    /// the specification implied.
+    /// At the standard tier's 8192 the cache is 240 MiB on top of 3,302 MiB of
+    /// weights: about 3.5 GB. The benchmark measured 2.8 to 3.1 GB resident on
+    /// the 8 GB test machine, because the figure here is an upper bound that
+    /// counts every layer's cache at the full window.
     #[test]
-    fn the_standard_tier_holds_about_two_point_nine_gigabytes() {
-        assert_eq!(resident_mb(STANDARD, 8192, KV_BYTES_F16), 2_896);
+    fn the_standard_tier_holds_about_three_and_a_half_gigabytes() {
+        assert_eq!(resident_mb(GEMMA, 8192, KV_BYTES_F16), 3_542);
     }
 
     /// The lever Chief does not pull yet, reported so it is visible before it
     /// is needed. `--cache-type-k/v q8_0` halves the KV term.
     #[test]
     fn quantising_the_cache_halves_what_the_window_costs() {
-        let f16 = resident_mb(STANDARD, 8192, KV_BYTES_F16) - STANDARD.weights_mb;
-        let q8 = resident_mb(STANDARD, 8192, KV_BYTES_Q8) - STANDARD.weights_mb;
+        let f16 = resident_mb(GEMMA, 8192, KV_BYTES_F16) - GEMMA.weights_mb;
+        let q8 = resident_mb(GEMMA, 8192, KV_BYTES_Q8) - GEMMA.weights_mb;
 
-        assert_eq!(f16, 896);
+        assert_eq!(f16, 240);
         assert_eq!(q8, f16 / 2);
     }
 
@@ -493,7 +502,7 @@ mod tests {
     /// other rather than left to drift.
     #[test]
     fn the_number_shown_before_a_download_agrees_with_the_arithmetic() {
-        for (model, context_size) in [(STANDARD, 8192), (LIGHT, 4096)] {
+        for (model, context_size) in [(GEMMA, 8192), (GEMMA, 4096)] {
             let derived = resident_mb(model, context_size, KV_BYTES_F16);
             let shown = model.approx_resident_mb;
 
@@ -519,11 +528,9 @@ mod tests {
     }
 
     #[test]
-    fn the_tier_that_needs_less_gets_less() {
-        assert!(
-            for_tier(Tier::Light).approx_resident_mb < for_tier(Tier::Standard).approx_resident_mb,
-            "the light tier exists to hold less"
-        );
+    fn both_tiers_run_the_model_the_benchmark_chose() {
+        assert_eq!(for_tier(Tier::Standard), GEMMA);
+        assert_eq!(for_tier(Tier::Light), GEMMA);
     }
 
     #[test]
@@ -531,14 +538,14 @@ mod tests {
         let data_dir = Path::new("/home/someone/.local/share/chief");
 
         assert_eq!(
-            STANDARD.path(data_dir),
-            Path::new("/home/someone/.local/share/chief/models").join(STANDARD.file_name)
+            GEMMA.path(data_dir),
+            Path::new("/home/someone/.local/share/chief/models").join(GEMMA.file_name)
         );
     }
 
     #[test]
     fn a_download_in_progress_sits_beside_the_finished_file() {
-        let destination = STANDARD.path(Path::new("/data"));
+        let destination = GEMMA.path(Path::new("/data"));
         let partial = part_path(&destination);
 
         assert_eq!(partial.parent(), destination.parent());
@@ -592,8 +599,8 @@ mod tests {
 
     #[test]
     fn describes_the_model_for_the_setup_screen() {
-        assert_eq!(STANDARD.describe(), "Llama 3.2 3B Instruct (Q4_K_M)");
-        assert_eq!(LIGHT.describe(), "Qwen3 1.7B (Q4_K_M)");
+        assert_eq!(GEMMA.describe(), "Gemma 4 E2B Instruct (Q4_K_M)");
+        assert_eq!(EMBEDDER.describe(), "EmbeddingGemma 2 (Q8_0)");
     }
 
     /// The real download, against the real host.
@@ -623,7 +630,7 @@ mod tests {
 
         // The ignored test exercises the real host, so it uses the model a
         // standard machine would actually fetch.
-        let model = STANDARD;
+        let model = GEMMA;
         let destination = model.path(&dir);
         let partial = part_path(&destination);
         tokio::fs::create_dir_all(destination.parent().expect("has a parent"))
@@ -705,7 +712,7 @@ mod tests {
         use tokio::io::AsyncWriteExt;
 
         let dir = std::env::temp_dir().join(format!("chief-poison-{}", std::process::id()));
-        let model = LIGHT;
+        let model = EMBEDDER;
         let destination = model.path(&dir);
         let partial = part_path(&destination);
         tokio::fs::create_dir_all(destination.parent().expect("has a parent"))

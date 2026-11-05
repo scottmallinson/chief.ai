@@ -284,6 +284,27 @@ impl<'a> AtlassianSession<'a> {
             })
             .await
     }
+
+    /// What this person resolved since `since`, on the same terms.
+    pub async fn completed(
+        &self,
+        since: chrono::NaiveDate,
+    ) -> Result<Vec<atlassian::Issue>, atlassian::Error> {
+        let token = self.session.token().await?;
+
+        self.session
+            .renewing(token, |token| async move {
+                let mcp = self.client.connect(&token).await?;
+                let mut found = Vec::new();
+
+                for site in mcp.sites().await? {
+                    found.extend(mcp.completed(&site, since).await?);
+                }
+
+                Ok(found)
+            })
+            .await
+    }
 }
 
 pub struct GithubSession<'a> {
@@ -328,6 +349,45 @@ impl<'a> GithubSession<'a> {
             .await
     }
 
+    /// The open issues assigned to somebody else, renewing the credential the
+    /// same way.
+    pub async fn assigned_issues_to(
+        &self,
+        login: &str,
+        limit: u8,
+    ) -> Result<Vec<github::Issue>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.assigned_issues_to(&token, login, limit).await
+            })
+            .await
+    }
+
+    /// The user's own pull requests merged on or after `since`.
+    pub async fn merged_since(
+        &self,
+        since: chrono::NaiveDate,
+        limit: u8,
+    ) -> Result<Vec<PullRequest>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.merged_since(&token, since, limit).await
+            })
+            .await
+    }
+
     pub async fn pull_requests(
         &self,
         involvement: github::Involvement,
@@ -350,6 +410,58 @@ impl<'a> GithubSession<'a> {
                 self.client
                     .pull_requests(&token, involvement, state, limit)
                     .await
+            })
+            .await
+    }
+
+    /// What is holding up the user's own open pull requests, renewing the
+    /// credential the same way.
+    pub async fn blockers(&self, limit: u8) -> Result<Vec<github::Blockers>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.blockers(&token, limit).await
+            })
+            .await
+    }
+
+    /// The open pull requests in one repository or by one person, renewing the
+    /// credential the same way.
+    pub async fn team_pulls(
+        &self,
+        scope: github::TeamScope<'_>,
+        kind: github::TeamKind<'_>,
+        limit: u8,
+    ) -> Result<Vec<github::TeamPull>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.team_pulls(&token, scope, kind, limit).await
+            })
+            .await
+    }
+
+    /// A person's public profile name, renewing the credential the same way.
+    pub async fn profile_name(&self, login: &str) -> Result<Option<String>, github::Error> {
+        let token = self
+            .session
+            .token()
+            .await
+            .map_err(|_| github::Error::NotConnected)?;
+
+        self.session
+            .renewing(token, |token| async move {
+                self.client.profile_name(&token, login).await
             })
             .await
     }

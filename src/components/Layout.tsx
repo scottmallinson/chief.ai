@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 import { Sidebar } from '@/components/Sidebar';
 import { useSyncState } from '@/hooks/use-sync-state';
@@ -49,12 +49,23 @@ export function Layout({
   const current = NAV_ITEMS.find((item) => item.id === activeView);
   const { all } = useSyncState();
 
+  // "synced 2m ago" is worked out when it renders, so without this it would
+  // read "just now" until something else happened to redraw the header. A local
+  // clock tick, no I/O.
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const tick = setInterval(() => setNow(new Date()), 30_000);
+
+    return () => clearInterval(tick);
+  }, []);
+
   // The **oldest** successful read, not the newest. A header showing the
   // newest would say everything was fresh while one account had been failing
   // for a week, which is the reading D9 cannot afford to give: an answer
   // assembled from local rows is only as good as its stalest source.
   const since = oldest(all, accounts);
-  const freshness = since === null ? null : howLongAgo(since);
+  const freshness = since === null ? null : howLongAgo(since, now);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">

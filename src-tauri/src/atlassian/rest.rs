@@ -80,6 +80,10 @@ const SEARCH: &str = "/rest/api/3/search/jql";
 /// names.
 const MYSELF: &str = "/rest/api/3/myself";
 
+/// Finds people by what they are called. Used to turn a name into an account
+/// id, since a name is not something JQL can be trusted with.
+const USER_SEARCH: &str = "/rest/api/3/user/search";
+
 /// Confluence's CQL search, which is under `/wiki` like everything else of
 /// its.
 const SEARCH_PAGES: &str = "/wiki/rest/api/search";
@@ -212,24 +216,88 @@ impl Rest {
         email: &str,
         token: &str,
     ) -> Result<Vec<Issue>, Error> {
-        let body = serde_json::json!({
-            "jql": ASSIGNED,
+        self.search(site, email, token, ASSIGNED, true).await
+    }
+
+    /// What is assigned to somebody else and not finished, found by their exact
+    /// display name.
+    ///
+    /// **The name is turned into an account id first, and only the id goes
+    /// into the search.** JQL splices text, so a typed name never does.
+    /// Exactly one active person must be called that: two, or none, is
+    /// [`Error::NotOnePerson`], because a wrong name beside somebody's work is
+    /// worse than no sheet.
+    pub async fn assigned_to(
+        &self,
+        site: &str,
+        email: &str,
+        token: &str,
+        name: &str,
+    ) -> Result<Vec<Issue>, Error> {
+        let people: Vec<UserHit> = self
+            .get(site, USER_SEARCH, email, token, &[("query", name)])
+            .await?;
+
+        let mut matching = people
+            .iter()
+            .filter(|person| person.active && person.display_name.eq_ignore_ascii_case(name));
+        let (Some(person), None) = (matching.next(), matching.next()) else {
+            return Err(Error::NotOnePerson);
+        };
+
+        // An account id is letters, digits, colons and hyphens. Anything else
+        // is not one, and does not go near a query.
+        if person.account_id.is_empty()
+            || !person
+                .account_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '-')
+        {
+            return Err(Error::Decode);
+        }
+
+        let jql = format!(
+            "assignee = \"{}\" AND resolution = EMPTY ORDER BY updated DESC",
+            person.account_id
+        );
+
+        self.search(site, email, token, &jql, true).await
+    }
+
+    /// What this person resolved since `since`.
+    pub async fn completed(
+        &self,
+        site: &str,
+        email: &str,
+        token: &str,
+        since: chrono::NaiveDate,
+    ) -> Result<Vec<Issue>, Error> {
+        self.search(site, email, token, &super::completed_jql(since), false)
+            .await
+    }
+
+    async fn search(
+        &self,
+        site: &str,
+        email: &str,
+        token: &str,
+        jql: &str,
+        history: bool,
+    ) -> Result<Vec<Issue>, Error> {
+        let mut body = serde_json::json!({
+            "jql": jql,
             "maxResults": READ_LIMIT,
-            "fields": ["summary", "status"],
+            "fields": super::SEARCH_FIELDS,
         });
+        // The changelog roughly doubles an issue's size, so the search for what
+        // was resolved, which has no use for it, does not ask.
+        if history {
+            body["expand"] = "changelog".into();
+        }
 
-        let found: SearchReply = self.post(site, SEARCH, email, token, &body).await?;
+        let found: serde_json::Value = self.post(site, SEARCH, email, token, &body).await?;
 
-        Ok(found
-            .issues
-            .into_iter()
-            .map(|issue| Issue {
-                url: Some(format!("{site}/browse/{}", issue.key)),
-                key: issue.key,
-                summary: issue.fields.summary,
-                status: issue.fields.status.map(|it| it.name).unwrap_or_default(),
-            })
-            .collect())
+        Ok(super::issues_at(&found, site))
     }
 
     /// Pages this person has been writing.
@@ -365,31 +433,14 @@ struct MyselfReply {
 }
 
 #[derive(Debug, Deserialize)]
-struct SearchReply {
+#[serde(rename_all = "camelCase")]
+struct UserHit {
     #[serde(default)]
-    issues: Vec<IssueNode>,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueNode {
+    account_id: String,
     #[serde(default)]
-    key: String,
+    display_name: String,
     #[serde(default)]
-    fields: Fields,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct Fields {
-    #[serde(default)]
-    summary: String,
-    #[serde(default)]
-    status: Option<Named>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Named {
-    #[serde(default)]
-    name: String,
+    active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -554,6 +605,130 @@ mod tests {
             sent.contains("resolution = EMPTY"),
             "open is the absence of a resolution, not a state called Done: {sent}"
         );
+    }
+
+    #[tokio::test]
+    async fn asks_for_the_fields_that_say_how_an_issue_is_going() {
+        let body = serde_json::json!({ "issues": [{ "key": "ENG-3", "fields": {
+            "summary": "s", "status": { "name": "Doing", "statusCategory": { "key": "indeterminate" } },
+            "duedate": "2026-11-02", "priority": { "name": "Low" } },
+            "changelog": { "histories": [{ "created": "2026-10-26T09:00:00.000+0000",
+              "items": [{ "field": "status", "fromString": "To Do", "toString": "Doing" }] }] } }] })
+        .to_string();
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", body)]);
+        let rest = Rest::new().expect("client");
+
+        let found = rest
+            .assigned(&host, "scott@example.com", "a-token")
+            .await
+            .expect("should read");
+
+        assert_eq!(found[0].detail.due.as_deref(), Some("2026-11-02"));
+        assert_eq!(found[0].detail.status_kind, "indeterminate");
+        assert_eq!(found[0].detail.changes.len(), 1);
+
+        let sent = server.await.expect("server").join("");
+        assert!(
+            sent.contains("issuelinks") && sent.contains("duedate") && sent.contains("changelog"),
+            "{sent}"
+        );
+    }
+
+    fn people(list: serde_json::Value) -> (&'static str, String) {
+        ("HTTP/1.1 200 OK", list.to_string())
+    }
+
+    #[tokio::test]
+    async fn finds_somebody_by_name_then_searches_by_their_account_id() {
+        let found = serde_json::json!({ "issues": [{ "key": "ENG-9", "fields": {
+            "summary": "s", "status": { "name": "Doing" } } }] });
+        let (host, server) = serve(vec![
+            people(serde_json::json!([
+                { "accountId": "5b10:abc-1", "displayName": "Dana Vance", "active": true },
+                { "accountId": "5b10:zzz-2", "displayName": "Dana Vance-Smith", "active": true }
+            ])),
+            ("HTTP/1.1 200 OK", found.to_string()),
+        ]);
+        let rest = Rest::new().expect("client");
+
+        let issues = rest
+            .assigned_to(&host, "boss@example.com", "a-token", "dana vance")
+            .await
+            .expect("should read");
+
+        assert_eq!(issues[0].key, "ENG-9");
+        let sent = server.await.expect("server").join("");
+        assert!(sent.contains("5b10:abc-1"), "{sent}");
+        // The typed name looked somebody up and went no further.
+        assert!(!sent.contains("assignee = \\\"dana"), "{sent}");
+    }
+
+    /// Proved by dropping the second `matching.next()` check: two people with
+    /// one name were then read as the first of them.
+    #[tokio::test]
+    async fn a_name_two_people_share_or_nobody_has_is_refused() {
+        let twins = serde_json::json!([
+            { "accountId": "a1", "displayName": "Dana Vance", "active": true },
+            { "accountId": "a2", "displayName": "Dana Vance", "active": true }
+        ]);
+        let (host, _server) = serve(vec![people(twins)]);
+        let rest = Rest::new().expect("client");
+        assert!(matches!(
+            rest.assigned_to(&host, "b@example.com", "t", "Dana Vance")
+                .await,
+            Err(Error::NotOnePerson)
+        ));
+
+        let (host, _server) = serve(vec![people(serde_json::json!([]))]);
+        assert!(matches!(
+            rest.assigned_to(&host, "b@example.com", "t", "Dana Vance")
+                .await,
+            Err(Error::NotOnePerson)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_account_id_that_could_carry_query_text_is_refused() {
+        let hostile = serde_json::json!([
+            { "accountId": "a\" OR project = X", "displayName": "Dana Vance", "active": true }
+        ]);
+        let (host, _server) = serve(vec![people(hostile)]);
+        let rest = Rest::new().expect("client");
+
+        assert!(matches!(
+            rest.assigned_to(&host, "b@example.com", "t", "Dana Vance")
+                .await,
+            Err(Error::Decode)
+        ));
+    }
+
+    #[tokio::test]
+    async fn reads_what_was_resolved_since_a_date() {
+        let body = serde_json::json!({
+            "issues": [{ "key": "ENG-3", "fields": {
+                "summary": "Closed it", "status": { "name": "Done" },
+                "resolutiondate": "2026-10-22T10:15:30.000+0100" } }]
+        })
+        .to_string();
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", body)]);
+        let rest = Rest::new().expect("client");
+        let since = chrono::NaiveDate::from_ymd_opt(2026, 10, 22).expect("a date");
+
+        let found = rest
+            .completed(&host, "scott@example.com", "a-token", since)
+            .await
+            .expect("should read");
+
+        assert_eq!(found[0].key, "ENG-3");
+        assert_eq!(
+            found[0].resolved.as_deref(),
+            Some("2026-10-22T10:15:30.000+0100")
+        );
+
+        let sent = server.await.expect("server").join("");
+        assert!(sent.contains("resolutiondate"), "{sent}");
+        assert!(sent.contains("2026-10-22"), "{sent}");
+        assert!(sent.contains("currentUser()"), "{sent}");
     }
 
     fn pages_body() -> String {

@@ -327,6 +327,259 @@ impl Involvement {
     }
 }
 
+/// The user's open pull requests with what each is waiting on.
+const BLOCKERS_QUERY: &str = "query($first: Int!) { viewer { pullRequests(states: OPEN, first: $first, \
+orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { number isDraft repository { nameWithOwner } \
+reviewDecision commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } \
+reviewThreads(first: 50) { nodes { isResolved } } } } } }";
+
+/// Where a pull request's checks stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checks {
+    Passing,
+    Failing,
+    Running,
+    /// No checks are configured, or GitHub has not reported any yet.
+    None,
+}
+
+/// What reviewers have decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Approved,
+    ChangesRequested,
+    /// A review is required and has not been given.
+    Required,
+    /// The repository asks for no review.
+    None,
+}
+
+/// What is holding up one of the user's open pull requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blockers {
+    pub repository: String,
+    pub number: i64,
+    pub draft: bool,
+    pub checks: Checks,
+    pub decision: Decision,
+    /// Review threads nobody has marked resolved.
+    pub open_threads: usize,
+}
+
+impl Blockers {
+    /// The same key [`PullRequest::external_id`] gives, so the two join.
+    pub fn external_id(&self) -> String {
+        format!("{}#{}", self.repository, self.number)
+    }
+
+    /// One short phrase for what the user should know, or `None` when there is
+    /// nothing to add. Plain words and no numbers but the thread count, so a
+    /// small model has nothing to garble and the answer check has nothing new
+    /// to object to.
+    pub fn describe(&self) -> Option<String> {
+        let mut parts = Vec::new();
+
+        if self.checks == Checks::Failing {
+            parts.push("checks failing".to_string());
+        }
+        if self.decision == Decision::ChangesRequested {
+            parts.push("changes requested".to_string());
+        }
+        match self.open_threads {
+            0 => {}
+            1 => parts.push("1 unresolved review comment".to_string()),
+            many => parts.push(format!("{many} unresolved review comments")),
+        }
+
+        if parts.is_empty() && !self.draft {
+            if self.decision == Decision::Approved && self.checks != Checks::Running {
+                return Some("approved, ready to merge".to_string());
+            }
+            if self.decision == Decision::Approved {
+                return Some("approved, checks still running".to_string());
+            }
+        }
+
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+}
+
+fn blockers_from(node: &Value) -> Option<Blockers> {
+    let repository = node["repository"]["nameWithOwner"].as_str()?.to_string();
+    let number = node["number"].as_i64()?;
+
+    let checks = checks_of(node);
+
+    let decision = match node["reviewDecision"].as_str() {
+        Some("APPROVED") => Decision::Approved,
+        Some("CHANGES_REQUESTED") => Decision::ChangesRequested,
+        Some("REVIEW_REQUIRED") => Decision::Required,
+        _ => Decision::None,
+    };
+
+    let open_threads = open_threads_of(node);
+
+    Some(Blockers {
+        repository,
+        number,
+        draft: node["isDraft"].as_bool().unwrap_or(false),
+        checks,
+        decision,
+        open_threads,
+    })
+}
+
+const TEAM_QUERY: &str = "query($q: String!, $first: Int!) { search(query: $q, type: ISSUE, \
+first: $first) { nodes { ... on PullRequest { number title body url createdAt updatedAt mergedAt isDraft reviewDecision \
+commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } \
+reviewThreads(first: 50) { nodes { isResolved } } \
+author { login } repository { nameWithOwner } reviews { totalCount } \
+reviewRequests(first: 5) { nodes { requestedReviewer { ... on User { login } \
+... on Team { name } } } } } } } }";
+
+/// One open pull request in a repository somebody else may have written it in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamPull {
+    pub repository: String,
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    /// The author's login. Empty for an account GitHub has deleted.
+    pub author: String,
+    /// ISO-8601.
+    pub created_at: String,
+    /// ISO-8601, for a pull request that was merged.
+    pub merged_at: Option<String>,
+    pub draft: bool,
+    pub decision: Decision,
+    /// Reviews given so far, of any kind.
+    pub reviews: i64,
+    /// Who a review has been asked of: `@login`, or `team name`.
+    pub requested: Vec<String>,
+    /// The description the author wrote, which is where a ticket key is named.
+    pub body: String,
+    /// ISO-8601: a push, a review or a comment.
+    pub updated_at: String,
+    pub checks: Checks,
+    /// Review threads nobody has marked resolved.
+    pub open_threads: usize,
+}
+
+fn checks_of(node: &Value) -> Checks {
+    match node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"].as_str() {
+        Some("SUCCESS") => Checks::Passing,
+        Some("FAILURE" | "ERROR") => Checks::Failing,
+        Some("PENDING" | "EXPECTED") => Checks::Running,
+        _ => Checks::None,
+    }
+}
+
+fn open_threads_of(node: &Value) -> usize {
+    node["reviewThreads"]["nodes"]
+        .as_array()
+        .map_or(0, |threads| {
+            threads
+                .iter()
+                .filter(|thread| thread["isResolved"].as_bool() == Some(false))
+                .count()
+        })
+}
+
+fn team_pull_from(node: &Value) -> Option<TeamPull> {
+    let decision = match node["reviewDecision"].as_str() {
+        Some("APPROVED") => Decision::Approved,
+        Some("CHANGES_REQUESTED") => Decision::ChangesRequested,
+        Some("REVIEW_REQUIRED") => Decision::Required,
+        _ => Decision::None,
+    };
+
+    let requested = node["reviewRequests"]["nodes"]
+        .as_array()
+        .map(|requests| {
+            requests
+                .iter()
+                .filter_map(|request| {
+                    let who = &request["requestedReviewer"];
+                    who["login"]
+                        .as_str()
+                        .map(|login| format!("@{login}"))
+                        .or_else(|| who["name"].as_str().map(|team| format!("team {team}")))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(TeamPull {
+        repository: node["repository"]["nameWithOwner"].as_str()?.to_string(),
+        number: node["number"].as_i64()?,
+        title: node["title"].as_str().unwrap_or_default().to_string(),
+        url: node["url"].as_str().unwrap_or_default().to_string(),
+        author: node["author"]["login"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        created_at: node["createdAt"].as_str()?.to_string(),
+        merged_at: node["mergedAt"].as_str().map(ToString::to_string),
+        draft: node["isDraft"].as_bool().unwrap_or(false),
+        decision,
+        reviews: node["reviews"]["totalCount"].as_i64().unwrap_or(0),
+        requested,
+        body: node["body"].as_str().unwrap_or_default().to_string(),
+        updated_at: node["updatedAt"].as_str().unwrap_or_default().to_string(),
+        checks: checks_of(node),
+        open_threads: open_threads_of(node),
+    })
+}
+
+/// Which open pull requests to read: everyone's in a repository, or one
+/// person's across every repository the token can see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamScope<'a> {
+    Repository(&'a str),
+    Author(&'a str),
+}
+
+/// Which of somebody's pull requests to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamKind<'a> {
+    Open,
+    /// Merged on or after this `YYYY-MM-DD` date.
+    MergedSince(&'a str),
+}
+
+/// Is this a calendar date written `YYYY-MM-DD` and nothing else?
+fn is_date(text: &str) -> bool {
+    chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok() && text.len() == 10
+}
+
+/// Is this a GitHub login and nothing else?
+#[must_use]
+pub fn is_login(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 39
+        && text
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+}
+
+/// Is this `owner/name` and nothing else?
+///
+/// The repository goes into a search query, so it is checked rather than
+/// quoted: a value that could carry another qualifier would read somewhere the
+/// user never listed.
+#[must_use]
+pub fn is_repository(text: &str) -> bool {
+    let part = |part: &str| {
+        !part.is_empty()
+            && part.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+            })
+    };
+
+    text.split_once('/')
+        .is_some_and(|(owner, name)| part(owner) && part(name))
+}
+
 /// One issue assigned to the user, as the brief reads it.
 ///
 /// Deliberately not a [`PullRequest`]. GitHub's search returns both from the
@@ -554,13 +807,44 @@ impl Client {
         limit: u8,
     ) -> Result<Vec<PullRequest>, Error> {
         let query = format!("is:pr {}{}", involvement.qualifier(), state.qualifier());
+
+        self.search_pull_requests(token, &query, limit).await
+    }
+
+    /// Pull requests the user authored that were merged on or after `since`.
+    ///
+    /// **The date is in the query, not applied afterwards.** Search sorts by
+    /// last update, so asking for "the latest 25 merged" and dropping the old
+    /// ones afterwards answers "the last month" with whatever fits in 25 — on a
+    /// busy month, the last few days and nothing saying so.
+    pub async fn merged_since(
+        &self,
+        token: &str,
+        since: chrono::NaiveDate,
+        limit: u8,
+    ) -> Result<Vec<PullRequest>, Error> {
+        let query = format!(
+            "is:pr {} is:merged merged:>={}",
+            Involvement::Authored.qualifier(),
+            since.format("%Y-%m-%d")
+        );
+
+        self.search_pull_requests(token, &query, limit).await
+    }
+
+    async fn search_pull_requests(
+        &self,
+        token: &str,
+        query: &str,
+        limit: u8,
+    ) -> Result<Vec<PullRequest>, Error> {
         let url = format!("{}/search/issues", self.api_host);
 
         let response = self
             .http
             .get(url)
             .query(&[
-                ("q", query.as_str()),
+                ("q", query),
                 ("sort", "updated"),
                 ("order", "desc"),
                 ("per_page", &limit.clamp(1, 100).to_string()),
@@ -642,13 +926,31 @@ impl Client {
     /// `is:issue` rather than `is:pr`, so this and [`Self::pull_requests`]
     /// never return the same thing twice from the one endpoint they share.
     pub async fn assigned_issues(&self, token: &str, limit: u8) -> Result<Vec<Issue>, Error> {
+        self.assigned_issues_to(token, "@me", limit).await
+    }
+
+    /// The open issues assigned to somebody else, as far as the token can see.
+    ///
+    /// The login is checked before it goes into the query, because a value that
+    /// could carry another qualifier would read somewhere nobody listed.
+    pub async fn assigned_issues_to(
+        &self,
+        token: &str,
+        login: &str,
+        limit: u8,
+    ) -> Result<Vec<Issue>, Error> {
+        if login != "@me" && !is_login(login) {
+            return Err(Error::Decode(format!("\"{login}\" is not a GitHub login")));
+        }
+
         let url = format!("{}/search/issues", self.api_host);
+        let query = format!("is:issue assignee:{login} is:open");
 
         let response = self
             .http
             .get(url)
             .query(&[
-                ("q", "is:issue assignee:@me is:open"),
+                ("q", query.as_str()),
                 ("sort", "updated"),
                 ("order", "desc"),
                 ("per_page", &limit.clamp(1, 100).to_string()),
@@ -667,6 +969,140 @@ impl Client {
             .ok_or_else(|| Error::Decode("the search response had no items".to_string()))?;
 
         Ok(items.iter().map(issue_from).collect())
+    }
+
+    /// What is holding up the user's own open pull requests: the state of the
+    /// checks, what reviewers have decided, and how many review threads are
+    /// still open.
+    ///
+    /// **One request for all of them.** GitHub's REST API would need three per
+    /// pull request (the pull request, its check runs, its reviews); GraphQL
+    /// answers for every open one at once, so a brief pays for one small
+    /// round trip however many are open. Nothing here involves the model.
+    pub async fn blockers(&self, token: &str, limit: u8) -> Result<Vec<Blockers>, Error> {
+        let response = self
+            .http
+            .post(format!("{}/graphql", self.api_host))
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&serde_json::json!({
+                "query": BLOCKERS_QUERY,
+                "variables": { "first": limit.clamp(1, 50) },
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+
+        let body: Value = self.read(response).await?;
+
+        // GraphQL answers 200 with an `errors` array and no data.
+        let nodes = body["data"]["viewer"]["pullRequests"]["nodes"]
+            .as_array()
+            .ok_or_else(|| Error::Decode("the response had no pull requests".to_string()))?;
+
+        Ok(nodes.iter().filter_map(blockers_from).collect())
+    }
+
+    /// The open pull requests in one repository, or by one person, oldest
+    /// first.
+    ///
+    /// Whatever the user's own token can see and nothing more: a repository it
+    /// cannot read answers with no pull requests rather than an error, which
+    /// is GitHub's search and not something this code can tell apart. One
+    /// request per repository or person.
+    pub async fn team_pulls(
+        &self,
+        token: &str,
+        scope: TeamScope<'_>,
+        kind: TeamKind<'_>,
+        limit: u8,
+    ) -> Result<Vec<TeamPull>, Error> {
+        let state = match kind {
+            TeamKind::Open => "is:open".to_string(),
+            TeamKind::MergedSince(date) if is_date(date) => {
+                format!("is:merged merged:>={date}")
+            }
+            TeamKind::MergedSince(date) => {
+                return Err(Error::Decode(format!("\"{date}\" is not a date")));
+            }
+        };
+        let qualifier = match scope {
+            TeamScope::Repository(repository) if is_repository(repository) => {
+                format!("repo:{repository}")
+            }
+            TeamScope::Author(login) if is_login(login) => format!("author:{login}"),
+            TeamScope::Repository(text) | TeamScope::Author(text) => {
+                return Err(Error::Decode(format!(
+                    "\"{text}\" is not a repository written as owner/name or a GitHub login"
+                )));
+            }
+        };
+
+        let response = self
+            .http
+            .post(format!("{}/graphql", self.api_host))
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&serde_json::json!({
+                "query": TEAM_QUERY,
+                "variables": {
+                    "q": format!("{qualifier} is:pr {state} sort:created-asc"),
+                    "first": limit.clamp(1, 50),
+                },
+            }))
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+
+        let body: Value = self.read(response).await?;
+
+        let nodes = body["data"]["search"]["nodes"]
+            .as_array()
+            .ok_or_else(|| Error::Decode("the response had no pull requests".to_string()))?;
+
+        Ok(nodes.iter().filter_map(team_pull_from).collect())
+    }
+
+    /// The name somebody has chosen to show on their public GitHub profile.
+    ///
+    /// `None` for a login that has none, which most accounts do not. The login
+    /// is checked before it is put in a URL: it comes from review data, and a
+    /// path built from anything else would be a request to somewhere the user
+    /// never connected.
+    pub async fn profile_name(&self, token: &str, login: &str) -> Result<Option<String>, Error> {
+        if login.is_empty()
+            || !login
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        {
+            return Ok(None);
+        }
+
+        let response = self
+            .http
+            .get(format!("{}/users/{login}", self.api_host))
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?;
+
+        // A login that no longer exists is a person with no name to offer, not
+        // a reason to stop asking about the others.
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let body: Value = self.read(response).await?;
+
+        Ok(body["name"]
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string))
     }
 
     /// Who the stored token belongs to, so an account can name itself.
@@ -772,12 +1208,29 @@ fn pull_request_from(item: &Value) -> PullRequest {
 /// personal account gets one list covering both, and the only way the model can
 /// say whose a pull request is — or that two similar ones are not the same work
 /// twice — is if the entry says so itself.
-pub fn as_tool_entries(account: &str, pull_requests: &[PullRequest]) -> Vec<Value> {
+///
+/// A pull request that `blockers` has something to say about gains a `status`
+/// field holding that phrase, written by code. One with nothing to say gains
+/// no field at all, so the entry costs the prompt nothing it did not cost before.
+pub fn as_tool_entries(
+    account: &str,
+    pull_requests: &[PullRequest],
+    blockers: &[Blockers],
+) -> Vec<Value> {
     pull_requests
         .iter()
         .map(|pull_request| {
             let mut entry = json!(pull_request);
             entry["account"] = json!(account);
+
+            let id = pull_request.external_id();
+            if let Some(status) = blockers
+                .iter()
+                .find(|one| one.external_id().eq_ignore_ascii_case(&id))
+                .and_then(Blockers::describe)
+            {
+                entry["status"] = json!(status);
+            }
 
             entry
         })
@@ -1357,6 +1810,37 @@ mod waiting_on_me {
         assert!(line.contains("assignee%3A%40me"), "{line}");
     }
 
+    #[tokio::test]
+    async fn reads_the_issues_assigned_to_somebody_else_by_login() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ONE_ISSUE)]);
+        let client = Client::against(&host).expect("client");
+
+        let issues = client
+            .assigned_issues_to("gho_token", "dvance", 25)
+            .await
+            .expect("should read");
+
+        assert_eq!(issues.len(), 1);
+        let received = server.await.expect("server");
+        let (line, _) = split(&received[0]);
+        assert!(line.contains("assignee%3Advance"), "{line}");
+    }
+
+    /// Proved by deleting the `is_login` check: a login carrying another
+    /// qualifier reached the search.
+    #[tokio::test]
+    async fn a_login_that_could_carry_another_qualifier_never_reaches_the_search() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ONE_ISSUE)]);
+        let client = Client::against(&host).expect("client");
+
+        let result = client
+            .assigned_issues_to("gho_token", "dvance repo:private/secret", 25)
+            .await;
+
+        assert!(result.is_err());
+        drop(server);
+    }
+
     /// The two searches share one endpoint, so this is what keeps them apart.
     #[tokio::test]
     async fn never_returns_a_pull_request_as_an_assigned_issue() {
@@ -1381,5 +1865,433 @@ mod waiting_on_me {
             .await
             .expect("read")
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod team_tests {
+    //! Open pull requests in a repository the user chose to watch.
+
+    use super::*;
+
+    #[test]
+    fn reads_what_holds_a_listed_persons_pull_request_up() {
+        let node = serde_json::json!({
+            "number": 4, "title": "t", "body": "Closes ENG-1", "createdAt": "2026-10-20T09:00:00Z",
+            "updatedAt": "2026-10-27T09:00:00Z", "isDraft": false,
+            "reviewDecision": "CHANGES_REQUESTED",
+            "repository": { "nameWithOwner": "o/r" },
+            "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] },
+            "reviewThreads": { "nodes": [{ "isResolved": false }, { "isResolved": true }] }
+        });
+
+        let pull = team_pull_from(&node).expect("a pull request");
+
+        assert_eq!(pull.body, "Closes ENG-1");
+        assert_eq!(pull.updated_at, "2026-10-27T09:00:00Z");
+        assert_eq!(pull.checks, Checks::Failing);
+        assert_eq!(pull.open_threads, 1);
+    }
+    use crate::llama::test_support::{serve, split};
+
+    const ANSWER: &str = r#"{"data":{"search":{"nodes":[
+      {"number":12,"title":"Retry the sync","url":"https://github.com/acme/api/pull/12",
+       "createdAt":"2026-10-20T09:00:00Z","isDraft":false,"reviewDecision":"REVIEW_REQUIRED",
+       "author":{"login":"dvance"},"repository":{"nameWithOwner":"acme/api"},
+       "reviews":{"totalCount":0},
+       "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"prao"}},
+                                  {"requestedReviewer":{"name":"platform"}}]}},
+      {"number":14,"title":"Tidy","url":"u","createdAt":"2026-10-25T09:00:00Z",
+       "isDraft":true,"reviewDecision":null,"author":null,
+       "repository":{"nameWithOwner":"acme/api"},"reviews":{"totalCount":0},
+       "reviewRequests":{"nodes":[]}},
+      {}
+    ]}}}"#;
+
+    #[test]
+    fn accepts_only_owner_slash_name() {
+        for good in ["acme/api", "a-b/c_d.e", "Acme/API"] {
+            assert!(is_repository(good), "{good}");
+        }
+        for bad in [
+            "",
+            "acme",
+            "acme/",
+            "/api",
+            "acme/api/extra",
+            "acme/api is:closed",
+            "acme/api user:other",
+            "acme/ap\"i",
+        ] {
+            assert!(!is_repository(bad), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_one_repository_in_one_request_and_skips_what_is_not_a_pull_request() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        let found = client
+            .team_pulls(
+                "gho_token",
+                TeamScope::Repository("acme/api"),
+                TeamKind::Open,
+                50,
+            )
+            .await
+            .expect("should read");
+
+        assert_eq!(found.len(), 2, "an empty node is not a pull request");
+        assert_eq!(found[0].author, "dvance");
+        assert_eq!(found[0].decision, Decision::Required);
+        assert_eq!(found[0].requested, vec!["@prao", "team platform"]);
+        assert!(found[1].draft);
+        assert_eq!(found[0].merged_at, None);
+        assert_eq!(found[1].author, "", "a deleted account has no login");
+
+        let received = server.await.expect("server");
+        assert_eq!(received.len(), 1);
+        let (line, _) = split(&received[0]);
+        assert!(line.starts_with("POST /graphql"), "{line}");
+        assert!(
+            received[0].contains("repo:acme/api is:pr is:open sort:created-asc"),
+            "{}",
+            received[0]
+        );
+    }
+
+    /// Proved by deleting the check at the top of `team_pulls`:
+    ///
+    /// ```text
+    /// a repository that is not owner/name must cost no request
+    /// ```
+    #[test]
+    fn accepts_only_a_login() {
+        for good in ["dvance", "d-vance", "D2"] {
+            assert!(is_login(good), "{good}");
+        }
+        for bad in [
+            "",
+            "d vance",
+            "dvance is:closed",
+            "@dvance",
+            "d/vance",
+            "a".repeat(40).as_str(),
+        ] {
+            assert!(!is_login(bad), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn asks_for_one_persons_pull_requests_across_every_repository() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        client
+            .team_pulls("gho_token", TeamScope::Author("dvance"), TeamKind::Open, 50)
+            .await
+            .expect("should read");
+
+        let received = server.await.expect("server");
+        assert!(
+            received[0].contains("author:dvance is:pr is:open sort:created-asc")
+                && !received[0].contains("repo:"),
+            "{}",
+            received[0]
+        );
+    }
+
+    /// Proved by letting any text through as an author:
+    ///
+    /// ```text
+    /// an author that could carry another qualifier must cost no request
+    /// ```
+    #[tokio::test]
+    async fn an_author_that_could_carry_another_qualifier_costs_no_request() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        let error = client
+            .team_pulls(
+                "gho_token",
+                TeamScope::Author("dvance org:other"),
+                TeamKind::Open,
+                50,
+            )
+            .await
+            .expect_err("should refuse");
+
+        assert!(matches!(error, Error::Decode(_)), "{error}");
+        assert!(
+            !server.is_finished(),
+            "an author that could carry another qualifier must cost no request"
+        );
+    }
+
+    #[tokio::test]
+    async fn asks_for_what_somebody_merged_since_a_date() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        client
+            .team_pulls(
+                "gho_token",
+                TeamScope::Author("dvance"),
+                TeamKind::MergedSince("2026-10-14"),
+                50,
+            )
+            .await
+            .expect("should read");
+
+        let received = server.await.expect("server");
+        assert!(
+            received[0]
+                .contains("author:dvance is:pr is:merged merged:>=2026-10-14 sort:created-asc")
+                && !received[0].contains("is:open"),
+            "{}",
+            received[0]
+        );
+    }
+
+    /// Proved by letting any text through as a date:
+    ///
+    /// ```text
+    /// a date that could carry another qualifier must cost no request
+    /// ```
+    #[tokio::test]
+    async fn a_date_that_could_carry_another_qualifier_costs_no_request() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        let error = client
+            .team_pulls(
+                "gho_token",
+                TeamScope::Author("dvance"),
+                TeamKind::MergedSince("2026-10-14 org:other"),
+                50,
+            )
+            .await
+            .expect_err("should refuse");
+
+        assert!(matches!(error, Error::Decode(_)), "{error}");
+        assert!(
+            !server.is_finished(),
+            "a date that could carry another qualifier must cost no request"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repository_that_could_carry_another_qualifier_costs_no_request() {
+        // A spare reply that is never fetched, so a request would show.
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        let error = client
+            .team_pulls(
+                "gho_token",
+                TeamScope::Repository("acme/api is:closed"),
+                TeamKind::Open,
+                50,
+            )
+            .await
+            .expect_err("should refuse");
+
+        assert!(matches!(error, Error::Decode(_)), "{error}");
+        assert!(
+            !server.is_finished(),
+            "a repository that is not owner/name must cost no request"
+        );
+    }
+}
+
+#[cfg(test)]
+mod blockers_tests {
+    //! What is holding up the user's own pull requests.
+
+    use super::*;
+    use crate::llama::test_support::{serve, split};
+
+    const ANSWER: &str = r#"{"data":{"viewer":{"pullRequests":{"nodes":[
+      {"number":7,"isDraft":false,"repository":{"nameWithOwner":"acme/api"},
+       "reviewDecision":"CHANGES_REQUESTED",
+       "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]},
+       "reviewThreads":{"nodes":[{"isResolved":false},{"isResolved":true},{"isResolved":false}]}},
+      {"number":9,"isDraft":false,"repository":{"nameWithOwner":"acme/web"},
+       "reviewDecision":"APPROVED",
+       "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]},
+       "reviewThreads":{"nodes":[]}},
+      {"number":11,"isDraft":true,"repository":{"nameWithOwner":"acme/web"},
+       "reviewDecision":null,
+       "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]},
+       "reviewThreads":{"nodes":[]}}
+    ]}}}}"#;
+
+    fn one(checks: Checks, decision: Decision, open_threads: usize, draft: bool) -> Blockers {
+        Blockers {
+            repository: "acme/api".to_string(),
+            number: 1,
+            draft,
+            checks,
+            decision,
+            open_threads,
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_every_open_pull_request_in_one_request() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", ANSWER)]);
+        let client = Client::against(&host).expect("client");
+
+        let found = client.blockers("gho_token", 10).await.expect("should read");
+
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[0].checks, Checks::Failing);
+        assert_eq!(found[0].decision, Decision::ChangesRequested);
+        assert_eq!(found[0].open_threads, 2, "resolved threads do not count");
+        assert_eq!(found[1].checks, Checks::Passing);
+        assert_eq!(found[1].decision, Decision::Approved);
+        assert_eq!(found[2].checks, Checks::None);
+        assert_eq!(found[2].decision, Decision::None);
+
+        let received = server.await.expect("server");
+        assert_eq!(received.len(), 1, "one round trip however many are open");
+        let (line, _) = split(&received[0]);
+        assert!(line.starts_with("POST /graphql"), "{line}");
+        assert!(
+            received[0]
+                .to_lowercase()
+                .contains("authorization: bearer gho_token"),
+            "the user's own token, nothing else"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_graphql_error_is_an_error_not_an_empty_list() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            r#"{"errors":[{"message":"nope"}]}"#,
+        )]);
+        let client = Client::against(&host).expect("client");
+
+        let error = client
+            .blockers("gho_token", 10)
+            .await
+            .expect_err("no data is not 'nothing is blocked'");
+
+        assert!(matches!(error, Error::Decode(_)), "got {error:?}");
+        server.await.expect("server");
+    }
+
+    #[test]
+    fn says_what_is_wrong_in_plain_words() {
+        let text = one(Checks::Failing, Decision::ChangesRequested, 2, false)
+            .describe()
+            .expect("something is wrong");
+        assert_eq!(
+            text,
+            "checks failing, changes requested, 2 unresolved review comments"
+        );
+        assert_eq!(
+            one(Checks::Passing, Decision::None, 1, false).describe(),
+            Some("1 unresolved review comment".to_string())
+        );
+    }
+
+    #[test]
+    fn says_nothing_when_nothing_is_known_to_be_wrong() {
+        // Waiting for a review is not a blocker, and no checks is not a failure.
+        assert_eq!(
+            one(Checks::None, Decision::Required, 0, false).describe(),
+            None
+        );
+        assert_eq!(
+            one(Checks::Running, Decision::None, 0, false).describe(),
+            None
+        );
+        assert_eq!(
+            one(Checks::Passing, Decision::None, 0, false).describe(),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_finished_approval_is_ready_to_merge() {
+        assert_eq!(
+            one(Checks::Passing, Decision::Approved, 0, false).describe(),
+            Some("approved, ready to merge".to_string())
+        );
+        assert_eq!(
+            one(Checks::Running, Decision::Approved, 0, false).describe(),
+            Some("approved, checks still running".to_string())
+        );
+        assert_eq!(
+            one(Checks::Passing, Decision::Approved, 0, true).describe(),
+            None,
+            "a draft is not ready to merge whatever it was approved for"
+        );
+        assert_eq!(
+            one(Checks::Failing, Decision::Approved, 0, false).describe(),
+            Some("checks failing".to_string()),
+            "approval does not outrank a red check"
+        );
+    }
+}
+
+#[cfg(test)]
+mod profile_name_tests {
+    use super::*;
+    use crate::llama::test_support::{serve, split};
+
+    #[tokio::test]
+    async fn reads_the_public_name_from_the_users_endpoint() {
+        let (host, server) = serve(vec![(
+            "HTTP/1.1 200 OK",
+            r#"{"login":"dvance","name":" Dana Vance "}"#,
+        )]);
+        let client = Client::against(&host).expect("client");
+
+        let name = client.profile_name("gho_token", "dvance").await;
+
+        assert_eq!(name.expect("read").as_deref(), Some("Dana Vance"));
+        let received = server.await.expect("server");
+        let (line, _) = split(&received[0]);
+        assert!(line.starts_with("GET /users/dvance"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn no_name_and_no_such_login_are_both_nobody_rather_than_errors() {
+        let (host, server) = serve(vec![
+            ("HTTP/1.1 200 OK", r#"{"login":"quiet","name":null}"#),
+            ("HTTP/1.1 404 Not Found", r#"{"message":"Not Found"}"#),
+        ]);
+        let client = Client::against(&host).expect("client");
+
+        assert_eq!(client.profile_name("t", "quiet").await.expect("read"), None);
+        assert_eq!(client.profile_name("t", "gone").await.expect("read"), None);
+        server.await.expect("server");
+    }
+
+    /// A login comes from review data, so it is checked before it is put in a
+    /// path. Proved by removing the check: the first request reaches the stub,
+    /// which then has one reply too few for the assertion below.
+    #[tokio::test]
+    async fn a_login_that_is_not_a_login_costs_no_request() {
+        let (host, server) = serve(vec![("HTTP/1.1 200 OK", r#"{"name":"Somebody"}"#)]);
+        let client = Client::against(&host).expect("client");
+
+        for odd in ["", "../orgs", "a/b", "dana vance", "x?y=1"] {
+            assert_eq!(
+                client
+                    .profile_name("t", odd)
+                    .await
+                    .expect("refused quietly"),
+                None,
+                "{odd:?}"
+            );
+        }
+
+        assert!(!server.is_finished(), "a request was made for an odd login");
+        server.abort();
     }
 }

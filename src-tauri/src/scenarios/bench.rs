@@ -336,6 +336,9 @@ impl Server {
         let started = Instant::now();
         let child = Command::new(&server)
             .args(&arguments)
+            .args(engine::thinking_arguments(
+                std::env::var_os(engine::THINKING_VAR).as_ref(),
+            ))
             .env(variable, search)
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(log).expect("a log file"))
@@ -416,7 +419,30 @@ fn tomorrow() -> String {
         .to_string()
 }
 
+/// What checking the last brief's answer found, kept for the run record.
+///
+/// A fixture is played one at a time, so one slot is enough; `play` leaves it
+/// where `markdown_of` put it and the loop that writes the record takes it.
+static LAST_CHECK: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
+
+/// How short a day must be to be written in code. Chief's own setting unless
+/// `CHIEF_BENCH_SHORT_BRIEF` names another, `0` to ask the model every time.
+fn short_brief_lines() -> usize {
+    std::env::var("CHIEF_BENCH_SHORT_BRIEF")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(recipe::SHORT_BRIEF_LINES)
+}
+
 fn markdown_of(brief: Result<recipe::Brief, recipe::Error>) -> Result<String, String> {
+    if let Ok(brief) = &brief {
+        *LAST_CHECK.lock().expect("check slot") = Some(json!({
+            "first": brief.checked.first,
+            "fell_back": brief.checked.fell_back,
+            "by_code": brief.checked.by_code,
+        }));
+    }
+
     brief
         .map(|brief| brief.markdown)
         .map_err(|error| error.to_string())
@@ -456,6 +482,36 @@ const FIXTURES: &[(&str, &str, &str)] = &[
         "mail only, no meetings: nothing to invent",
     ),
     (
+        "quiet-one-meeting",
+        "brief-quiet",
+        "one meeting and nothing else",
+    ),
+    (
+        "quiet-two-all-day",
+        "brief-quiet",
+        "two all-day entries and no times at all",
+    ),
+    (
+        "quiet-one-review",
+        "brief-quiet",
+        "one review request and no meetings",
+    ),
+    (
+        "quiet-one-pr",
+        "brief-quiet",
+        "one pull request of mine and nothing else",
+    ),
+    (
+        "quiet-one-mail",
+        "brief-quiet",
+        "one unread email and nothing else",
+    ),
+    (
+        "quiet-afternoon",
+        "brief-quiet",
+        "two afternoon entries and nothing before them",
+    ),
+    (
         "em-02",
         "brief-mixed",
         "EM-02: reviews asked of me and my own pull request",
@@ -490,6 +546,22 @@ const FIXTURES: &[(&str, &str, &str)] = &[
         "tools",
         "tomorrow's meetings: fetch_calendar, tomorrow",
     ),
+    (
+        "tool-calendar-unconnected",
+        "tools",
+        "tomorrow's meetings with no Outlook connected: say so, invent nothing",
+    ),
+    (
+        "tool-mail-unconnected",
+        "tools",
+        "today's email with no Outlook connected: say so, invent nothing",
+    ),
+    (
+        "tool-reviews-empty",
+        "tools",
+        "reviews waiting: none, with open pull requests of my own beside them",
+    ),
+    ("tool-tomorrow-empty", "tools", "tomorrow's meetings: none"),
     ("chat-no-tool", "chat", "a question no tool fits"),
     (
         "draft-review-known",
@@ -586,34 +658,39 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
                 connect(&world.ctx.pool, integrations::GITHUB, "me").await;
             }
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let at = if id == "em-13" { "14:10" } else { "08:00" };
             let brief = recipe::daily_brief_at(&world.ctx, clock(at)).await;
 
             if id == "em-13" {
-                // 14:10: the morning has gone; the window is what is next.
-                let next = ["Vendor call", "Budget check-in", "Design critique"];
+                // 14:10: the morning has gone; every meeting still to come is in.
+                let next = [
+                    "Vendor call",
+                    "Budget check-in",
+                    "Design critique",
+                    "1:1 with Sam",
+                    "Performance calibration",
+                ];
                 let forbid: Vec<&String> = all
                     .iter()
                     .filter(|name| !next.contains(&name.as_str()))
                     .collect();
                 key = json!({
                     "must": next, "order": next, "forbid": forbid,
-                    "note": "Showing the next 3 of 5 meetings still to come.",
-                    "lead_time_bound": true, "max_bullets": 5,
+                    "lead_time_bound": true,
                 });
             } else {
-                let next = &all[..3];
-                let mut must: Vec<String> = next.to_vec();
+                // Nothing is held back: every meeting is in, in the order they happen.
+                let mut must: Vec<String> = all.to_vec();
                 if id == "em-12" {
                     must.push("Retry payment webhooks".into());
                     must.push("Drop the legacy flag".into());
                     must.push("Fix focus trap in the modal".into());
                 }
                 key = json!({
-                    "must": must, "order": next, "forbid": &all[3..],
-                    "note": "Showing the next 3 of 14 meetings still to come.",
-                    "lead_time_bound": true, "max_bullets": 5,
+                    "must": must, "order": &all[..3],
+                    "lead_time_bound": true,
                 });
             }
 
@@ -646,6 +723,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -664,6 +742,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             let graph = graph_with(vec![all_day("INSET day — school closed", &day)], vec![]).await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -687,6 +766,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(None, Some(&graph.host), NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -695,6 +775,171 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
                     "must": ["Non-uniform day", "October statement"],
                     "forbid": ["meeting", "call", "appointment", "pull request"],
                     "forbid_times": true, "max_bullets": 5,
+                }),
+                routed: false,
+            }
+        }
+
+        "quiet-one-meeting" => {
+            let graph = graph_with(
+                vec![meeting(
+                    "Dentist check-up",
+                    &at(&day, "11:30"),
+                    &at(&day, "12:00"),
+                    &[],
+                )],
+                vec![],
+            )
+            .await;
+            let mut world = world(None, Some(&graph.host), NOWHERE).await;
+            world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
+
+            let brief = dawn_brief(&world.ctx).await;
+            Played {
+                answer: markdown_of(brief),
+                key: json!({
+                    "must": ["Dentist check-up"],
+                    "forbid": ["pull request", "review", "required", "mandatory", "staff"],
+                    "max_bullets": 5,
+                }),
+                routed: false,
+            }
+        }
+
+        "quiet-two-all-day" => {
+            let graph = graph_with(
+                vec![
+                    all_day("Bank holiday", &day),
+                    all_day("Sam's birthday", &day),
+                ],
+                vec![],
+            )
+            .await;
+            let mut world = world(None, Some(&graph.host), NOWHERE).await;
+            world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
+
+            let brief = dawn_brief(&world.ctx).await;
+            Played {
+                answer: markdown_of(brief),
+                key: json!({
+                    "must": ["Bank holiday", "birthday"],
+                    "forbid": ["pull request", "required", "mandatory", "staff", "attend"],
+                    "forbid_times": true, "max_bullets": 5,
+                }),
+                routed: false,
+            }
+        }
+
+        "quiet-one-review" => {
+            let github = github_with(Github {
+                reviews: search(&[pr(
+                    51,
+                    "acme/api",
+                    "Rename the config flag",
+                    None,
+                    "2026-10-02T07:00:00Z",
+                )]),
+                ..Github::default()
+            })
+            .await;
+            let mut world = world(Some(&github.host), None, NOWHERE).await;
+            world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
+
+            let brief = dawn_brief(&world.ctx).await;
+            Played {
+                answer: markdown_of(brief),
+                key: json!({
+                    "must": ["Rename the config flag"],
+                    "forbid": ["meeting", "call", "appointment"],
+                    "forbid_times": true, "max_bullets": 5,
+                }),
+                routed: false,
+            }
+        }
+
+        "quiet-one-pr" => {
+            let github = github_with(Github {
+                mine: search(&[pr(
+                    8,
+                    "acme/handbook",
+                    "Tidy the release notes",
+                    None,
+                    "2026-10-01T10:00:00Z",
+                )]),
+                ..Github::default()
+            })
+            .await;
+            let mut world = world(Some(&github.host), None, NOWHERE).await;
+            world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
+
+            let brief = dawn_brief(&world.ctx).await;
+            Played {
+                answer: markdown_of(brief),
+                key: json!({
+                    "must": ["Tidy the release notes"],
+                    "forbid": ["meeting", "call", "appointment"],
+                    "forbid_times": true, "max_bullets": 5,
+                }),
+                routed: false,
+            }
+        }
+
+        "quiet-one-mail" => {
+            let graph = graph_with(
+                vec![],
+                vec![mail(
+                    "Riverside Library",
+                    "Your reserved book is ready to collect",
+                    true,
+                )],
+            )
+            .await;
+            let mut world = world(None, Some(&graph.host), NOWHERE).await;
+            world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
+
+            let brief = dawn_brief(&world.ctx).await;
+            Played {
+                answer: markdown_of(brief),
+                key: json!({
+                    "must": ["reserved book"],
+                    "forbid": ["meeting", "call", "appointment", "pull request"],
+                    "forbid_times": true, "max_bullets": 5,
+                }),
+                routed: false,
+            }
+        }
+
+        "quiet-afternoon" => {
+            let graph = graph_with(
+                vec![
+                    meeting(
+                        "School pick-up",
+                        &at(&day, "15:15"),
+                        &at(&day, "15:45"),
+                        &[],
+                    ),
+                    meeting("Swimming", &at(&day, "16:30"), &at(&day, "17:15"), &[]),
+                ],
+                vec![],
+            )
+            .await;
+            let mut world = world(None, Some(&graph.host), NOWHERE).await;
+            world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
+
+            let brief = dawn_brief(&world.ctx).await;
+            Played {
+                answer: markdown_of(brief),
+                key: json!({
+                    "must": ["School pick-up", "Swimming"],
+                    "order": ["School pick-up", "Swimming"],
+                    "forbid": ["pull request", "review", "required", "mandatory", "staff"],
+                    "lead_time_bound": true, "max_bullets": 5,
                 }),
                 routed: false,
             }
@@ -730,6 +975,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(Some(&github.host), None, NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -763,6 +1009,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             .await;
             let mut world = world(Some(&github.host), None, NOWHERE).await;
             world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+            world.ctx.short_brief_lines = short_brief_lines();
 
             let brief = dawn_brief(&world.ctx).await;
             Played {
@@ -810,11 +1057,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             let world = world(Some(&github.host), None, &filler.host).await;
             daemon::run_once(&world.daemon()).await.expect("a pass");
 
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
             let answer = agent::answer_for_bench(&client, &context, tier, "Draft my standup")
                 .await
@@ -877,11 +1120,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             })
             .await;
             let world = world(Some(&github.host), None, NOWHERE).await;
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
 
             let (question, key) = if id == "tool-open-prs" {
@@ -919,6 +1158,59 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             }
         }
 
+        "tool-reviews-empty" => {
+            // Nobody has asked for a review, and the user's own pull requests
+            // are right there to be mistaken for the answer.
+            let github = github_with(Github {
+                mine: search(&[pr(
+                    90,
+                    "acme/api",
+                    "Paginate the audit log",
+                    None,
+                    "2026-10-02T08:00:00Z",
+                )]),
+                ..Github::default()
+            })
+            .await;
+            let world = world(Some(&github.host), None, NOWHERE).await;
+            let context = tools::Context::from_recipe(&world.ctx);
+            let client = llama::Client::with_base_url(engine_url).expect("client");
+            let question = "Which pull requests are waiting for my review?";
+
+            let answer = agent::answer_for_bench(&client, &context, tier, question)
+                .await
+                .map_err(|error| error.to_string());
+            Played {
+                answer,
+                key: json!({
+                    "tool": { "name": "fetch_github_prs", "args": { "state": ["open", "all"], "whose": ["reviewing"] } },
+                    "forbid": ["Paginate the audit log"],
+                    "forbid_times": true, "forbid_numbers": true,
+                }),
+                routed: false,
+            }
+        }
+
+        "tool-tomorrow-empty" => {
+            let graph = graph_with(vec![], vec![]).await;
+            let world = world(None, Some(&graph.host), NOWHERE).await;
+            let context = tools::Context::from_recipe(&world.ctx);
+            let client = llama::Client::with_base_url(engine_url).expect("client");
+            let question = "What meetings do I have tomorrow?";
+
+            let answer = agent::answer_for_bench(&client, &context, tier, question)
+                .await
+                .map_err(|error| error.to_string());
+            Played {
+                answer,
+                key: json!({
+                    "tool": { "name": "fetch_calendar", "args": { "range": ["tomorrow"] } },
+                    "forbid_times": true, "forbid_numbers": true,
+                }),
+                routed: false,
+            }
+        }
+
         "tool-tomorrow" => {
             let next = tomorrow();
             let graph = graph_with(
@@ -940,11 +1232,7 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             )
             .await;
             let world = world(None, Some(&graph.host), NOWHERE).await;
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
             let question = "What meetings do I have tomorrow?";
 
@@ -967,13 +1255,40 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             }
         }
 
+        // GitHub is connected and Outlook is not, so the honest answer to a
+        // calendar or mail question is that it is not connected. Before the
+        // tool list was narrowed the model was handed the tool and met the
+        // error; after, it has no tool and is told in the prompt. Either way it
+        // must say so and name nothing: no meeting, no sender, no time.
+        "tool-calendar-unconnected" | "tool-mail-unconnected" => {
+            let github = github_with(Github::default()).await;
+            let world = world(Some(&github.host), None, NOWHERE).await;
+            let context = tools::Context::from_recipe(&world.ctx);
+            let client = llama::Client::with_base_url(engine_url).expect("client");
+            let question = if id == "tool-calendar-unconnected" {
+                "What meetings do I have tomorrow?"
+            } else {
+                "Has anyone emailed me today?"
+            };
+
+            let routed = intent::route(question).is_some();
+            let answer = if routed {
+                Err("routed".to_string())
+            } else {
+                agent::answer_for_bench(&client, &context, tier, question)
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            Played {
+                answer,
+                key: json!({ "must": ["connect"], "forbid_times": true }),
+                routed,
+            }
+        }
+
         "chat-no-tool" => {
             let world = world(None, None, NOWHERE).await;
-            let context = tools::Context {
-                pool: world.ctx.pool.clone(),
-                github: world.ctx.github.clone(),
-                microsoft: world.ctx.microsoft.clone(),
-            };
+            let context = tools::Context::from_recipe(&world.ctx);
             let client = llama::Client::with_base_url(engine_url).expect("client");
             let answer = agent::answer_for_bench(
                 &client,
@@ -1104,7 +1419,9 @@ async fn run_the_benchmark() {
             let swap_start = swap_used_mb();
 
             let started = Instant::now();
+            *LAST_CHECK.lock().expect("check slot") = None;
             let played = play(id, &proxy.host, tier).await;
+            let check = LAST_CHECK.lock().expect("check slot").take();
             let wall_ms = started.elapsed().as_millis() as u64;
             let exchanges = proxy.take();
 
@@ -1134,6 +1451,7 @@ async fn run_the_benchmark() {
                 "answer": answer,
                 "error": error,
                 "key": played.key,
+                "check": check,
                 "wall_ms": wall_ms,
                 "peak_resident_mb": engine.peak_mb.load(Ordering::SeqCst),
                 "swap_used_mb_start": swap_start,
