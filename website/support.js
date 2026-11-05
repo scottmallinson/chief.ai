@@ -1,9 +1,10 @@
 /*
  * Chief website — visitor-dependent bits.
  *
- * Three jobs, all of them done in the visitor's browser with no request to
+ * Four jobs, all of them done in the visitor's browser with no request to
  * anybody: work out which build to offer, work out which currency to print a
- * zero in, and fill in the download links.
+ * zero in, fill in the download links, and print today's date on the picture of
+ * the app.
  *
  * Nothing here calls a network. The GitHub release API would resolve the
  * current version for us, but it would also hand every visitor's IP address to
@@ -249,6 +250,60 @@ function applyCurrency() {
   });
 }
 
+/*
+ * The date the mock-up of the Today screen shows.
+ *
+ * The real app prints the user's own date, so the picture of it does too:
+ * today and the three days before, from the visitor's clock. Names are spelled
+ * out here rather than asked of Intl, so the page reads the same in English
+ * whatever the visitor's locale and no locale data decides a label. With
+ * scripts off the markup keeps the sample date it ships with.
+ */
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+function dayLabels(now, daysAgo) {
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo);
+  const month = MONTHS[day.getMonth()];
+  const pad = (n) => String(n).padStart(2, '0');
+
+  return {
+    name: WEEKDAYS[day.getDay()],
+    short: `${day.getDate()} ${month.slice(0, 3)}`,
+    long: `${WEEKDAYS[day.getDay()]}, ${day.getDate()} ${month}`,
+    path: `briefs/${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}.md`,
+  };
+}
+
+function applyToday(now = new Date()) {
+  const fields = [
+    ['data-day-name', 'name'],
+    ['data-day-short', 'short'],
+    ['data-day-long', 'long'],
+    ['data-day-path', 'path'],
+  ];
+
+  for (const [attribute, key] of fields) {
+    document.querySelectorAll(`[${attribute}]`).forEach((el) => {
+      const daysAgo = Number(el.getAttribute(attribute));
+      el.textContent = dayLabels(now, daysAgo)[key];
+    });
+  }
+}
+
 function applyVersion() {
   document.querySelectorAll('[data-version]').forEach((el) => {
     el.textContent = VERSION;
@@ -258,6 +313,7 @@ function applyVersion() {
 async function start() {
   applyCurrency();
   applyVersion();
+  applyToday();
 
   const initial = detectPlatform();
   applyDownloads(initial);

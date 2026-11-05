@@ -399,3 +399,32 @@ test('a phone is told there is nothing to install, not given a file', async ({ p
   expect(await hero.getAttribute('href')).toBe('#get');
   await expect(page.locator('.get-tile.is-primary')).toHaveCount(0);
 });
+
+test('the Today mock-up prints the visitor’s date and the three days before it', async ({
+  page,
+}) => {
+  // A Monday, so the days behind it cross a weekend and a month boundary is
+  // one step away. Noon, so no timezone turns it into another day.
+  await page.clock.setFixedTime(new Date(2026, 9, 5, 12, 0, 0));
+  await page.goto('/index.html');
+
+  const rows = page.locator('.list-pane .list-row');
+  await expect(rows.nth(0)).toContainText('Today');
+  await expect(rows.nth(0)).toContainText('5 Oct');
+  await expect(rows.nth(1)).toContainText('Sunday');
+  await expect(rows.nth(1)).toContainText('4 Oct');
+  await expect(rows.nth(3)).toContainText('Friday');
+  await expect(rows.nth(3)).toContainText('2 Oct');
+
+  await expect(page.locator('.detail-head')).toHaveText('Monday, 5 October');
+  await expect(page.locator('.brief-path')).toHaveText('briefs/2026-10-05.md');
+});
+
+test('the Today mock-up counts back across a month and a year', async ({ page }) => {
+  await page.clock.setFixedTime(new Date(2027, 0, 2, 12, 0, 0));
+  await page.goto('/index.html');
+
+  await expect(page.locator('.detail-head')).toHaveText('Saturday, 2 January');
+  await expect(page.locator('.list-pane .list-row').nth(3)).toContainText('30 Dec');
+  await expect(page.locator('.brief-path')).toHaveText('briefs/2027-01-02.md');
+});
