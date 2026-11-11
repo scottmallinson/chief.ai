@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.26.2 (2026-11-11)
+
+### Fixes
+
+- **corpus:** keep earlier briefs listed when the index cannot be refreshed ([e3a344c](https://github.com/scottmallinson/chief.ai/commit/e3a344c9e0c57c1bc9e0046e4033ffcb4dca0516))
+
 ## 0.26.1 (2026-10-28)
 
 ### Fixes
