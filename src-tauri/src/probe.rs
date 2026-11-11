@@ -146,8 +146,7 @@ impl Machine {
         // hyper-threading is twice the number that decides how fast a prompt is
         // read. Fall back to it only when the physical count is unavailable —
         // over-counting is better than assuming a single core.
-        let cores = system
-            .physical_core_count()
+        let cores = sysinfo::System::physical_core_count()
             .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, NonZeroUsize::get));
 
         Self {
