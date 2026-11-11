@@ -62,13 +62,15 @@ export function useBrief(): UseBrief {
   const [error, setError] = useState<string | null>(null);
 
   // The listing is a nicety and the brief is the point, so a corpus that will
-  // not list leaves the day list holding today alone rather than emptying the
-  // screen.
+  // not list never empties the screen. It also never *shrinks* the list: a
+  // failed read keeps the days already shown, because falling back to today
+  // alone made every earlier brief look deleted while its files were still in
+  // the folder. Only a first failure, with nothing yet to keep, shows today.
   const refreshDays = useCallback(
     () =>
       listCorpus()
         .then((entries) => setDays(briefDays(entries, today)))
-        .catch(() => setDays(briefDays([], today))),
+        .catch(() => setDays((current) => (current.length > 0 ? current : briefDays([], today)))),
     [today],
   );
 
