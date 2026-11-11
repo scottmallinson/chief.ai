@@ -498,12 +498,30 @@ pub async fn corpus_location<R: tauri::Runtime>(
     })
 }
 
+/// What is on disk now, with the index brought in step if it can be.
+///
+/// **The folder answers, the index is a courtesy.** The listing is what the
+/// Briefs pane is built from, and it used to be the result of `reindex`, so a
+/// database that was busy or unwritable for a moment made the whole list fail
+/// and the pane fell back to showing today alone — every earlier brief looked
+/// deleted while its files sat untouched in the folder. The files are read
+/// first and handed back whatever happens to the index afterwards.
+async fn listing(pool: &SqlitePool, corpus: &Corpus) -> Result<Vec<Entry>, Error> {
+    let entries = corpus.list().await?;
+
+    if let Err(error) = reindex(pool, corpus).await {
+        eprintln!("the corpus index could not be refreshed: {error}");
+    }
+
+    Ok(entries)
+}
+
 /// Every markdown file in the corpus.
 #[tauri::command]
 pub async fn list_corpus<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Vec<Entry>, Error> {
     let (corpus, pool) = open(&app).await?;
 
-    reindex(&pool, &corpus).await
+    listing(&pool, &corpus).await
 }
 
 /// One file's contents.
@@ -728,6 +746,29 @@ mod tests {
             "mine\n",
             "a second run must not put the template back"
         );
+    }
+
+    #[tokio::test]
+    async fn lists_the_files_even_when_the_index_cannot_be_written() {
+        let scratch = scratch("listing-without-index");
+
+        scratch
+            .corpus
+            .write("briefs/2026-11-10.md", "a")
+            .await
+            .expect("write");
+
+        // A pool with no `corpus_files` table: refreshing the index must fail.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        assert!(reindex(&pool, &scratch.corpus).await.is_err());
+
+        let listed = listing(&pool, &scratch.corpus).await.expect("should list");
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, "briefs/2026-11-10.md");
     }
 
     #[tokio::test]

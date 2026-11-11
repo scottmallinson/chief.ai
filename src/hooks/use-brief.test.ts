@@ -195,6 +195,35 @@ describe('useBrief', () => {
    * read through `todays_brief` for exactly that reason — the command knows the
    * difference between "no brief yet" and "here is an empty one".
    */
+  it('keeps the earlier days on screen when a later listing fails', async () => {
+    let listings = 0;
+
+    invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'todays_brief':
+          return Promise.resolve(today);
+        case 'list_corpus':
+          listings += 1;
+          return listings === 1
+            ? Promise.resolve(corpus('briefs/2026-08-29.md', 'briefs/2026-08-28.md'))
+            : Promise.reject(new Error('database is locked'));
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    const { result } = renderHook(() => useBrief());
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.days).toHaveLength(2);
+
+    // Picking today re-reads the listing, which now fails.
+    act(() => result.current.select('2026-08-29'));
+    await waitFor(() => expect(listings).toBe(2));
+
+    expect(result.current.days.map((day) => day.date)).toEqual(['2026-08-29', '2026-08-28']);
+  });
+
   it('comes back to today after an earlier day, even with no brief written', async () => {
     invoke.mockImplementation((command: string) => {
       switch (command) {
