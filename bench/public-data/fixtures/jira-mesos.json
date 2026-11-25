@@ -634,6 +634,39 @@
    "MESOS-8705",
    "MESOS-8729"
   ],
+  "sections": {
+   "Blocked": {
+    "count": 2,
+    "keys": [
+     "MESOS-7357",
+     "MESOS-8545"
+    ]
+   },
+   "Overdue or due this week": {
+    "count": 1,
+    "keys": [
+     "MESOS-8732"
+    ]
+   },
+   "In progress": {
+    "count": 1,
+    "keys": [
+     "MESOS-8705"
+    ]
+   },
+   "Not started": {
+    "count": 7,
+    "keys": [
+     "MESOS-6632",
+     "MESOS-7121",
+     "MESOS-7474",
+     "MESOS-7485",
+     "MESOS-8537",
+     "MESOS-8553",
+     "MESOS-8729"
+    ]
+   }
+  },
   "people": [
    "Avery Quinn"
   ]

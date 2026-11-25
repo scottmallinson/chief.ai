@@ -64,3 +64,32 @@ their issues were blocked. The slices are committed, so nobody needs the dump to
 `pnpm test` checks that the fixtures are what the converter writes, that each answer key matches the
 JSON beside it, and (in Rust, `atlassian::tests`) that Chief's own Jira reader reads every fixture
 the way the key says.
+
+## The Jira suite
+
+Seven fixtures play these boards through Chief's real code, with a mock Jira server standing where
+Atlassian is. Run it with `pnpm bench --suite jira` (it never runs with the main fixtures, and has
+its own version, `JIRA_SUITE_VERSION` in `bench/run.mjs`).
+
+| Fixture                         | Asks                                   | The key says                                   |
+| ------------------------------- | -------------------------------------- | ---------------------------------------------- |
+| `jira-items-{compass,be,mesos}` | `/items`, worded by the model          | every issue under its own heading, with counts |
+| `jira-ask-blocked-mesos`        | "What is blocked, and by what?"        | two issue and blocker pairs, on one line each  |
+| `jira-ask-blocked-none-compass` | "Is anything of mine blocked?"         | says none; names nothing it should not         |
+| `jira-ask-overdue-compass`      | "Which of my Jira issues are overdue?" | the three that are, and no other               |
+| `jira-ask-progress-compass`     | "Which am I actively working on?"      | the two that are, and no other                 |
+
+How a run works: `bench/run.mjs` moves every board so the day it describes is today on the machine
+under test (Chief reads that machine's clock, and "overdue" is a claim about it), writes the moved
+copies into the run folder, and the Rust runner serves them. The jobs the mock answers are the two
+Chief asks: assigned and open, and finished since a date.
+
+The checks are in `bench/score.mjs`: an issue key the board does not hold is an invented issue;
+a real one named for the wrong reason is a wrong statement; a person's name is always invented;
+and each issue must sit under the heading the report's own rules give it. Any of those fails gate
+G7, and a model that fails a gate is not ranked. Part of an `/items` answer is written in code with
+no model (the headline, a section of one line), so that text is passed to the scorer as material
+and is not counted as invented.
+
+The test that Chief reads the boards as the key says (`atlassian::tests`) is separate from the
+suite: it needs no model, and runs in CI.

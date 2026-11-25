@@ -284,7 +284,9 @@ export function convert(slice, target) {
  * would pass whatever Chief believed.
  */
 export function recompute(search, today) {
-  const week = day(Date.parse(`${today}T00:00:00Z`) + 6 * DAY);
+  // Seven days ahead is the report's own "due soon": it says `Overdue or due this week` and means
+  // anything due on or before the same weekday next week.
+  const week = day(Date.parse(`${today}T00:00:00Z`) + 7 * DAY);
   const key = (i) => i.key;
   const cat = (i) => i.fields.status.statusCategory.key;
   const open = search.issues.filter((i) => cat(i) !== 'done');
@@ -295,6 +297,22 @@ export function recompute(search, today) {
       .map((l) => l.inwardIssue.key);
   const sorted = (list) =>
     list.map(key).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+
+  // Where `/items` puts each open issue, first rule that applies: blocked, then due (or overdue)
+  // within a week, then in progress, then not started. A section shows twelve lines and counts the
+  // rest, so `count` is how many belong and `keys` is all of them, not only those shown.
+  const due = (i) => i.fields.duedate && i.fields.duedate <= week;
+  const section = (pick) => {
+    const keys = sorted(open.filter(pick));
+    return { count: keys.length, keys };
+  };
+  const isBlocked = (i) => blockers(i).length > 0;
+  const sections = {
+    Blocked: section(isBlocked),
+    'Overdue or due this week': section((i) => !isBlocked(i) && due(i)),
+    'In progress': section((i) => !isBlocked(i) && !due(i) && cat(i) === 'indeterminate'),
+    'Not started': section((i) => !isBlocked(i) && !due(i) && cat(i) !== 'indeterminate'),
+  };
 
   return {
     open: sorted(open),
@@ -309,6 +327,35 @@ export function recompute(search, today) {
       open.filter((i) => i.fields.duedate && i.fields.duedate >= today && i.fields.duedate <= week),
     ),
     no_due_date: sorted(open.filter((i) => !i.fields.duedate)),
+    sections,
     people: [...new Set(search.issues.map((i) => i.fields.assignee.displayName))].sort(),
   };
+}
+
+/**
+ * The same fixture on another day: every date moves by the same exact number of days, so the
+ * day it describes becomes `today` and everything keeps its distance from it. The answer key is
+ * therefore the same, which is checked rather than assumed (`recompute` on the result).
+ *
+ * A benchmark needs this because Chief reads the clock of the machine it runs on, and "overdue" is
+ * a statement about that clock. Whole weeks (see `convert`) would leave the weekday right and the
+ * date wrong; here the date is what has to be right.
+ */
+export function retarget(fixture, today) {
+  const days = Math.round(
+    (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${fixture.today}T00:00:00Z`)) / DAY,
+  );
+  const moved = (iso) => (iso ? new Date(Date.parse(iso) + days * DAY).toISOString() : iso);
+  const datetime = (iso) => (iso ? `${moved(iso).slice(0, 19)}.000+0000` : iso);
+  const date = (d) => (d ? day(Date.parse(`${d}T00:00:00Z`) + days * DAY) : d);
+
+  const out = structuredClone(fixture);
+  out.today = today;
+  for (const issue of out.search.issues) {
+    issue.fields.duedate = date(issue.fields.duedate);
+    issue.fields.updated = datetime(issue.fields.updated);
+    issue.fields.resolutiondate = datetime(issue.fields.resolutiondate);
+    for (const history of issue.changelog.histories) history.created = datetime(history.created);
+  }
+  return out;
 }

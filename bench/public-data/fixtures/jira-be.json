@@ -728,6 +728,49 @@
    "BE-266",
    "BE-459"
   ],
+  "sections": {
+   "Blocked": {
+    "count": 1,
+    "keys": [
+     "BE-107"
+    ]
+   },
+   "Overdue or due this week": {
+    "count": 0,
+    "keys": []
+   },
+   "In progress": {
+    "count": 1,
+    "keys": [
+     "BE-226"
+    ]
+   },
+   "Not started": {
+    "count": 20,
+    "keys": [
+     "BE-99",
+     "BE-102",
+     "BE-105",
+     "BE-108",
+     "BE-115",
+     "BE-118",
+     "BE-119",
+     "BE-127",
+     "BE-158",
+     "BE-159",
+     "BE-184",
+     "BE-185",
+     "BE-186",
+     "BE-187",
+     "BE-253",
+     "BE-254",
+     "BE-264",
+     "BE-266",
+     "BE-411",
+     "BE-459"
+    ]
+   }
+  },
   "people": [
    "Avery Quinn"
   ]

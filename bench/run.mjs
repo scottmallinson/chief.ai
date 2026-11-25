@@ -8,6 +8,7 @@
 //   pnpm bench --only qwen3-1.7b     one model
 //   pnpm bench --repeats 3           fewer repeats (the plan's default is 5)
 //   pnpm bench --fixture em-01       fixtures whose id contains this
+//   pnpm bench --suite jira          the Jira suite (bench/public-data), not the main fixtures
 //   pnpm bench --judge none|api|claude-code|file   (default none)
 //   pnpm bench --max-spend 10        hard cap on judge spend, in dollars
 //   pnpm bench --score-only <dir>    re-score and re-report an existing run
@@ -28,12 +29,15 @@ import { fileURLToPath } from 'node:url';
 
 import { judgeRun } from './judge.mjs';
 import { writeReport } from './report.mjs';
+import { retarget } from './public-data/to-jira.mjs';
 import { scoreRunDir } from './score.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MODELS_DIR = path.join(ROOT, 'bench', '.models');
 const RESULTS = path.join(ROOT, 'bench-results');
 const FIXTURE_VERSION = 'v2';
+/** The Jira suite has its own ruler: a change to its fixtures or keys bumps this, not the one above. */
+const JIRA_SUITE_VERSION = 'v1';
 
 function options(argv) {
   const out = { judge: 'none', repeats: 5, maxSpend: 10 };
@@ -43,7 +47,11 @@ function options(argv) {
     if (flag === '--only') out.only = value();
     else if (flag === '--repeats') out.repeats = Number(value());
     else if (flag === '--fixture') out.fixture = value();
-    else if (flag === '--judge') out.judge = value();
+    else if (flag === '--suite') {
+      out.suite = value();
+      if (out.suite !== 'jira') throw new Error(`no suite called ${out.suite}`);
+      out.fixture = 'jira-';
+    } else if (flag === '--judge') out.judge = value();
     else if (flag === '--max-spend') out.maxSpend = Number(value());
     else if (flag === '--score-only') out.scoreOnly = path.resolve(value());
     else if (flag === '--out') out.out = path.resolve(value());
@@ -57,6 +65,33 @@ function options(argv) {
 
 function git(...args) {
   return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
+}
+
+const JIRA_FIXTURES = path.join(ROOT, 'bench', 'public-data', 'fixtures');
+
+/** Today as the machine under test reads it, which is the day Chief will measure "overdue" against. */
+function localToday() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/**
+ * The Jira boards, moved so the day each describes is today. Written into the run's folder, so the
+ * run keeps exactly what it was given.
+ */
+function writeJiraFixtures(dir) {
+  const out = path.join(dir, 'jira-fixtures');
+  fs.mkdirSync(out, { recursive: true });
+  const today = localToday();
+  for (const file of fs.readdirSync(JIRA_FIXTURES).filter((f) => f.endsWith('.json'))) {
+    const fixture = JSON.parse(fs.readFileSync(path.join(JIRA_FIXTURES, file), 'utf8'));
+    fs.writeFileSync(
+      path.join(out, file),
+      `${JSON.stringify(retarget(fixture, today), null, 1)}\n`,
+    );
+  }
+  return { dir: out, today };
 }
 
 /** Which code is under test: the commit, and whether anything is uncommitted. */
@@ -149,6 +184,7 @@ function runRunner(model, weights, server, jsonl, opts, router) {
     CHIEF_BENCH_OUT: jsonl,
     CHIEF_BENCH_REPEATS: String(opts.repeats),
     CHIEF_BENCH_TIER: model.tier,
+    CHIEF_BENCH_JIRA_DIR: opts.jiraDir,
     ...(opts.fixture ? { CHIEF_BENCH_ONLY: opts.fixture } : {}),
     ...(router ? { CHIEF_ROUTER_URL: router.url } : {}),
   };
@@ -248,10 +284,16 @@ async function main() {
     );
   fs.mkdirSync(dir, { recursive: true });
 
+  const jira = writeJiraFixtures(dir);
+  opts.jiraDir = jira.dir;
   const router = await startRouter(opts);
 
   const env = {
     fixture_version: FIXTURE_VERSION,
+    suite: opts.suite ?? 'main',
+    ...(opts.suite === 'jira'
+      ? { jira_suite_version: JIRA_SUITE_VERSION, jira_today: jira.today }
+      : {}),
     started_at: new Date().toISOString(),
     code,
     machine: where,

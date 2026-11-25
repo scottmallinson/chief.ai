@@ -550,6 +550,24 @@ pub(crate) enum Route {
     Mcp,
 }
 
+/// The scheme a stored host is reached by. Always `https`, except in a test
+/// build, where a loopback address with a port is a mock server standing in
+/// for Jira. The exception is not compiled into anything that ships, so a
+/// release cannot be made to send a token over `http`.
+#[cfg(test)]
+fn scheme_of(host: &str) -> &'static str {
+    if host.starts_with("127.0.0.1:") {
+        "http"
+    } else {
+        "https"
+    }
+}
+
+#[cfg(not(test))]
+fn scheme_of(_host: &str) -> &'static str {
+    "https"
+}
+
 pub(crate) fn route(
     account: &integrations::Account,
     credentials: &integrations::Credentials,
@@ -561,7 +579,11 @@ pub(crate) fn route(
     Route::Rest {
         // `account_key` holds the bare host, so the scheme is put back rather
         // than stored — there is no other scheme this may be.
-        site: format!("https://{}", account.account_key),
+        site: format!(
+            "{}://{}",
+            scheme_of(&account.account_key),
+            account.account_key
+        ),
         // Basic auth is `email:token`, and for this provider `identity` is
         // documented as what to send as the user half.
         email: account.identity.clone().unwrap_or_default(),

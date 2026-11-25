@@ -1391,6 +1391,57 @@
    "COMPASS-3064",
    "COMPASS-3141"
   ],
+  "sections": {
+   "Blocked": {
+    "count": 0,
+    "keys": []
+   },
+   "Overdue or due this week": {
+    "count": 7,
+    "keys": [
+     "COMPASS-2674",
+     "COMPASS-2735",
+     "COMPASS-3353",
+     "COMPASS-3372",
+     "COMPASS-3422",
+     "COMPASS-3444",
+     "COMPASS-3453"
+    ]
+   },
+   "In progress": {
+    "count": 2,
+    "keys": [
+     "COMPASS-1311",
+     "COMPASS-3361"
+    ]
+   },
+   "Not started": {
+    "count": 21,
+    "keys": [
+     "COMPASS-139",
+     "COMPASS-644",
+     "COMPASS-1083",
+     "COMPASS-2203",
+     "COMPASS-2761",
+     "COMPASS-3064",
+     "COMPASS-3120",
+     "COMPASS-3130",
+     "COMPASS-3141",
+     "COMPASS-3157",
+     "COMPASS-3176",
+     "COMPASS-3235",
+     "COMPASS-3270",
+     "COMPASS-3289",
+     "COMPASS-3364",
+     "COMPASS-3365",
+     "COMPASS-3435",
+     "COMPASS-3447",
+     "COMPASS-3452",
+     "COMPASS-3455",
+     "COMPASS-3463"
+    ]
+   }
+  },
   "people": [
    "Avery Quinn"
   ]

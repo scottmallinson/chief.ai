@@ -14,6 +14,7 @@ import {
   finishedAt,
   movesOf,
   recompute,
+  retarget,
   statusAt,
   title,
 } from './to-jira.mjs';
@@ -190,10 +191,12 @@ test('overdue and due this week have exact edges', () => {
       issuelinks: [],
     },
   });
-  const search = { issues: ['2026-11-19', '2026-11-20', '2026-11-26', '2026-11-27', null].map(at) };
+  const search = {
+    issues: ['2026-11-19', '2026-11-20', '2026-11-27', '2026-11-28', null].map(at),
+  };
   const a = recompute(search, '2026-11-20');
   expect(a.overdue).toEqual(['k-2026-11-19']);
-  expect(a.due_this_week).toEqual(['k-2026-11-20', 'k-2026-11-26']);
+  expect(a.due_this_week).toEqual(['k-2026-11-20', 'k-2026-11-27']);
   expect(a.no_due_date).toEqual(['k-null']);
 });
 
@@ -284,4 +287,27 @@ test('the board is the one person it says it is, and there is something on it to
     expect(fx.answer.people, f).toEqual([fx.me]);
     expect(fx.answer.open.length, f).toBeGreaterThan(0);
   }
+});
+
+test('a fixture moved to another day says the same things about that day', () => {
+  for (const f of fixtures) {
+    const fx = read(f);
+    for (const today of ['2026-12-02', '2027-03-15', '2026-11-01']) {
+      const moved = retarget(fx, today);
+      expect(moved.today).toBe(today);
+      expect(recompute(moved.search, today), `${f} on ${today}`).toEqual(fx.answer);
+    }
+  }
+});
+
+test('retarget moves every date and leaves everything else alone', () => {
+  const fx = read('jira-mesos.json');
+  const days = Math.round((Date.parse('2026-12-02') - Date.parse(fx.today)) / DAY);
+  const moved = retarget(fx, '2026-12-02');
+  const was = fx.search.issues.find((i) => i.fields.duedate);
+  const now = moved.search.issues.find((i) => i.key === was.key);
+  expect(Date.parse(now.fields.duedate) - Date.parse(was.fields.duedate)).toBe(days * DAY);
+  expect(Date.parse(now.fields.updated) - Date.parse(was.fields.updated)).toBe(days * DAY);
+  expect(now.fields.summary).toBe(was.fields.summary);
+  expect(fx.today).not.toBe('2026-12-02'); // the original is untouched
 });
