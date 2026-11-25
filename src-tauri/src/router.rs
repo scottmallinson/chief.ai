@@ -63,6 +63,7 @@ pub enum Source {
     GithubPullRequests,
     Calendar,
     Mail,
+    Items,
 }
 
 /// Which pull requests a GitHub question is about. Reading all three and
@@ -123,12 +124,13 @@ pub enum Route {
     Github(GithubView),
     Calendar(CalendarRange),
     Mail,
+    Items,
 }
 
 /// What each source says about itself, and "none of these", in the order
 /// they are embedded. `None` is not a source: it is the answer that sends a
 /// question to the tool loop.
-const CHOICES: [(Option<Source>, &str); 4] = [
+const CHOICES: [(Option<Source>, &str); 5] = [
     (
         Some(Source::GithubPullRequests),
         "GitHub pull requests: mine, merged, or waiting on my review",
@@ -140,6 +142,10 @@ const CHOICES: [(Option<Source>, &str); 4] = [
     (
         Some(Source::Mail),
         "Outlook inbox: recent email, who sent it, who is waiting on me",
+    ),
+    (
+        Some(Source::Items),
+        "Jira work items: which of my tickets are blocked, overdue, due soon, in progress or not started",
     ),
     (
         None,
@@ -258,6 +264,7 @@ fn decide(
         Source::GithubPullRequests => pick_view(question, views, view_margin).map(Route::Github),
         Source::Calendar => Some(Route::Calendar(pick_range(question, ranges, RANGE_MARGIN))),
         Source::Mail => Some(Route::Mail),
+        Source::Items => Some(Route::Items),
     }
 }
 
@@ -300,13 +307,14 @@ mod tests {
     use super::*;
     use crate::llama::test_support::serve;
 
-    /// Four choice vectors pointing four different ways.
+    /// Five choice vectors pointing five different ways.
     fn choices() -> Vec<Vec<f32>> {
         vec![
-            vec![1.0, 0.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0, 0.0],
-            vec![0.0, 0.0, 1.0, 0.0],
-            vec![0.0, 0.0, 0.0, 1.0],
+            vec![1.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0],
         ]
     }
 
@@ -328,7 +336,15 @@ mod tests {
 
     #[test]
     fn a_question_closest_to_none_of_these_takes_the_tool_loop() {
-        assert_eq!(pick(&[0.1, 0.1, 0.1, 0.9], &choices(), MARGIN), None);
+        assert_eq!(pick(&[0.1, 0.1, 0.1, 0.1, 0.9], &choices(), MARGIN), None);
+    }
+
+    #[test]
+    fn a_question_about_my_tickets_is_read_by_items() {
+        assert_eq!(
+            pick(&[0.1, 0.1, 0.1, 0.9, 0.1], &choices(), MARGIN),
+            Some(Source::Items)
+        );
     }
 
     /// The guard this module exists to keep. Two sources about equally close is
@@ -491,6 +507,7 @@ mod tests {
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
                 [1.0, 0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
@@ -519,7 +536,7 @@ mod tests {
         .expect("body should be JSON");
         let inputs = body["input"].as_array().expect("inputs should be a list");
 
-        assert_eq!(inputs.len(), 11);
+        assert_eq!(inputs.len(), 12);
         assert_eq!(inputs[0], "How busy is Friday?");
         assert!(inputs[2]
             .as_str()

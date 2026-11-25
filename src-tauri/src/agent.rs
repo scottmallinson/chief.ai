@@ -909,7 +909,7 @@ async fn routed(
     messages: &[Turn],
     context: &tools::Context,
     router_client: &llama::Client,
-    mut on_tool: impl FnMut(&str),
+    on_tool: impl FnMut(&str),
 ) -> Option<Routed> {
     let question = &messages
         .iter()
@@ -918,11 +918,24 @@ async fn routed(
         .content;
     let route = router::route(router_client, question).await.ok()??;
 
+    read_route(route, messages, context, on_tool).await
+}
+
+/// Reads what a route names, once the question has been placed.
+async fn read_route(
+    route: router::Route,
+    messages: &[Turn],
+    context: &tools::Context,
+    mut on_tool: impl FnMut(&str),
+) -> Option<Routed> {
     // Merged pull requests belong to a period, and the router can place a
     // question by meaning but cannot read "past month" out of it. Read here
     // with no period they were the latest few, cut to a token budget. The
     // model names the period when it makes the call itself.
-    if matches!(route, router::Route::Github(router::GithubView::Merged)) {
+    if matches!(
+        route,
+        router::Route::Github(router::GithubView::Merged) | router::Route::Items
+    ) {
         return None;
     }
 
@@ -1257,6 +1270,20 @@ pub(crate) async fn answer_for_bench(
     tier: crate::probe::Tier,
     question: &str,
 ) -> Result<String, Error> {
+    answer_for_bench_with(client, context, None, tier, question).await
+}
+
+/// As [`answer_for_bench`], and a question the router places with `/items`
+/// is answered the way `/items` answers it, when the benchmark hands over
+/// the recipe context that path reads.
+#[cfg(test)]
+pub(crate) async fn answer_for_bench_with(
+    client: &Client,
+    context: &tools::Context,
+    recipe: Option<&recipe::Context>,
+    tier: crate::probe::Tier,
+    question: &str,
+) -> Result<String, Error> {
     let messages = vec![turn(Role::User, question)];
 
     if is_standup(&messages) {
@@ -1272,7 +1299,25 @@ pub(crate) async fn answer_for_bench(
 
     // The router, when the benchmark has started an embedding server for it.
     let routed = match router::configured() {
-        Some(router_client) => routed(&messages, context, &router_client, |_| {}).await,
+        Some(router_client) => match router::route(&router_client, question).await.ok().flatten() {
+            Some(router::Route::Items) if recipe.is_some() => {
+                let recipe = recipe.expect("checked above");
+                if let Some(analysis) = items::analyse(recipe, items::DEFAULT_DAYS).await {
+                    if analysis.parts.iter().all(|part| !part.worded) {
+                        return Ok(analysis.markdown());
+                    }
+                    return Ok(
+                        items::write(client, &analysis, items_request(DEFAULT_MODEL, tier))
+                            .await
+                            .map(|written| written.text)
+                            .unwrap_or_else(|_| analysis.markdown()),
+                    );
+                }
+                None
+            }
+            Some(route) => read_route(route, &messages, context, |_| {}).await,
+            None => None,
+        },
         _ => None,
     };
     if let Some(nothing) = routed.as_ref().and_then(|read| read.nothing.clone()) {

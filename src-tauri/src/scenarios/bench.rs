@@ -1593,7 +1593,7 @@ async fn play_jira(id: &str, engine_url: &str, tier: Tier) -> Played {
     };
 
     let context = tools::Context::from_recipe(&world.ctx);
-    let answer = agent::answer_for_bench(&client, &context, tier, question)
+    let answer = agent::answer_for_bench_with(&client, &context, Some(&world.ctx), tier, question)
         .await
         .map_err(|error| error.to_string());
     let mut key = key;

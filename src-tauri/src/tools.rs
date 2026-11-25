@@ -384,6 +384,8 @@ pub fn calls_for(route: crate::router::Route) -> Vec<(&'static str, ToolCall)> {
                 call("routed_1", FETCH_CALENDAR, json!({ "range": name })),
             )]
         }
+        // Read by `/items`, which works out what is blocked in code; no tool call.
+        Route::Items => Vec::new(),
         Route::Mail => vec![(
             "My recent mail",
             call("routed_1", FETCH_RECENT_MAIL, json!({})),
