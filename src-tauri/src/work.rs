@@ -176,7 +176,7 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
                 Some(linear_line(issue, ""))
             }),
             Reading::of("Jira", sources::jira(context, None).await, |issue| {
-                Some(crate::atlassian::describe(issue))
+                Some(crate::atlassian::describe_with_facts(issue))
             }),
         ],
         limit,

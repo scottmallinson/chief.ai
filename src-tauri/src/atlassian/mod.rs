@@ -1450,6 +1450,25 @@ pub fn describe(issue: &Issue) -> String {
     format!("{} {}{status}", issue.key, issue.summary)
 }
 
+/// The line the work overview shows: the plain line, then the facts a
+/// question about blocked or overdue work is answered from.
+#[must_use]
+pub fn describe_with_facts(issue: &Issue) -> String {
+    let mut line = describe(issue);
+
+    if let Some(due) = &issue.detail.due {
+        line.push_str(&format!(", due {due}"));
+    }
+    if !issue.detail.blocked_by.is_empty() {
+        line.push_str(&format!(
+            ", blocked by {}",
+            issue.detail.blocked_by.join(", ")
+        ));
+    }
+
+    line
+}
+
 impl crate::oauth::Provider for Client {
     const SERVICE: &'static str = crate::integrations::ATLASSIAN;
 
@@ -2515,6 +2534,34 @@ mod tests {
         let found = issues_at(&bare, "");
 
         assert_eq!(found[0].detail, Detail::default());
+    }
+
+    #[test]
+    fn the_overview_line_carries_the_due_date_and_what_blocks_it() {
+        let issue = Issue {
+            key: "PROJ-7".to_string(),
+            summary: "Migrate the tenant".to_string(),
+            status: "In Review".to_string(),
+            url: None,
+            resolved: None,
+            detail: Detail {
+                due: Some("2026-11-20".to_string()),
+                blocked_by: vec!["PROJ-3".to_string(), "PROJ-4".to_string()],
+                ..Detail::default()
+            },
+        };
+
+        assert_eq!(
+            describe_with_facts(&issue),
+            "PROJ-7 Migrate the tenant [In Review], due 2026-11-20, blocked by PROJ-3, PROJ-4"
+        );
+        assert_eq!(
+            describe_with_facts(&Issue {
+                detail: Detail::default(),
+                ..issue
+            }),
+            "PROJ-7 Migrate the tenant [In Review]"
+        );
     }
 
     #[test]
