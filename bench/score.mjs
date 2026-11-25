@@ -447,6 +447,8 @@ export function scoreRun(run) {
   // A draft Chief itself refuses to save never reaches the user, so what the
   // model invented in it is reported but is not what the user was given.
   m.blocked = Boolean(key.blocked);
+  // The answer sent the reader to /items instead of answering: honest, but not an answer.
+  m.handed_off = /\/items\b/.test(body);
   m.shipped_invented = m.blocked ? [] : m.invented;
 
   // Order, and whether the answer leads with the time-bound thing.
