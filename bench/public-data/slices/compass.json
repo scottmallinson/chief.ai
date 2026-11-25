@@ -1,0 +1,1347 @@
+{
+  "source": {
+    "dataset": "TAWOS v1.1",
+    "doi": "10.5522/04/21308124",
+    "licence": "Apache-2.0",
+    "project": {
+      "key": "COMPASS",
+      "name": "MongoDB Compass "
+    },
+    "asof": "2019-02-15"
+  },
+  "me": 146026,
+  "issues": [
+    {
+      "id": 249575,
+      "key": "COMPASS-3463",
+      "title": "\"Can't start MongoDB Compass on Ubuntu 18.10\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2019-02-14 15:28:32",
+      "resolved": "2019-03-06 14:36:12",
+      "updated": "2019-03-06 14:36:12",
+      "assignee": 146026,
+      "sprint": 3335,
+      "board": true
+    },
+    {
+      "id": 249579,
+      "key": "COMPASS-3455",
+      "title": "\"$slice operator does not work for projection\"",
+      "type": "Bug",
+      "priority": "Minor - P4",
+      "finalStatus": "Closed",
+      "created": "2019-02-07 14:10:03",
+      "resolved": "2019-02-22 14:39:22",
+      "updated": "2019-02-25 18:59:57",
+      "assignee": 146026,
+      "sprint": 3335,
+      "board": true
+    },
+    {
+      "id": 249581,
+      "key": "COMPASS-3453",
+      "title": "\"TabNavBar Programatically Renders Tabs\"",
+      "type": "Task",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2019-02-06 14:39:29",
+      "resolved": "2019-03-20 12:03:55",
+      "updated": "2019-03-20 12:03:55",
+      "assignee": 146026,
+      "sprint": 3336,
+      "board": true
+    },
+    {
+      "id": 249582,
+      "key": "COMPASS-3452",
+      "title": "\"Move Collection Store into Collection Plugin\"",
+      "type": "Task",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2019-02-06 14:37:40",
+      "resolved": "2019-03-15 14:39:43",
+      "updated": "2019-03-15 14:39:43",
+      "assignee": 146026,
+      "sprint": 3334,
+      "board": true
+    },
+    {
+      "id": 249587,
+      "key": "COMPASS-3447",
+      "title": "\"Extract Schema Plugin\"",
+      "type": "Task",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2019-02-05 13:37:00",
+      "resolved": "2019-06-09 14:17:05",
+      "updated": "2019-06-09 14:17:05",
+      "assignee": 146026,
+      "sprint": 3331,
+      "board": true
+    },
+    {
+      "id": 249590,
+      "key": "COMPASS-3444",
+      "title": "\"Update Schema Validation screen and description in welcome carousel\"",
+      "type": "Task",
+      "priority": "Critical - P2",
+      "finalStatus": "Closed",
+      "created": "2019-02-05 13:33:45",
+      "resolved": "2019-03-04 14:16:29",
+      "updated": "2019-03-04 14:16:37",
+      "assignee": 146026,
+      "sprint": 3336,
+      "board": true
+    },
+    {
+      "id": 249599,
+      "key": "COMPASS-3435",
+      "title": "\"$geoNear stage erorr Expected \"\"[\"\" or AggregationStage but \"\"{\"\" found.\"",
+      "type": "Bug",
+      "priority": "Minor - P4",
+      "finalStatus": "Closed",
+      "created": "2019-02-01 19:18:35",
+      "resolved": "2019-02-25 15:11:32",
+      "updated": "2019-02-25 15:27:12",
+      "assignee": 146026,
+      "sprint": 3335,
+      "board": true
+    },
+    {
+      "id": 249610,
+      "key": "COMPASS-3422",
+      "title": "\"Enter on \"\"Save query as favorite\"\" makes Compass go blank\"",
+      "type": "Bug",
+      "priority": "Minor - P4",
+      "finalStatus": "Closed",
+      "created": "2019-01-31 09:53:13",
+      "resolved": "2019-02-22 11:23:03",
+      "updated": "2019-02-22 14:51:36",
+      "assignee": 146026,
+      "sprint": 3336,
+      "board": true
+    },
+    {
+      "id": 249611,
+      "key": "COMPASS-3421",
+      "title": "\"$exists query filter in Schema blanks entire tab with javascript errors\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2019-01-30 22:55:25",
+      "resolved": "2019-02-14 23:59:18",
+      "updated": "2019-05-20 16:03:33",
+      "assignee": 146026,
+      "sprint": 3336,
+      "board": true
+    },
+    {
+      "id": 249646,
+      "key": "COMPASS-3372",
+      "title": "\"Embedded dates are displayed using desktop timezone rather than UTC\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2019-01-03 21:32:12",
+      "resolved": "2019-02-22 11:27:49",
+      "updated": "2019-02-28 12:11:50",
+      "assignee": 146026,
+      "sprint": 3336,
+      "board": true
+    },
+    {
+      "id": 249653,
+      "key": "COMPASS-3365",
+      "title": "\"Collation not saving to Past Queries\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-12-20 19:45:18",
+      "resolved": "2019-02-22 14:07:04",
+      "updated": "2019-02-22 14:51:39",
+      "assignee": 146026,
+      "sprint": 3335,
+      "board": true
+    },
+    {
+      "id": 249654,
+      "key": "COMPASS-3364",
+      "title": "\"Upgrade compass-serverstats to less@3.0.2 or greater\"",
+      "type": "Task",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-12-19 19:06:03",
+      "resolved": "2019-04-09 17:11:14",
+      "updated": "2019-04-09 17:19:27",
+      "assignee": 146026,
+      "sprint": 3333,
+      "board": true
+    },
+    {
+      "id": 249657,
+      "key": "COMPASS-3361",
+      "title": "\"Crashes on launch on Fedora 29\"",
+      "type": "Bug",
+      "priority": "Critical - P2",
+      "finalStatus": "Closed",
+      "created": "2018-12-19 11:14:27",
+      "resolved": "2019-02-25 12:34:42",
+      "updated": "2019-02-25 12:34:42",
+      "assignee": 146026,
+      "sprint": 3335,
+      "board": true
+    },
+    {
+      "id": 249664,
+      "key": "COMPASS-3353",
+      "title": "\"Question mark in password yields 'Incomplete key value pair for option' in Compass with SRV record connection\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-12-11 23:17:47",
+      "resolved": "2019-02-25 15:01:29",
+      "updated": "2019-02-25 15:01:29",
+      "assignee": 146026,
+      "sprint": 3338,
+      "board": true
+    },
+    {
+      "id": 249683,
+      "key": "COMPASS-3333",
+      "title": "\"Compass should not install icon on Windows desktop\"",
+      "type": "Bug",
+      "priority": "Minor - P4",
+      "finalStatus": "Closed",
+      "created": "2018-11-30 03:42:31",
+      "resolved": "2019-02-14 16:06:38",
+      "updated": "2019-12-18 04:25:59",
+      "assignee": 146026,
+      "sprint": 3336,
+      "board": true
+    },
+    {
+      "id": 249726,
+      "key": "COMPASS-3289",
+      "title": "\"Tabbed view\"",
+      "type": "Story",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-11-23 16:20:26",
+      "resolved": "2019-06-12 21:19:54",
+      "updated": "2019-06-21 18:44:01",
+      "assignee": 146026,
+      "sprint": 3333,
+      "board": true
+    },
+    {
+      "id": 249745,
+      "key": "COMPASS-3270",
+      "title": "\"Need a way to interrrupt/kill long running queries\"",
+      "type": "Task",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-11-20 09:20:22",
+      "resolved": "2019-04-09 17:17:49",
+      "updated": "2019-07-21 19:35:27",
+      "assignee": 146026,
+      "sprint": 3333,
+      "board": true
+    },
+    {
+      "id": 249773,
+      "key": "COMPASS-3235",
+      "title": "\"Eliminate multiple keychain password requests\"",
+      "type": "Task",
+      "priority": "Critical - P2",
+      "finalStatus": "Closed",
+      "created": "2018-11-06 15:10:56",
+      "resolved": "2019-09-10 13:43:45",
+      "updated": "2020-01-14 10:06:05",
+      "assignee": 146026,
+      "sprint": 3332,
+      "board": true
+    },
+    {
+      "id": 249814,
+      "key": "COMPASS-3176",
+      "title": "\"Cannot use \"\"$cond\"\" in aggregate pipeline in an \"\"$expr\"\"\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-10-04 16:35:40",
+      "resolved": "2019-04-09 18:05:54",
+      "updated": "2019-04-09 18:17:17",
+      "assignee": 146026,
+      "sprint": 3333,
+      "board": true
+    },
+    {
+      "id": 249820,
+      "key": "COMPASS-3157",
+      "title": "\"Enforce maxTimeMS for every query sent to the server\"",
+      "type": "Story",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-09-28 12:58:34",
+      "resolved": "2019-04-09 15:49:57",
+      "updated": "2019-05-20 15:20:36",
+      "assignee": 146026,
+      "sprint": 3333,
+      "board": true
+    },
+    {
+      "id": 249832,
+      "key": "COMPASS-3141",
+      "title": "\"Compass centers geosearch at 0 longitude instead of where the cursor is. Causes irregularities and performance issues  on user interface as one crosses international date line.\"",
+      "type": "Bug",
+      "priority": "Minor - P4",
+      "finalStatus": "Closed",
+      "created": "2018-09-19 19:02:30",
+      "resolved": "2019-12-20 15:03:15",
+      "updated": "2019-12-20 15:03:15",
+      "assignee": 146026,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 249837,
+      "key": "COMPASS-3130",
+      "title": "\"Regular expression literals can't handle backslashes in agg builder\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-09-17 10:20:47",
+      "resolved": "2020-03-24 19:08:56",
+      "updated": "2020-03-24 19:08:56",
+      "assignee": 146026,
+      "sprint": 3308,
+      "board": true
+    },
+    {
+      "id": 249845,
+      "key": "COMPASS-3120",
+      "title": "\"No support for negative regex, { $not: /regex/ } not accepted in query bar\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-09-09 14:32:45",
+      "resolved": "2020-03-24 19:08:06",
+      "updated": "2020-03-24 19:08:06",
+      "assignee": 146026,
+      "sprint": 3308,
+      "board": true
+    },
+    {
+      "id": 249890,
+      "key": "COMPASS-3064",
+      "title": "\"As a developer, I need to quickly clear out all documents in a collection\"",
+      "type": "New Feature",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-08-15 15:53:28",
+      "resolved": "2019-09-27 08:19:12",
+      "updated": "2019-09-27 08:19:12",
+      "assignee": 146026,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 250169,
+      "key": "COMPASS-2761",
+      "title": "\"As a Compass user, I need support for $near and $nearSphere\"",
+      "type": "Story",
+      "priority": "Minor - P4",
+      "finalStatus": "Closed",
+      "created": "2018-04-18 18:23:12",
+      "resolved": "2020-03-24 19:07:12",
+      "updated": "2020-03-24 19:07:12",
+      "assignee": 146026,
+      "sprint": 3308,
+      "board": true
+    },
+    {
+      "id": 250195,
+      "key": "COMPASS-2735",
+      "title": "\"MongoDB Compass not conect ipv6\"",
+      "type": "Bug",
+      "priority": "Critical - P2",
+      "finalStatus": "Closed",
+      "created": "2018-03-22 16:01:12",
+      "resolved": "2019-02-20 15:26:56",
+      "updated": "2019-02-25 12:35:11",
+      "assignee": 146026,
+      "sprint": 3340,
+      "board": true
+    },
+    {
+      "id": 250244,
+      "key": "COMPASS-2674",
+      "title": "\"Naive handling of \"\"@\"\" in password prevents login\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2018-03-21 17:57:23",
+      "resolved": "2019-02-25 15:01:13",
+      "updated": "2019-04-08 12:04:23",
+      "assignee": 146026,
+      "sprint": 3368,
+      "board": true
+    },
+    {
+      "id": 250384,
+      "key": "COMPASS-2203",
+      "title": "\"As a user I want to widen the collection names pane\"",
+      "type": "New Feature",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2017-10-19 23:06:55",
+      "resolved": "2019-04-12 15:16:49",
+      "updated": "2019-04-12 15:16:49",
+      "assignee": 146026,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 250450,
+      "key": "COMPASS-1311",
+      "title": "\"Failed to initialize WebGL\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2017-06-29 14:04:14",
+      "resolved": "2019-03-07 11:02:41",
+      "updated": "2019-03-07 11:02:41",
+      "assignee": 146026,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 250460,
+      "key": "COMPASS-1083",
+      "title": "\"LUUID/NUUID/BinData support for filters\"",
+      "type": "Task",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2017-04-28 17:58:30",
+      "resolved": "2019-08-20 12:12:55",
+      "updated": "2019-12-10 01:25:39",
+      "assignee": 146026,
+      "sprint": 3324,
+      "board": true
+    },
+    {
+      "id": 250489,
+      "key": "COMPASS-740",
+      "title": "\"Compass Windows .msi Installer package is missing icon\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2017-02-07 21:52:23",
+      "resolved": "2019-02-14 16:14:23",
+      "updated": "2019-02-14 16:14:28",
+      "assignee": 146026,
+      "sprint": 3351,
+      "board": true
+    },
+    {
+      "id": 250496,
+      "key": "COMPASS-644",
+      "title": "\"Add $near support in mongodb-language-model\"",
+      "type": "Bug",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2017-01-12 12:44:59",
+      "resolved": "2020-03-24 19:06:52",
+      "updated": "2020-03-24 19:06:52",
+      "assignee": 146026,
+      "sprint": 3308,
+      "board": true
+    },
+    {
+      "id": 250534,
+      "key": "COMPASS-139",
+      "title": "\"Add \"\"test\"\" connection\"",
+      "type": "Task",
+      "priority": "Major - P3",
+      "finalStatus": "Closed",
+      "created": "2016-10-11 17:00:29",
+      "resolved": "2019-04-02 12:28:54",
+      "updated": "2019-04-02 12:28:54",
+      "assignee": 146026,
+      "sprint": null,
+      "board": true
+    }
+  ],
+  "changes": [
+    {
+      "issue": 249575,
+      "field": "status",
+      "at": "2019-02-15 10:30:38",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249579,
+      "field": "status",
+      "at": "2019-02-13 15:36:56",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249581,
+      "field": "status",
+      "at": "2019-02-06 14:39:31",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249582,
+      "field": "status",
+      "at": "2019-02-06 14:37:42",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249587,
+      "field": "status",
+      "at": "2019-02-05 13:37:02",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249590,
+      "field": "status",
+      "at": "2019-02-05 13:33:51",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249599,
+      "field": "status",
+      "at": "2019-02-13 15:37:08",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249610,
+      "field": "status",
+      "at": "2019-01-31 09:54:05",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249611,
+      "field": "status",
+      "at": "2019-02-14 09:54:51",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249611,
+      "field": "status",
+      "at": "2019-02-14 23:59:18",
+      "from": "Open",
+      "to": "Closed"
+    },
+    {
+      "issue": 249646,
+      "field": "status",
+      "at": "2019-01-17 09:57:50",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249653,
+      "field": "status",
+      "at": "2019-02-13 15:36:41",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249653,
+      "field": "status",
+      "at": "2019-02-13 15:36:49",
+      "from": "Open",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249657,
+      "field": "status",
+      "at": "2019-01-16 15:56:54",
+      "from": "Needs Triage",
+      "to": "Waiting (Blocked)"
+    },
+    {
+      "issue": 249664,
+      "field": "status",
+      "at": "2019-01-17 10:30:30",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249683,
+      "field": "status",
+      "at": "2019-02-14 16:06:38",
+      "from": "Needs Triage",
+      "to": "Closed"
+    },
+    {
+      "issue": 249773,
+      "field": "status",
+      "at": "2018-11-06 15:10:58",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249773,
+      "field": "status",
+      "at": "2018-11-06 15:14:34",
+      "from": "Ready for Work",
+      "to": "Needs Triage"
+    },
+    {
+      "issue": 249773,
+      "field": "status",
+      "at": "2019-01-15 15:35:46",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249837,
+      "field": "status",
+      "at": "2018-09-17 10:21:01",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249845,
+      "field": "status",
+      "at": "2018-09-12 11:22:28",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 249890,
+      "field": "status",
+      "at": "2018-08-16 13:22:03",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 250195,
+      "field": "status",
+      "at": "2018-05-27 12:11:11",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 250195,
+      "field": "status",
+      "at": "2018-12-08 23:10:26",
+      "from": "Open",
+      "to": "In Progress"
+    },
+    {
+      "issue": 250195,
+      "field": "status",
+      "at": "2018-12-19 06:59:58",
+      "from": "In Progress",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 250244,
+      "field": "status",
+      "at": "2018-05-27 12:31:08",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 250244,
+      "field": "status",
+      "at": "2018-06-08 15:09:48",
+      "from": "Open",
+      "to": "Closed"
+    },
+    {
+      "issue": 250244,
+      "field": "status",
+      "at": "2018-07-26 13:30:40",
+      "from": "Closed",
+      "to": "Open"
+    },
+    {
+      "issue": 250384,
+      "field": "status",
+      "at": "2017-10-23 17:14:29",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 250450,
+      "field": "status",
+      "at": "2017-06-29 14:44:57",
+      "from": "Needs Triage",
+      "to": "Debugging With Submitter"
+    },
+    {
+      "issue": 250460,
+      "field": "status",
+      "at": "2017-07-11 23:06:23",
+      "from": "Needs Triage",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 250489,
+      "field": "status",
+      "at": "2017-04-18 17:10:06",
+      "from": "Needs Triage",
+      "to": "Closed"
+    },
+    {
+      "issue": 250489,
+      "field": "status",
+      "at": "2017-07-13 14:36:34",
+      "from": "Closed",
+      "to": "Open"
+    },
+    {
+      "issue": 250489,
+      "field": "status",
+      "at": "2017-07-13 14:55:42",
+      "from": "Open",
+      "to": "Needs Triage"
+    },
+    {
+      "issue": 250489,
+      "field": "status",
+      "at": "2017-07-19 19:44:05",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 250489,
+      "field": "status",
+      "at": "2018-10-31 17:33:18",
+      "from": "Open",
+      "to": "Ready for Work"
+    },
+    {
+      "issue": 250489,
+      "field": "status",
+      "at": "2019-01-29 11:45:23",
+      "from": "Ready for Work",
+      "to": "In Progress"
+    },
+    {
+      "issue": 250489,
+      "field": "status",
+      "at": "2019-02-14 16:14:23",
+      "from": "In Progress",
+      "to": "Closed"
+    },
+    {
+      "issue": 250496,
+      "field": "status",
+      "at": "2017-01-13 18:02:00",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 250534,
+      "field": "status",
+      "at": "2016-10-14 17:29:56",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249581,
+      "field": "link",
+      "at": "2019-02-06 14:40:11",
+      "to": "This issue depends on COMPASS-3289"
+    },
+    {
+      "issue": 249582,
+      "field": "link",
+      "at": "2019-02-06 14:39:57",
+      "to": "This issue depends on COMPASS-3289"
+    },
+    {
+      "issue": 249610,
+      "field": "link",
+      "at": "2019-01-31 09:56:01",
+      "to": "This issue is depended on by HELP-8801"
+    },
+    {
+      "issue": 249646,
+      "field": "link",
+      "at": "2019-02-04 14:44:15",
+      "to": "This issue related to COMPASS-3443"
+    },
+    {
+      "issue": 249646,
+      "field": "link",
+      "at": "2019-02-04 14:44:52",
+      "to": "This issue is related to COMPASS-2831"
+    },
+    {
+      "issue": 249646,
+      "field": "link",
+      "at": "2019-02-04 14:47:02",
+      "to": "This issue is related to COMPASS-2647"
+    },
+    {
+      "issue": 249654,
+      "field": "link",
+      "at": "2018-12-19 19:17:54",
+      "to": "This issue related to CLOUDP-36029"
+    },
+    {
+      "issue": 249654,
+      "field": "link",
+      "at": "2018-12-19 19:17:54",
+      "to": "This issue related to CLOUDP-36030"
+    },
+    {
+      "issue": 249654,
+      "field": "link",
+      "at": "2019-01-17 15:55:37",
+      "to": "This issue is depended on by CLOUDP-36887"
+    },
+    {
+      "issue": 249654,
+      "field": "link",
+      "at": "2019-01-17 15:55:50",
+      "to": "This issue is depended on by CLOUDP-36030"
+    },
+    {
+      "issue": 249654,
+      "field": "link",
+      "at": "2019-01-17 16:01:54",
+      "to": "This issue is depended on by CLOUDP-36886"
+    },
+    {
+      "issue": 249654,
+      "field": "link",
+      "at": "2019-01-17 16:02:05",
+      "to": null
+    },
+    {
+      "issue": 249654,
+      "field": "link",
+      "at": "2019-01-17 16:02:14",
+      "to": "This issue is depended on by CLOUDP-36029"
+    },
+    {
+      "issue": 249657,
+      "field": "link",
+      "at": "2019-02-13 12:00:27",
+      "to": "This issue is duplicated by COMPASS-3456"
+    },
+    {
+      "issue": 249664,
+      "field": "link",
+      "at": "2018-12-17 10:33:00",
+      "to": "This issue is related to COMPASS-1173"
+    },
+    {
+      "issue": 249726,
+      "field": "link",
+      "at": "2018-11-27 12:59:49",
+      "to": "This issue related to COMPASS-2547"
+    },
+    {
+      "issue": 249726,
+      "field": "link",
+      "at": "2019-01-03 13:18:53",
+      "to": "This issue related to COMPASS-1798"
+    },
+    {
+      "issue": 249726,
+      "field": "link",
+      "at": "2019-02-06 14:39:57",
+      "to": "This issue is depended on by COMPASS-3452"
+    },
+    {
+      "issue": 249726,
+      "field": "link",
+      "at": "2019-02-06 14:40:11",
+      "to": "This issue is depended on by COMPASS-3453"
+    },
+    {
+      "issue": 249773,
+      "field": "link",
+      "at": "2018-11-06 15:12:12",
+      "to": "This issue is related to COMPASS-3091"
+    },
+    {
+      "issue": 249773,
+      "field": "link",
+      "at": "2018-11-06 15:12:12",
+      "to": "This issue is related to COMPASS-1767"
+    },
+    {
+      "issue": 249773,
+      "field": "link",
+      "at": "2018-11-06 15:12:13",
+      "to": "This issue is related to COMPASS-3147"
+    },
+    {
+      "issue": 249773,
+      "field": "link",
+      "at": "2018-11-06 15:12:13",
+      "to": "This issue is related to COMPASS-3215"
+    },
+    {
+      "issue": 249820,
+      "field": "link",
+      "at": "2018-09-28 13:02:29",
+      "to": "This issue is related to COMPASS-2546"
+    },
+    {
+      "issue": 249820,
+      "field": "link",
+      "at": "2018-11-14 14:12:02",
+      "to": "This issue related to COMPASS-3214"
+    },
+    {
+      "issue": 250169,
+      "field": "link",
+      "at": "2018-11-27 13:37:28",
+      "to": "This issue duplicates COMPASS-2762"
+    },
+    {
+      "issue": 250195,
+      "field": "link",
+      "at": "2018-03-22 20:31:54",
+      "to": "This issue is depended on by COMPASS-2677"
+    },
+    {
+      "issue": 250195,
+      "field": "link",
+      "at": "2018-06-19 13:08:15",
+      "to": "This issue depends on COMPASS-2735"
+    },
+    {
+      "issue": 250195,
+      "field": "link",
+      "at": "2018-06-19 13:08:15",
+      "to": "This issue is depended on by COMPASS-2735"
+    },
+    {
+      "issue": 250244,
+      "field": "link",
+      "at": "2018-05-10 14:29:34",
+      "to": "This issue is related to COMPASS-2798"
+    },
+    {
+      "issue": 250244,
+      "field": "link",
+      "at": "2018-05-10 14:41:22",
+      "to": "This issue related to COMPASS-2844"
+    },
+    {
+      "issue": 250244,
+      "field": "link",
+      "at": "2018-07-27 14:18:45",
+      "to": "This issue is caused by NODE-1588"
+    },
+    {
+      "issue": 250244,
+      "field": "link",
+      "at": "2018-12-17 10:32:34",
+      "to": "This issue is related to COMPASS-1173"
+    },
+    {
+      "issue": 250450,
+      "field": "link",
+      "at": "2018-11-13 14:57:13",
+      "to": "This issue is duplicated by COMPASS-2501"
+    },
+    {
+      "issue": 250460,
+      "field": "link",
+      "at": "2017-10-11 20:28:55",
+      "to": "This issue related to COMPASS-2185"
+    },
+    {
+      "issue": 250460,
+      "field": "link",
+      "at": "2017-10-27 17:19:50",
+      "to": "This issue is documented by DOCSP-1291"
+    },
+    {
+      "issue": 250460,
+      "field": "link",
+      "at": "2018-01-17 02:59:33",
+      "to": null
+    },
+    {
+      "issue": 250460,
+      "field": "link",
+      "at": "2018-10-04 16:27:08",
+      "to": "This issue related to COMPASS-2232"
+    },
+    {
+      "issue": 250496,
+      "field": "link",
+      "at": "2018-10-04 16:27:09",
+      "to": "This issue related to COMPASS-2232"
+    },
+    {
+      "issue": 250534,
+      "field": "link",
+      "at": "2016-10-11 19:38:33",
+      "to": "This issue is related to INT-1692"
+    },
+    {
+      "issue": 250534,
+      "field": "link",
+      "at": "2016-11-30 04:02:37",
+      "to": "This issue is related to COMPASS-460"
+    },
+    {
+      "issue": 250534,
+      "field": "link",
+      "at": "2016-11-30 04:03:54",
+      "to": "This issue related to COMPASS-344"
+    },
+    {
+      "issue": 250534,
+      "field": "link",
+      "at": "2018-11-26 15:04:43",
+      "to": "This issue related to COMPASS-3280"
+    }
+  ],
+  "firstMoveAfter": [
+    {
+      "issue": 249575,
+      "field": "status",
+      "at": "2019-02-25 12:34:51",
+      "from": "Open",
+      "to": "Closed"
+    },
+    {
+      "issue": 249579,
+      "field": "status",
+      "at": "2019-02-22 14:07:16",
+      "from": "Ready for Work",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249581,
+      "field": "status",
+      "at": "2019-03-20 12:03:55",
+      "from": "Ready for Work",
+      "to": "Closed"
+    },
+    {
+      "issue": 249582,
+      "field": "status",
+      "at": "2019-02-27 15:44:26",
+      "from": "Ready for Work",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249587,
+      "field": "status",
+      "at": "2019-04-17 15:18:24",
+      "from": "Ready for Work",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249590,
+      "field": "status",
+      "at": "2019-03-04 13:54:51",
+      "from": "Ready for Work",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249599,
+      "field": "status",
+      "at": "2019-02-22 14:39:33",
+      "from": "Ready for Work",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249610,
+      "field": "status",
+      "at": "2019-02-22 11:17:37",
+      "from": "Open",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249646,
+      "field": "status",
+      "at": "2019-02-22 11:23:13",
+      "from": "Open",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249653,
+      "field": "status",
+      "at": "2019-02-22 11:28:05",
+      "from": "Ready for Work",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249654,
+      "field": "status",
+      "at": "2019-03-13 15:44:34",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249657,
+      "field": "status",
+      "at": "2019-02-25 12:34:42",
+      "from": "Waiting (Blocked)",
+      "to": "Closed"
+    },
+    {
+      "issue": 249664,
+      "field": "status",
+      "at": "2019-02-25 15:01:29",
+      "from": "Open",
+      "to": "Closed"
+    },
+    {
+      "issue": 249726,
+      "field": "status",
+      "at": "2019-02-18 14:00:34",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249745,
+      "field": "status",
+      "at": "2019-04-09 16:25:49",
+      "from": "Needs Triage",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249773,
+      "field": "status",
+      "at": "2019-04-09 17:18:11",
+      "from": "Ready for Work",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249814,
+      "field": "status",
+      "at": "2019-03-13 15:36:41",
+      "from": "Needs Triage",
+      "to": "Open"
+    },
+    {
+      "issue": 249820,
+      "field": "status",
+      "at": "2019-04-02 13:36:36",
+      "from": "Needs Triage",
+      "to": "In Progress"
+    },
+    {
+      "issue": 249832,
+      "field": "status",
+      "at": "2019-12-20 15:03:15",
+      "from": "Needs Triage",
+      "to": "Closed"
+    },
+    {
+      "issue": 249837,
+      "field": "status",
+      "at": "2020-03-24 19:08:56",
+      "from": "Ready for Work",
+      "to": "Closed"
+    },
+    {
+      "issue": 249845,
+      "field": "status",
+      "at": "2020-01-09 16:32:17",
+      "from": "Ready for Work",
+      "to": "Needs Triage"
+    },
+    {
+      "issue": 249890,
+      "field": "status",
+      "at": "2019-09-27 08:19:12",
+      "from": "Ready for Work",
+      "to": "Closed"
+    },
+    {
+      "issue": 250169,
+      "field": "status",
+      "at": "2020-03-24 19:07:12",
+      "from": "Needs Triage",
+      "to": "Closed"
+    },
+    {
+      "issue": 250195,
+      "field": "status",
+      "at": "2019-02-20 15:26:56",
+      "from": "Ready for Work",
+      "to": "Closed"
+    },
+    {
+      "issue": 250244,
+      "field": "status",
+      "at": "2019-02-25 15:01:13",
+      "from": "Open",
+      "to": "Closed"
+    },
+    {
+      "issue": 250384,
+      "field": "status",
+      "at": "2019-04-12 15:16:49",
+      "from": "Open",
+      "to": "Closed"
+    },
+    {
+      "issue": 250450,
+      "field": "status",
+      "at": "2019-03-07 11:02:41",
+      "from": "Debugging With Submitter",
+      "to": "Closed"
+    },
+    {
+      "issue": 250460,
+      "field": "status",
+      "at": "2019-05-20 09:17:37",
+      "from": "Ready for Work",
+      "to": "Open"
+    },
+    {
+      "issue": 250496,
+      "field": "status",
+      "at": "2019-10-08 14:39:59",
+      "from": "Open",
+      "to": "Needs Triage"
+    },
+    {
+      "issue": 250534,
+      "field": "status",
+      "at": "2019-04-02 12:28:54",
+      "from": "Open",
+      "to": "Closed"
+    }
+  ],
+  "links": [
+    {
+      "issue": 249581,
+      "name": "Depends",
+      "words": "depends on",
+      "direction": "OUTBOUND",
+      "target": 249726
+    },
+    {
+      "issue": 249582,
+      "name": "Depends",
+      "words": "depends on",
+      "direction": "OUTBOUND",
+      "target": 249726
+    },
+    {
+      "issue": 249726,
+      "name": "Depends",
+      "words": "is depended on by",
+      "direction": "INBOUND",
+      "target": 249582
+    },
+    {
+      "issue": 249726,
+      "name": "Depends",
+      "words": "is depended on by",
+      "direction": "INBOUND",
+      "target": 249581
+    },
+    {
+      "issue": 250195,
+      "name": "Depends",
+      "words": "depends on",
+      "direction": "OUTBOUND",
+      "target": 250195
+    },
+    {
+      "issue": 250195,
+      "name": "Depends",
+      "words": "is depended on by",
+      "direction": "INBOUND",
+      "target": 250195
+    }
+  ],
+  "sprints": [
+    {
+      "id": 3335,
+      "name": "Iteration Yuca",
+      "start": "2019-02-20 15:36:13",
+      "end": "2019-03-06 11:13:00"
+    },
+    {
+      "id": 3336,
+      "name": "Iteration Xiaolongbao",
+      "start": "2019-02-06 15:23:16",
+      "end": "2019-02-20 11:00:00"
+    },
+    {
+      "id": 3334,
+      "name": "Iteration Zucchini",
+      "start": "2019-03-06 15:24:25",
+      "end": "2019-03-20 11:01:00"
+    },
+    {
+      "id": 3331,
+      "name": "Iteration Cat",
+      "start": "2019-04-17 15:01:33",
+      "end": "2019-05-01 10:38:00"
+    },
+    {
+      "id": 3333,
+      "name": "Iteration Antelope",
+      "start": "2019-03-20 16:17:54",
+      "end": "2019-04-03 11:54:00"
+    },
+    {
+      "id": 3338,
+      "name": "Iteration Vol au Vent",
+      "start": "2019-01-09 15:31:06",
+      "end": "2019-01-23 11:08:00"
+    },
+    {
+      "id": 3332,
+      "name": "Iteration Bison",
+      "start": "2019-04-03 14:31:48",
+      "end": "2019-04-17 10:08:00"
+    },
+    {
+      "id": 3308,
+      "name": "Iteration Zebra",
+      "start": "2020-03-18 15:38:33",
+      "end": "2020-04-01 11:15:00"
+    },
+    {
+      "id": 3340,
+      "name": "Iteration Unagi",
+      "start": "2018-12-12 15:33:22",
+      "end": "2018-12-26 11:10:00"
+    },
+    {
+      "id": 3368,
+      "name": "Sprint R.A. the Rugged Man",
+      "start": "2018-04-25 14:29:42",
+      "end": "2018-05-02 14:29:00"
+    },
+    {
+      "id": 3324,
+      "name": "Iteration Jackal",
+      "start": "2019-07-24 14:37:25",
+      "end": "2019-08-07 10:14:00"
+    },
+    {
+      "id": 3351,
+      "name": "Iteration Icelandiccharr",
+      "start": "2018-08-22 14:20:42",
+      "end": "2018-08-29 14:20:00"
+    }
+  ]
+}

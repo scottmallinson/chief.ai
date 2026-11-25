@@ -58,3 +58,6 @@ labelled, and left out of the score.
   `FIXTURE_VERSION` in `run.mjs` or the judge prompt version when you do, and do not compare across.
 - The invention check is a heuristic for times, numbers and names. It is why the judge and the
   human ratings exist.
+
+Fixtures built from public datasets live in `public-data/`; see its README. They are evaluation
+only and are kept apart from anything that could become training data.

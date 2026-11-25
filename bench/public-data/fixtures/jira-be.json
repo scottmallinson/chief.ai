@@ -1,0 +1,735 @@
+{
+ "schema_version": 1,
+ "source": {
+  "dataset": "TAWOS v1.1",
+  "doi": "10.5522/04/21308124",
+  "licence": "Apache-2.0",
+  "project": {
+   "key": "BE",
+   "name": "Hyperledger Blockchain Explorer"
+  },
+  "asof": "2019-04-15"
+ },
+ "today": "2026-11-23",
+ "me": "Avery Quinn",
+ "search": {
+  "issues": [
+   {
+    "key": "BE-99",
+    "fields": {
+     "summary": "Artifact Publishing ",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-08-21T13:49:31.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-102",
+    "fields": {
+     "summary": "identify other nodes that are part of the network, organization",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-08-26T13:53:40.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-105",
+    "fields": {
+     "summary": "Data Visual Representation of the Network",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-08-26T13:55:07.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-107",
+    "fields": {
+     "summary": "Upgrading a chaincode from one version to another",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": "2027-07-16",
+     "updated": "2025-09-17T13:03:50.000+0000",
+     "issuelinks": [
+      {
+       "type": {
+        "name": "Blocks",
+        "inward": "is blocked by",
+        "outward": "blocks"
+       },
+       "inwardIssue": {
+        "key": "BE-71",
+        "fields": {
+         "status": {
+          "name": "In Progress",
+          "statusCategory": {
+           "key": "indeterminate"
+          }
+         }
+        }
+       }
+      }
+     ],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": [
+      {
+       "created": "2025-09-17T13:03:50.000+0000",
+       "items": [
+        {
+         "field": "Link",
+         "toString": "This issue is blocked by BE-71"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "key": "BE-108",
+    "fields": {
+     "summary": "Publishing to NPM registry",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-08-26T14:00:23.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-115",
+    "fields": {
+     "summary": "Documentation Update Epic",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-09-04T13:39:54.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-118",
+    "fields": {
+     "summary": "The explorer dashboard needs to show live statistics about transaction and blocks getting created.",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-09-15T13:28:44.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-119",
+    "fields": {
+     "summary": "Blocks and transactions details",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-09-15T13:32:43.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-127",
+    "fields": {
+     "summary": "Register and enroll new member",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": "2026-12-11",
+     "updated": "2025-10-10T15:33:51.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": [
+      {
+       "created": "2025-10-10T15:33:41.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "To Do",
+         "toString": "In Progress"
+        }
+       ]
+      },
+      {
+       "created": "2025-10-10T15:33:51.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "In Progress",
+         "toString": "To Do"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "key": "BE-158",
+    "fields": {
+     "summary": "Network level explorer views",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-10-16T18:29:57.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-159",
+    "fields": {
+     "summary": "Explorer view for a given User",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-10-16T18:31:35.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-184",
+    "fields": {
+     "summary": "Full Testing of Patch - Sprint #18",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-10-17T18:40:26.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-185",
+    "fields": {
+     "summary": "Full Testing of Patch - Sprint #19",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-10-17T18:40:53.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-186",
+    "fields": {
+     "summary": "Full Testing of Patch - Sprint #20",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-10-17T18:41:20.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-187",
+    "fields": {
+     "summary": "Full Testing of Patch - Sprint #21",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-10-17T18:41:46.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-226",
+    "fields": {
+     "summary": "Allow Explorer to work easily with other DLT platform Architectures",
+     "status": {
+      "name": "In Progress",
+      "statusCategory": {
+       "key": "indeterminate"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-12-29T20:20:52.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": [
+      {
+       "created": "2025-12-29T20:20:52.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "To Do",
+         "toString": "In Progress"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "key": "BE-253",
+    "fields": {
+     "summary": "Save user data for notifiications read/unread",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-12-09T14:05:40.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-254",
+    "fields": {
+     "summary": "Integrate HL Explorer with HLF CA  ",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": "2026-12-11",
+     "updated": "2025-12-09T22:30:01.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-264",
+    "fields": {
+     "summary": "Support for Hyperledger Sawtooth",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-12-19T12:13:13.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-266",
+    "fields": {
+     "summary": "Support for Corda",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2025-12-19T12:17:41.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-411",
+    "fields": {
+     "summary": "Consider switching from redux to redux-saga",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": "2026-12-11",
+     "updated": "2026-02-27T20:25:15.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "BE-459",
+    "fields": {
+     "summary": "Design review for the LDAP integration in HLExplorer",
+     "status": {
+      "name": "To Do",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Medium"
+     },
+     "duedate": null,
+     "updated": "2026-04-03T19:00:31.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   }
+  ]
+ },
+ "answer": {
+  "open": [
+   "BE-99",
+   "BE-102",
+   "BE-105",
+   "BE-107",
+   "BE-108",
+   "BE-115",
+   "BE-118",
+   "BE-119",
+   "BE-127",
+   "BE-158",
+   "BE-159",
+   "BE-184",
+   "BE-185",
+   "BE-186",
+   "BE-187",
+   "BE-226",
+   "BE-253",
+   "BE-254",
+   "BE-264",
+   "BE-266",
+   "BE-411",
+   "BE-459"
+  ],
+  "not_started": [
+   "BE-99",
+   "BE-102",
+   "BE-105",
+   "BE-107",
+   "BE-108",
+   "BE-115",
+   "BE-118",
+   "BE-119",
+   "BE-127",
+   "BE-158",
+   "BE-159",
+   "BE-184",
+   "BE-185",
+   "BE-186",
+   "BE-187",
+   "BE-253",
+   "BE-254",
+   "BE-264",
+   "BE-266",
+   "BE-411",
+   "BE-459"
+  ],
+  "in_progress": [
+   "BE-226"
+  ],
+  "finished": [],
+  "blocked": {
+   "BE-107": [
+    "BE-71"
+   ]
+  },
+  "overdue": [],
+  "due_this_week": [],
+  "no_due_date": [
+   "BE-99",
+   "BE-102",
+   "BE-105",
+   "BE-108",
+   "BE-115",
+   "BE-118",
+   "BE-119",
+   "BE-158",
+   "BE-159",
+   "BE-184",
+   "BE-185",
+   "BE-186",
+   "BE-187",
+   "BE-226",
+   "BE-253",
+   "BE-264",
+   "BE-266",
+   "BE-459"
+  ],
+  "people": [
+   "Avery Quinn"
+  ]
+ }
+}

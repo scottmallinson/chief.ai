@@ -2537,4 +2537,97 @@ mod tests {
 
         assert_eq!(describe(&stateless), "PROJ-7 Migrate the tenant");
     }
+
+    /// The boards in `bench/public-data/fixtures` are rebuilt from the TAWOS
+    /// dataset and carry an answer key worked out from their own JSON. This
+    /// reads them with the code Chief reads Jira with and holds that to the
+    /// key, so a fixture the real reader would misread — or a reader change
+    /// that would misread a fixture — fails here and not in a benchmark.
+    #[test]
+    fn reads_the_public_data_fixtures_as_their_answer_key_says() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let fixtures = [
+            include_str!("../../../bench/public-data/fixtures/jira-compass.json"),
+            include_str!("../../../bench/public-data/fixtures/jira-be.json"),
+            include_str!("../../../bench/public-data/fixtures/jira-mesos.json"),
+        ];
+
+        let mut blocked_seen = 0;
+
+        for text in fixtures {
+            let fixture: serde_json::Value = serde_json::from_str(text).expect("fixture is JSON");
+            let found = issues_at(&fixture["search"], "https://example.atlassian.net");
+            let answer = &fixture["answer"];
+
+            let keys = |name: &str| -> BTreeSet<String> {
+                answer[name]
+                    .as_array()
+                    .expect("a list")
+                    .iter()
+                    .map(|key| key.as_str().expect("a key").to_string())
+                    .collect()
+            };
+            let of_kind = |kind: &str| -> BTreeSet<String> {
+                found
+                    .iter()
+                    .filter(|issue| issue.detail.status_kind == kind)
+                    .map(|issue| issue.key.clone())
+                    .collect()
+            };
+
+            assert!(!found.is_empty(), "the reader found no issues at all");
+            assert_eq!(of_kind("new"), keys("not_started"));
+            assert_eq!(of_kind("indeterminate"), keys("in_progress"));
+            assert_eq!(of_kind("done"), keys("finished"));
+
+            let open: BTreeSet<String> = of_kind("new")
+                .union(&of_kind("indeterminate"))
+                .cloned()
+                .collect();
+            assert_eq!(open, keys("open"));
+
+            let no_due: BTreeSet<String> = found
+                .iter()
+                .filter(|issue| issue.detail.due.is_none())
+                .map(|issue| issue.key.clone())
+                .collect();
+            let finished_no_due: BTreeSet<String> =
+                no_due.intersection(&keys("finished")).cloned().collect();
+            let open_no_due: BTreeSet<String> =
+                no_due.difference(&finished_no_due).cloned().collect();
+            assert_eq!(open_no_due, keys("no_due_date"));
+
+            let blocked: BTreeMap<String, Vec<String>> = found
+                .iter()
+                .filter(|issue| !issue.detail.blocked_by.is_empty())
+                .filter(|issue| issue.detail.status_kind != "done")
+                .map(|issue| (issue.key.clone(), issue.detail.blocked_by.clone()))
+                .collect();
+            let wanted: BTreeMap<String, Vec<String>> = answer["blocked"]
+                .as_object()
+                .expect("an object")
+                .iter()
+                .map(|(key, by)| {
+                    (
+                        key.clone(),
+                        by.as_array()
+                            .expect("a list")
+                            .iter()
+                            .map(|k| k.as_str().expect("a key").to_string())
+                            .collect(),
+                    )
+                })
+                .collect();
+            assert_eq!(blocked, wanted);
+            blocked_seen += blocked.len();
+
+            // The search asked for a changelog, so every issue says it has one.
+            assert!(found.iter().all(|issue| issue.detail.history));
+            assert!(found.iter().all(|issue| issue.detail.assignee.is_some()));
+        }
+
+        // A key that is empty everywhere would pass every comparison above.
+        assert!(blocked_seen > 0, "no fixture exercised a blocker");
+    }
 }

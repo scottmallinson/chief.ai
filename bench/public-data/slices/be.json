@@ -1,0 +1,602 @@
+{
+  "source": {
+    "dataset": "TAWOS v1.1",
+    "doi": "10.5522/04/21308124",
+    "licence": "Apache-2.0",
+    "project": {
+      "key": "BE",
+      "name": "Hyperledger Blockchain Explorer"
+    },
+    "asof": "2019-04-15"
+  },
+  "me": 144217,
+  "issues": [
+    {
+      "id": 204709,
+      "key": "BE-459",
+      "title": "\"Design review for the LDAP integration in HLExplorer\"",
+      "type": "Task",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-08-24 19:00:31",
+      "resolved": "2019-05-17 16:32:51",
+      "updated": "2019-05-17 16:32:51",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204754,
+      "key": "BE-411",
+      "title": "\"Consider switching from redux to redux-saga\"",
+      "type": "Improvement",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-07-20 20:25:15",
+      "resolved": "2019-04-29 15:09:13",
+      "updated": "2019-04-29 15:09:13",
+      "assignee": 144217,
+      "sprint": 2645,
+      "board": true
+    },
+    {
+      "id": 204893,
+      "key": "BE-266",
+      "title": "\"Support for Corda\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-05-11 12:17:41",
+      "resolved": "2019-12-06 22:30:32",
+      "updated": "2019-12-06 22:30:32",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204895,
+      "key": "BE-264",
+      "title": "\"Support for Hyperledger Sawtooth\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-05-11 12:13:13",
+      "resolved": null,
+      "updated": "2018-05-21 20:12:01",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204905,
+      "key": "BE-254",
+      "title": "\"Integrate HL Explorer with HLF CA  \"",
+      "type": "Improvement",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-05-01 22:30:01",
+      "resolved": "2019-04-22 15:35:15",
+      "updated": "2019-04-22 15:35:15",
+      "assignee": 144217,
+      "sprint": 2645,
+      "board": true
+    },
+    {
+      "id": 204906,
+      "key": "BE-253",
+      "title": "\"Save user data for notifiications read/unread\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-05-01 14:05:40",
+      "resolved": null,
+      "updated": "2018-05-01 14:05:41",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204931,
+      "key": "BE-226",
+      "title": "\"Allow Explorer to work easily with other DLT platform Architectures\"",
+      "type": "Epic",
+      "priority": "Medium",
+      "finalStatus": "In Progress",
+      "created": "2018-04-06 14:43:42",
+      "resolved": null,
+      "updated": "2019-08-02 14:01:54",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204969,
+      "key": "BE-187",
+      "title": "\"Full Testing of Patch - Sprint #21\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-03-09 18:41:46",
+      "resolved": "2020-03-31 22:41:08",
+      "updated": "2020-03-31 22:41:08",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204970,
+      "key": "BE-186",
+      "title": "\"Full Testing of Patch - Sprint #20\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-03-09 18:41:20",
+      "resolved": "2020-04-01 16:31:58",
+      "updated": "2020-04-01 16:31:58",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204971,
+      "key": "BE-185",
+      "title": "\"Full Testing of Patch - Sprint #19\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-03-09 18:40:53",
+      "resolved": "2020-04-01 16:31:27",
+      "updated": "2020-04-01 16:31:27",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204972,
+      "key": "BE-184",
+      "title": "\"Full Testing of Patch - Sprint #18\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-03-09 18:40:26",
+      "resolved": "2020-04-01 16:30:45",
+      "updated": "2020-04-01 16:30:45",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204995,
+      "key": "BE-159",
+      "title": "\"Explorer view for a given User\"",
+      "type": "Improvement",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-03-08 18:31:35",
+      "resolved": null,
+      "updated": "2018-03-08 18:31:35",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 204996,
+      "key": "BE-158",
+      "title": "\"Network level explorer views\"",
+      "type": "Improvement",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-03-08 18:29:57",
+      "resolved": null,
+      "updated": "2019-08-15 11:54:08",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 205026,
+      "key": "BE-127",
+      "title": "\"Register and enroll new member\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-02-06 15:17:28",
+      "resolved": "2019-04-26 17:07:22",
+      "updated": "2019-04-26 19:37:05",
+      "assignee": 144217,
+      "sprint": 2645,
+      "board": true
+    },
+    {
+      "id": 205034,
+      "key": "BE-119",
+      "title": "\"Blocks and transactions details\"",
+      "type": "Epic",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-02-05 13:32:43",
+      "resolved": null,
+      "updated": "2018-04-23 15:11:42",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 205035,
+      "key": "BE-118",
+      "title": "\"The explorer dashboard needs to show live statistics about transaction and blocks getting created.\"",
+      "type": "Epic",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-02-05 13:28:44",
+      "resolved": null,
+      "updated": "2018-02-07 12:32:48",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 205038,
+      "key": "BE-115",
+      "title": "\"Documentation Update Epic\"",
+      "type": "Epic",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-01-25 13:39:54",
+      "resolved": null,
+      "updated": "2019-12-07 12:05:12",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 205044,
+      "key": "BE-108",
+      "title": "\"Publishing to NPM registry\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-01-16 14:00:23",
+      "resolved": "2020-04-06 13:10:08",
+      "updated": "2020-04-06 13:10:08",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 205045,
+      "key": "BE-107",
+      "title": "\"Upgrading a chaincode from one version to another\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "Complete",
+      "created": "2018-01-16 13:56:26",
+      "resolved": "2019-11-22 22:04:18",
+      "updated": "2019-11-22 22:04:18",
+      "assignee": 144217,
+      "sprint": 2635,
+      "board": true
+    },
+    {
+      "id": 205047,
+      "key": "BE-105",
+      "title": "\"Data Visual Representation of the Network\"",
+      "type": "Epic",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-01-16 13:55:07",
+      "resolved": null,
+      "updated": "2018-03-09 15:45:50",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 205048,
+      "key": "BE-102",
+      "title": "\"identify other nodes that are part of the network, organization\"",
+      "type": "Epic",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-01-16 13:53:40",
+      "resolved": null,
+      "updated": "2018-06-04 13:49:17",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 205051,
+      "key": "BE-99",
+      "title": "\"Artifact Publishing \"",
+      "type": "Epic",
+      "priority": "Medium",
+      "finalStatus": "To Do",
+      "created": "2018-01-11 13:49:31",
+      "resolved": null,
+      "updated": "2018-02-07 13:50:34",
+      "assignee": 144217,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 205075,
+      "key": "BE-71",
+      "title": "\"Deploying a chaincode\"",
+      "type": "New Feature",
+      "priority": "Medium",
+      "finalStatus": "In Progress",
+      "created": "2017-12-20 07:59:07",
+      "resolved": null,
+      "updated": "2018-06-05 15:43:29",
+      "assignee": 144167,
+      "sprint": null,
+      "board": false
+    }
+  ],
+  "changes": [
+    {
+      "issue": 204931,
+      "field": "status",
+      "at": "2018-05-21 20:20:52",
+      "from": "To Do",
+      "to": "In Progress"
+    },
+    {
+      "issue": 205026,
+      "field": "status",
+      "at": "2018-03-02 15:33:41",
+      "from": "To Do",
+      "to": "In Progress"
+    },
+    {
+      "issue": 205026,
+      "field": "status",
+      "at": "2018-03-02 15:33:51",
+      "from": "In Progress",
+      "to": "To Do"
+    },
+    {
+      "issue": 205075,
+      "field": "status",
+      "at": "2018-05-16 13:37:25",
+      "from": "To Do",
+      "to": "In Progress"
+    },
+    {
+      "issue": 204893,
+      "field": "link",
+      "at": "2018-05-11 12:17:41",
+      "to": "This issue relates to BE-13"
+    },
+    {
+      "issue": 204893,
+      "field": "link",
+      "at": "2018-05-21 20:12:01",
+      "to": "This issue relates to BE-285"
+    },
+    {
+      "issue": 204895,
+      "field": "link",
+      "at": "2018-05-11 12:13:13",
+      "to": "This issue relates to BE-13"
+    },
+    {
+      "issue": 204895,
+      "field": "link",
+      "at": "2018-05-21 20:12:01",
+      "to": "This issue relates to BE-285"
+    },
+    {
+      "issue": 204969,
+      "field": "link",
+      "at": "2018-03-09 18:41:47",
+      "to": "This issue clones BE-186"
+    },
+    {
+      "issue": 204970,
+      "field": "link",
+      "at": "2018-03-09 18:41:20",
+      "to": "This issue clones BE-185"
+    },
+    {
+      "issue": 204970,
+      "field": "link",
+      "at": "2018-03-09 18:41:47",
+      "to": "This issue is cloned by BE-187"
+    },
+    {
+      "issue": 204970,
+      "field": "link",
+      "at": "2018-03-09 18:42:13",
+      "to": "This issue is cloned by BE-188"
+    },
+    {
+      "issue": 204971,
+      "field": "link",
+      "at": "2018-03-09 18:40:53",
+      "to": "This issue clones BE-184"
+    },
+    {
+      "issue": 204971,
+      "field": "link",
+      "at": "2018-03-09 18:41:20",
+      "to": "This issue is cloned by BE-186"
+    },
+    {
+      "issue": 204972,
+      "field": "link",
+      "at": "2018-03-09 18:40:26",
+      "to": "This issue clones BE-183"
+    },
+    {
+      "issue": 204972,
+      "field": "link",
+      "at": "2018-03-09 18:40:53",
+      "to": "This issue is cloned by BE-185"
+    },
+    {
+      "issue": 205045,
+      "field": "link",
+      "at": "2018-02-07 13:03:50",
+      "to": "This issue is blocked by BE-71"
+    },
+    {
+      "issue": 205075,
+      "field": "link",
+      "at": "2018-02-07 13:03:50",
+      "to": "This issue blocks BE-107"
+    }
+  ],
+  "firstMoveAfter": [
+    {
+      "issue": 204709,
+      "field": "status",
+      "at": "2019-05-17 16:32:51",
+      "from": "To Do",
+      "to": "Complete"
+    },
+    {
+      "issue": 204754,
+      "field": "status",
+      "at": "2019-04-29 15:08:54",
+      "from": "To Do",
+      "to": "In Review"
+    },
+    {
+      "issue": 204893,
+      "field": "status",
+      "at": "2019-12-06 22:30:32",
+      "from": "To Do",
+      "to": "Complete"
+    },
+    {
+      "issue": 204905,
+      "field": "status",
+      "at": "2019-04-22 15:35:15",
+      "from": "To Do",
+      "to": "Complete"
+    },
+    {
+      "issue": 204969,
+      "field": "status",
+      "at": "2020-03-31 22:41:08",
+      "from": "To Do",
+      "to": "Complete"
+    },
+    {
+      "issue": 204970,
+      "field": "status",
+      "at": "2020-04-01 16:31:58",
+      "from": "To Do",
+      "to": "Complete"
+    },
+    {
+      "issue": 204971,
+      "field": "status",
+      "at": "2020-04-01 16:31:27",
+      "from": "To Do",
+      "to": "Complete"
+    },
+    {
+      "issue": 204972,
+      "field": "status",
+      "at": "2020-04-01 16:30:45",
+      "from": "To Do",
+      "to": "Complete"
+    },
+    {
+      "issue": 205026,
+      "field": "status",
+      "at": "2019-04-26 17:07:22",
+      "from": "To Do",
+      "to": "Complete"
+    },
+    {
+      "issue": 205044,
+      "field": "status",
+      "at": "2020-04-06 13:10:08",
+      "from": "To Do",
+      "to": "Complete"
+    },
+    {
+      "issue": 205045,
+      "field": "status",
+      "at": "2019-11-22 22:04:18",
+      "from": "To Do",
+      "to": "Complete"
+    }
+  ],
+  "links": [
+    {
+      "issue": 204969,
+      "name": "Cloners",
+      "words": "clones",
+      "direction": "OUTBOUND",
+      "target": 204970
+    },
+    {
+      "issue": 204970,
+      "name": "Cloners",
+      "words": "clones",
+      "direction": "OUTBOUND",
+      "target": 204971
+    },
+    {
+      "issue": 204970,
+      "name": "Cloners",
+      "words": "is cloned by",
+      "direction": "INBOUND",
+      "target": 204969
+    },
+    {
+      "issue": 204971,
+      "name": "Cloners",
+      "words": "clones",
+      "direction": "OUTBOUND",
+      "target": 204972
+    },
+    {
+      "issue": 204971,
+      "name": "Cloners",
+      "words": "is cloned by",
+      "direction": "INBOUND",
+      "target": 204970
+    },
+    {
+      "issue": 204972,
+      "name": "Cloners",
+      "words": "is cloned by",
+      "direction": "INBOUND",
+      "target": 204971
+    },
+    {
+      "issue": 205045,
+      "name": "Blocks",
+      "words": "is blocked by",
+      "direction": "INBOUND",
+      "target": 205075
+    },
+    {
+      "issue": 205075,
+      "name": "Blocks",
+      "words": "blocks",
+      "direction": "OUTBOUND",
+      "target": 205045
+    }
+  ],
+  "sprints": [
+    {
+      "id": 2645,
+      "name": "BE Sprint 31",
+      "start": "2019-04-22 13:00:24",
+      "end": "2019-05-03 22:27:00"
+    },
+    {
+      "id": 2635,
+      "name": "BE Sprint 41",
+      "start": "2019-11-25 13:20:00",
+      "end": "2019-12-06 22:20:00"
+    }
+  ]
+}
