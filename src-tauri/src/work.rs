@@ -612,7 +612,8 @@ const HOW_TO_USE: &str = "Answer from these lines only, in plain text. To priori
     For what was done, use the completed list and its dates. A list that is empty means there is \
     nothing; one under not_read could not be read, so say that and do not guess. Say how many \
     more are under not_shown. If my_recently_completed_work_covers is shorter than the period \
-    the user asked about, call this tool again with more days.";
+    the user asked about, call this tool again with more days. These lines do not say what is \
+    blocked, overdue or due soon: if asked, say so and point to the /items command, which does.";
 
 #[cfg(test)]
 mod tests {
