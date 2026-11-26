@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.27.0 (2026-11-26)
+
+### Features
+
+- **agent:** count Jira issues with a linked blocker in code for the overview ([973d264](https://github.com/scottmallinson/chief.ai/commit/973d264ef0ce9c0dcc18b13074185f738456b712))
+- **agent:** report a blocked status as a status when nothing has a linked blocker ([1c4864a](https://github.com/scottmallinson/chief.ai/commit/1c4864a1ae1f363d8a11836e6278a2cfa9361140))
+- **agent:** show every open Jira line and say nothing is blocked when none is ([c68f7b4](https://github.com/scottmallinson/chief.ai/commit/c68f7b42169d4986c943ecf368e3f76a709f5f94))
+- **agent:** do the date arithmetic and carry the category on Jira overview lines ([8418d07](https://github.com/scottmallinson/chief.ai/commit/8418d078e03b6504a0a8455dd541143035012daa))
+- **agent:** show due date and blockers on Jira lines in the work overview ([45e321c](https://github.com/scottmallinson/chief.ai/commit/45e321c42bffb12d83f36b09339e1d1d5e7145fe))
+
 ## 0.26.2 (2026-11-11)
 
 ### Fixes
