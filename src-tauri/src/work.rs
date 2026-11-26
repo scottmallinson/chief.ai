@@ -108,12 +108,16 @@ pub struct Scope {
 }
 
 /// One source's answer, before it is folded into a [`Part`].
+#[derive(Default)]
 struct Reading {
     name: &'static str,
     /// `Some` when the source answered, however empty.
     lines: Option<Vec<String>>,
     /// Why each connected account that did not answer could not be read.
     failed: Vec<String>,
+    /// More lines than the question's usual limit, for a source whose lines
+    /// are what the question is answered from.
+    limit: Option<usize>,
 }
 
 impl Reading {
@@ -123,7 +127,13 @@ impl Reading {
             name,
             lines: None,
             failed: Vec::new(),
+            limit: None,
         }
+    }
+
+    fn up_to(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
     }
 
     fn of<T>(name: &'static str, found: Found<T>, line: impl Fn(&T) -> Option<String>) -> Self {
@@ -133,6 +143,7 @@ impl Reading {
                 .answered
                 .then(|| found.items.iter().filter_map(&line).collect()),
             failed: found.failed,
+            limit: None,
         }
     }
 }
@@ -142,6 +153,7 @@ fn part(readings: Vec<Reading>, limit: usize) -> Part {
 
     for reading in readings {
         if let Some(mut lines) = reading.lines {
+            let limit = reading.limit.unwrap_or(limit);
             part.read.push(reading.name);
             part.more += lines.len().saturating_sub(limit);
             lines.truncate(limit);
@@ -183,12 +195,7 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
             {
                 let mut jira = sources::jira(context, None).await;
                 if jira.answered {
-                    jira_linked_blockers = Some(
-                        jira.items
-                            .iter()
-                            .filter(|issue| !issue.detail.blocked_by.is_empty())
-                            .count(),
-                    );
+                    jira_linked_blockers = Some(linked_blockers(&jira.items));
                 }
                 // Only some lines can be shown, so the ones a question about
                 // blocked, overdue or in-progress work needs come first.
@@ -197,9 +204,10 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
                 Reading::of("Jira", jira, |issue| {
                     Some(crate::atlassian::describe_with_facts(issue, today))
                 })
+                .up_to(limit.max(usize::from(recipe::PER_SOURCE)))
             },
         ],
-        limit.max(usize::from(recipe::PER_SOURCE)),
+        limit,
     );
 
     let reviews = part(
@@ -290,6 +298,14 @@ fn last_week(today: NaiveDate) -> NaiveDate {
     today - Duration::days(6)
 }
 
+/// How many of these open Jira issues a linked, unfinished issue blocks.
+fn linked_blockers(issues: &[crate::atlassian::Issue]) -> usize {
+    issues
+        .iter()
+        .filter(|issue| !issue.detail.blocked_by.is_empty())
+        .count()
+}
+
 /// "today", "yesterday" or "N days ago".
 fn when(day: NaiveDate, today: NaiveDate) -> String {
     match (today - day).num_days() {
@@ -370,6 +386,7 @@ async fn pull_requests(
                     .unwrap_or_default(),
             ),
             failed: Vec::new(),
+            ..Reading::default()
         },
         Err(github::Error::NotConnected) => Reading::absent("GitHub"),
         Err(error) => {
@@ -378,6 +395,7 @@ async fn pull_requests(
                 name: "GitHub",
                 lines: None,
                 failed: vec![error.to_string()],
+                ..Reading::default()
             }
         }
     }
@@ -430,6 +448,7 @@ async fn merged_pull_requests(
         name: "GitHub",
         lines: answered.then_some(lines),
         failed,
+        ..Reading::default()
     }
 }
 
@@ -519,6 +538,7 @@ async fn day_meetings(context: &Context, now: DateTime<Local>) -> Vec<Reading> {
             None
         },
         failed: calendar_failed,
+        ..Reading::default()
     });
 
     readings
@@ -710,6 +730,7 @@ mod tests {
             name,
             lines: lines.map(|lines| lines.iter().map(ToString::to_string).collect()),
             failed: failed.iter().map(ToString::to_string).collect(),
+            ..Reading::default()
         }
     }
 
@@ -752,6 +773,72 @@ mod tests {
     /// answer can say so.
     ///
     /// Proved by dropping the `more` count: the model is not told.
+    fn jira_issue(key: &str, blocked_by: &[&str]) -> crate::atlassian::Issue {
+        crate::atlassian::Issue {
+            key: key.to_string(),
+            summary: "Something".to_string(),
+            status: "Open".to_string(),
+            url: None,
+            resolved: None,
+            detail: crate::atlassian::Detail {
+                blocked_by: blocked_by.iter().map(|k| (*k).to_string()).collect(),
+                ..crate::atlassian::Detail::default()
+            },
+        }
+    }
+
+    #[test]
+    fn counts_the_jira_issues_a_linked_issue_blocks() {
+        let issues = [
+            jira_issue("A-1", &[]),
+            jira_issue("A-2", &["A-9"]),
+            jira_issue("A-3", &["A-9", "A-8"]),
+        ];
+
+        assert_eq!(linked_blockers(&issues), 2);
+        assert_eq!(linked_blockers(&issues[..1]), 0);
+    }
+
+    #[test]
+    fn the_count_is_in_the_result_only_when_jira_was_read() {
+        let mut read = Work {
+            open: Part {
+                read: vec!["Jira"],
+                lines: vec!["A-1 Something [Open]".to_string()],
+                ..Part::default()
+            },
+            ..Work::default()
+        };
+
+        assert!(read
+            .as_tool_result()
+            .expect("a result")
+            .get("jira_issues_with_a_linked_blocker")
+            .is_none());
+
+        read.jira_linked_blockers = Some(0);
+        assert_eq!(
+            read.as_tool_result().expect("a result")["jira_issues_with_a_linked_blocker"],
+            0
+        );
+    }
+
+    #[test]
+    fn a_source_asked_for_more_lines_keeps_them_and_the_rest_keep_the_limit() {
+        let lines = |n: usize| (0..n).map(|i| format!("line {i}")).collect::<Vec<_>>();
+        let reading = |name: &'static str| Reading {
+            name,
+            lines: Some(lines(12)),
+            failed: Vec::new(),
+            limit: None,
+        };
+
+        let kept = part(vec![reading("GitHub"), reading("Jira").up_to(25)], 8);
+
+        assert_eq!(kept.lines.len(), 8 + 12);
+        assert_eq!(kept.more, 4);
+    }
+
     #[test]
     fn lines_beyond_the_limit_are_counted_not_lost_silently() {
         let lines: Vec<String> = (1..=11).map(|n| format!("item {n}")).collect();

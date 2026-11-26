@@ -1571,7 +1571,7 @@ async fn play_jira(id: &str, engine_url: &str, tier: Tier) -> Played {
         "jira-ask-blocked-none-compass" => (
             "Is anything of mine blocked in Jira?",
             json!({
-                "must_any": [["no ", "none", "nothing", "not blocked", "isn't", "aren't"]],
+                "must_any": [["no ", "none", "nothing", "not blocked", "isn't", "aren't", "0 jira issues", "zero"]],
                 "allowed_keys": keys_of(&answer_key["open"]),
             }),
         ),
