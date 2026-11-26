@@ -186,7 +186,7 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
                 })
             },
         ],
-        limit,
+        limit.max(usize::from(recipe::PER_SOURCE)),
     );
 
     let reviews = part(
@@ -618,8 +618,9 @@ const HOW_TO_USE: &str = "Answer from these lines only, in plain text. To priori
     on first, then urgent or in-progress open work, mentioning a meeting that limits the time. \
     For what was done, use the completed list and its dates. A list that is empty means there is \
     nothing; one under not_read could not be read, so say that and do not guess. Say how many \
-    more are under not_shown. If my_recently_completed_work_covers is shorter than the period \
-    the user asked about, call this tool again with more days.";
+    more are under not_shown. Only blocked work \
+    says 'blocked by': if no line does, nothing is blocked. If my_recently_completed_work_covers \
+    is shorter than the period the user asked about, call this tool again with more days.";
 
 #[cfg(test)]
 mod tests {
