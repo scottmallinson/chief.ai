@@ -89,6 +89,10 @@ pub struct Work {
     pub mail: Part,
     /// The day `done` reaches back to, so an answer can say how far it looked.
     pub done_since: Option<NaiveDate>,
+    /// How many open Jira issues have a linked blocker, counted in code, when
+    /// Jira was read: "is anything blocked" is answered from a number, not by
+    /// the model reading the lines for the word.
+    pub jira_linked_blockers: Option<usize>,
 }
 
 /// What to read, and how much of it.
@@ -162,6 +166,7 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
     let today = now.date_naive();
     let limit = scope.limit;
 
+    let mut jira_linked_blockers = None;
     let open = part(
         vec![
             pull_requests(context, PullRequestState::Open, Whose::Mine, |pr| {
@@ -177,6 +182,14 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
             }),
             {
                 let mut jira = sources::jira(context, None).await;
+                if jira.answered {
+                    jira_linked_blockers = Some(
+                        jira.items
+                            .iter()
+                            .filter(|issue| !issue.detail.blocked_by.is_empty())
+                            .count(),
+                    );
+                }
                 // Only some lines can be shown, so the ones a question about
                 // blocked, overdue or in-progress work needs come first.
                 jira.items
@@ -245,6 +258,7 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
     };
 
     Work {
+        jira_linked_blockers,
         open,
         reviews,
         done,
@@ -595,6 +609,13 @@ impl Work {
             );
         }
 
+        if let Some(count) = self.jira_linked_blockers {
+            result.insert(
+                "jira_issues_with_a_linked_blocker".to_string(),
+                json!(count),
+            );
+        }
+
         if !not_read.is_empty() {
             result.insert("not_read".to_string(), Value::Array(not_read));
         }
@@ -618,10 +639,10 @@ const HOW_TO_USE: &str = "Answer from these lines only, in plain text. To priori
     on first, then urgent or in-progress open work, mentioning a meeting that limits the time. \
     For what was done, use the completed list and its dates. A list that is empty means there is \
     nothing; one under not_read could not be read, so say that and do not guess. Say how many \
-    more are under not_shown. A line says 'blocked by' \
-    only when a linked issue blocks it. If no line does, say that nothing has a linked blocker; \
-    you may add an issue whose status is named blocked, as its status and without inventing a \
-    cause. If my_recently_completed_work_covers is shorter than the period the user asked about, call this tool again with more days.";
+    more are under not_shown. jira_issues_with_a_linked_blocker \
+    counts the Jira issues a linked issue blocks, and a line says 'blocked by' for each. If it is \
+    0, say that nothing has a linked blocker; you may add an issue whose status is named blocked, \
+    as its status and without inventing a cause. If my_recently_completed_work_covers is shorter than the period the user asked about, call this tool again with more days.";
 
 #[cfg(test)]
 mod tests {
