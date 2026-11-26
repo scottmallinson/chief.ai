@@ -206,7 +206,15 @@ export function inventedThings(answer, shown) {
         const stem = key.replace(/'s?$/, '');
         const joined =
           stem.includes('-') && stem.split('-').every((part) => !part || known.has(part));
-        if (!known.has(key) && !known.has(stem) && !joined && !COMMON_CAPITALISED.has(key))
+        // A dotted identifier the material has, whole ("Agent.AttachInput"), is the material's.
+        const verbatim = /[._]/.test(clean) && seen.includes(key);
+        if (
+          !known.has(key) &&
+          !known.has(stem) &&
+          !joined &&
+          !verbatim &&
+          !COMMON_CAPITALISED.has(key)
+        )
           found.push(`name ${clean}`);
       }
       // "Dr. Smith": the full stop after a title does not end a sentence.
@@ -217,6 +225,65 @@ export function inventedThings(answer, shown) {
   }
 
   return [...new Set(found)];
+}
+
+const ISSUE_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+
+/** Whether one line of the answer names both. "A is blocked by B" is a claim about the pair. */
+function namedTogether(answer, a, b) {
+  return answer
+    .split('\n')
+    .some((line) => normal(line).includes(normal(a)) && normal(line).includes(normal(b)));
+}
+
+/**
+ * Whether each issue is under the heading `/items` puts it under. The answer is cut at its
+ * `## ` lines; a heading is found by its name, and says how many belong in `(n)`. A section shows
+ * twelve lines, so where more belong, only the ones shown are held to the section.
+ */
+function placement(answer, expected) {
+  const parts = new Map();
+  let at = null;
+  for (const line of answer.split('\n')) {
+    const heading = /^##\s+(.*)$/.exec(line);
+    if (heading) {
+      at = heading[1].trim();
+      parts.set(at, []);
+    } else if (at !== null) parts.get(at).push(line);
+  }
+  const home = new Map();
+  for (const [name, section] of Object.entries(expected))
+    for (const k of section.keys) home.set(k, name);
+
+  const checks = [];
+  const misplaced = [];
+  for (const [name, section] of Object.entries(expected)) {
+    const found = [...parts.keys()].find((h) => h.startsWith(name));
+    if (section.count === 0) {
+      checks.push({ term: `no section "${name}"`, ok: found === undefined });
+      continue;
+    }
+    if (found === undefined) {
+      checks.push({ term: `section "${name}"`, ok: false });
+      continue;
+    }
+    const counted = new RegExp(`\\(${section.count}\\)\\s*$`).test(found);
+    // "Blocked by ENG-9" names the thing in the way, which may be an issue of its own under
+    // another heading; it is a reference there, not a placement.
+    const text = parts
+      .get(found)
+      .join('\n')
+      .replace(/blocked by\s+[A-Z][A-Z0-9]+-\d+/gi, '');
+    const here = new Set(text.match(ISSUE_KEY) ?? []);
+    const wrong = [...here].filter((k) => home.has(k) && home.get(k) !== name);
+    misplaced.push(...wrong.map((k) => `${k} under ${name}`));
+    const missing = section.count <= 12 ? section.keys.filter((k) => !here.has(k)) : [];
+    checks.push({
+      term: `section "${name}" (${section.count}) holding its issues and no others`,
+      ok: counted && wrong.length === 0 && missing.length === 0,
+    });
+  }
+  return { checks, misplaced };
 }
 
 /** Which of `terms` the answer mentions, in the order the answer first does. */
@@ -257,6 +324,8 @@ const LEGAL = {
   fetch_github_prs: { state: ['open', 'closed', 'merged', 'all'], whose: ['mine', 'reviewing'] },
   fetch_calendar: { range: ['today', 'tomorrow', 'week'] },
   fetch_recent_mail: {},
+  // `days` is any whole number of days back; Chief clamps it (1 to 92), so only its type is checked.
+  fetch_work_overview: { days: Number.isInteger },
 };
 const DEFAULTS = { state: 'open', whose: 'mine', range: 'today' };
 
@@ -277,7 +346,11 @@ function toolCallsOf(run) {
         typeof args === 'object' &&
         !Array.isArray(args) &&
         Object.entries(args).every(([key, value]) =>
-          key in legal ? legal[key].includes(value) : true,
+          key in legal
+            ? typeof legal[key] === 'function'
+              ? legal[key](value)
+              : legal[key].includes(value)
+            : true,
         );
       calls.push({ name: call.name, args, valid });
     }
@@ -297,7 +370,9 @@ export function scoreRun(run) {
   const key = run.key ?? {};
   const answer = run.answer ?? '';
   const body = withoutNote(answer);
-  const shown = promptText(run);
+  // What the answer may draw on: what the model was sent, and what Chief worked out in code and
+  // wrote into the answer itself.
+  const shown = `${promptText(run)}\n${key.material ?? ''}`;
   const exchanges = run.exchanges ?? [];
   const last = exchanges.at(-1);
   const final = last ? parseStream(last.response) : { content: '', finish: null, calls: [] };
@@ -309,16 +384,32 @@ export function scoreRun(run) {
   const m = { ok, http_errors: httpErrors, routed: Boolean(run.routed) };
 
   // What the user is owed.
-  if (key.must?.length) {
-    const found = mentions(answer, key.must).filter((item) => item.at >= 0).length;
-    m.facts = found / key.must.length;
-    m.missing = mentions(answer, key.must)
-      .filter((item) => item.at < 0)
-      .map((item) => item.term);
+  const owed = mentions(answer, key.must ?? []);
+  const extra = [
+    ...(key.pairs ?? []).map(([a, b]) => ({
+      term: `${a} with ${b}`,
+      ok: namedTogether(answer, a, b),
+    })),
+    ...(key.must_any ?? []).map((terms) => ({
+      term: `one of ${terms.join(' | ')}`,
+      ok: mentions(answer, terms).some((item) => item.at >= 0),
+    })),
+  ];
+  const placed = key.sections ? placement(answer, key.sections) : null;
+  if (placed) extra.push(...placed.checks);
+  const wanted = owed.length + extra.length;
+  if (wanted > 0) {
+    const found = owed.filter((item) => item.at >= 0).length + extra.filter((c) => c.ok).length;
+    m.facts = found / wanted;
+    m.missing = [
+      ...owed.filter((item) => item.at < 0).map((item) => item.term),
+      ...extra.filter((c) => !c.ok).map((c) => c.term),
+    ];
   } else {
     m.facts = null;
     m.missing = [];
   }
+  m.misplaced = placed ? placed.misplaced : [];
 
   // What the user must not be told.
   // Free chat has no material to invent against, and its [Placeholders] are not names.
@@ -338,12 +429,26 @@ export function scoreRun(run) {
         .filter((n) => !new RegExp(`\\b${n}\\b`).test(shown))
         .map((n) => `number ${n}`),
     );
+  // An issue key the board does not hold is an invented issue, whatever it is called.
+  if (key.allowed_keys) {
+    const allowed = new Set(key.allowed_keys);
+    const known = new Set(key.known_keys ?? key.allowed_keys);
+    // Not on the board at all is an invented issue; on the board but not what was asked is a false
+    // statement about a real one. Both are wrong, and neither is shown to the user as fine.
+    stray.push(
+      ...(body.match(ISSUE_KEY) ?? [])
+        .filter((k) => !allowed.has(k))
+        .map((k) => (known.has(k) ? `wrongly named issue ${k}` : `invented issue ${k}`)),
+    );
+  }
   m.invented = [...new Set([...invented, ...stray])];
   m.forbidden = forbidden;
   m.clean = ok && m.invented.length === 0 && forbidden.length === 0;
   // A draft Chief itself refuses to save never reaches the user, so what the
   // model invented in it is reported but is not what the user was given.
   m.blocked = Boolean(key.blocked);
+  // The answer sent the reader to /items instead of answering: honest, but not an answer.
+  m.handed_off = /\/items\b/.test(body);
   m.shipped_invented = m.blocked ? [] : m.invented;
 
   // Order, and whether the answer leads with the time-bound thing.
@@ -501,7 +606,9 @@ export function gatesFor(runs) {
   const quiet = runs.filter(
     (run) => run.fixtureGroup === 'brief-quiet' || run.fixture === 'eng-standup-empty',
   );
-  const tools = runs.filter((run) => run.fixtureGroup === 'tools');
+  const tools = runs.filter(
+    (run) => run.fixtureGroup === 'tools' || run.fixture.startsWith('jira-ask-'),
+  );
   const peak = Math.max(0, ...runs.map((run) => run.m.peak_resident_mb ?? 0));
   const swapped = runs.filter((run) => (run.m.swap_in_mb ?? 0) > 0);
   const validCalls = tools.flatMap((run) => run.m.tool_calls);
@@ -520,21 +627,24 @@ export function gatesFor(runs) {
     detail: `peak ${peak} MB against ${MEMORY_BUDGET_MB} MB; ${swapped.length} runs swapped`,
     evidence: [],
   };
+  const jira = runs.filter((run) => run.fixtureGroup === 'jira');
   const invented = quiet.filter((run) => !run.m.clean);
-  g.G3 = {
-    name: 'Invents nothing on the quiet days',
-    // A gate again (maintainer, 2026-10-12): Chief is only useful if what it says
-    // can be relied on. The rate is still kept so the report can show how close a model came.
-    rate: quiet.length ? invented.length / quiet.length : null,
-    pass: quiet.length > 0 && invented.length === 0,
-    detail: `${invented.length} of ${quiet.length} quiet-day runs invented something`,
-    evidence: invented
-      .slice(0, 5)
-      .map(
-        (run) =>
-          `${run.fixture} #${run.repeat}: ${run.m.invented.concat(run.m.forbidden).slice(0, 4).join(', ')}`,
-      ),
-  };
+  // A Jira-only run holds no quiet day, and a gate with nothing to judge must not fail for it.
+  if (quiet.length > 0 || jira.length === 0)
+    g.G3 = {
+      name: 'Invents nothing on the quiet days',
+      // A gate again (maintainer, 2026-10-12): Chief is only useful if what it says
+      // can be relied on. The rate is still kept so the report can show how close a model came.
+      rate: quiet.length ? invented.length / quiet.length : null,
+      pass: quiet.length > 0 && invented.length === 0,
+      detail: `${invented.length} of ${quiet.length} quiet-day runs invented something`,
+      evidence: invented
+        .slice(0, 5)
+        .map(
+          (run) =>
+            `${run.fixture} #${run.repeat}: ${run.m.invented.concat(run.m.forbidden).slice(0, 4).join(', ')}`,
+        ),
+    };
   const drafts = runs.filter((run) => run.fixtureGroup === 'draft');
   if (drafts.length) {
     const shipped = drafts.filter((run) => !run.m.ok || run.m.shipped_invented.length > 0);
@@ -547,6 +657,20 @@ export function gatesFor(runs) {
         .map(
           (run) =>
             `${run.fixture} #${run.repeat}: ${run.m.ok ? run.m.shipped_invented.slice(0, 4).join(', ') : 'no draft'}`,
+        ),
+    };
+  }
+  if (jira.length) {
+    const wrong = jira.filter((run) => !run.m.clean || run.m.misplaced.length > 0);
+    g.G7 = {
+      name: 'Invents no issue, name or placement on a Jira board',
+      pass: wrong.length === 0,
+      detail: `${jira.length - wrong.length} of ${jira.length} Jira answers named only issues on the board, invented no name, and put every issue under its own heading`,
+      evidence: wrong
+        .slice(0, 5)
+        .map(
+          (run) =>
+            `${run.fixture} #${run.repeat}: ${run.m.invented.concat(run.m.forbidden, run.m.misplaced).slice(0, 4).join(', ')}`,
         ),
     };
   }

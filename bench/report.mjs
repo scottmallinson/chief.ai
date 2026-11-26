@@ -135,6 +135,11 @@ function openProblems(env, summary, judged) {
   out.push(
     '**Invention check is heuristic.** It catches times, numbers and names that are not in the material. It does not catch an invented claim in ordinary words; the judge and the human ratings are there for that.',
   );
+  if (env.suite === 'jira') {
+    out.push(
+      "**Jira suite.** The boards are real issues from the TAWOS dataset, rebuilt as of a past day, with invented people and dates moved to the run day; the answer key is worked out in code. They are open-source bug trackers, not a manager's sprint board.",
+    );
+  }
   out.push(
     "**Fixtures are synthetic.** They are the runbook scenarios, so this measures behaviour on those days. A model that does well here may still do badly on a real person's week.",
   );
@@ -181,14 +186,17 @@ export function renderMarkdown(dir, env, scored, judged, summary) {
   L.push('## 1. Headline');
   L.push('');
   L.push(
-    'A model that fails any gate is not ranked, however fast it is. Gates: G1 starts and answers · G2 fits in 8 GB · G3 invents nothing on quiet days (the share of quiet-day runs that invented something is shown beside it) · G4 finishes without circling · G5 tool calls valid · G6 no invented names in review-request drafts (only when the run has them).',
+    'A model that fails any gate is not ranked, however fast it is. Gates: G1 starts and answers · G2 fits in 8 GB · G3 invents nothing on quiet days (the share of quiet-day runs that invented something is shown beside it) · G4 finishes without circling · G5 tool calls valid · G6 no invented names in review-request drafts (only when the run has them) · G7 no invented issue, name or misplaced issue on a Jira board (Jira suite only). G3 is left out of a run with no quiet days.',
   );
   L.push('');
   const hasG6 = summary.models.some((m) => m.gates.G6);
+  const hasG7 = summary.models.some((m) => m.gates.G7);
   L.push(
-    `| # | Model | Tier | G1 | G2 | G3 (invents) | G4 | G5 |${hasG6 ? ' G6 |' : ''} Score | Quality | Tools | Usefulness | Speed | Memory |`,
+    `| # | Model | Tier | G1 | G2 | G3 (invents) | G4 | G5 |${hasG6 ? ' G6 |' : ''}${hasG7 ? ' G7 |' : ''} Score | Quality | Tools | Usefulness | Speed | Memory |`,
   );
-  L.push(`|---|---|---|---|---|---|---|---|${hasG6 ? '---|' : ''}---|---|---|---|---|---|`);
+  L.push(
+    `|---|---|---|---|---|---|---|---|${hasG6 ? '---|' : ''}${hasG7 ? '---|' : ''}---|---|---|---|---|---|`,
+  );
   const order = [...summary.ranked, ...summary.unranked];
   order.forEach((m) => {
     const place = summary.ranked.includes(m)
@@ -198,7 +206,7 @@ export function renderMarkdown(dir, env, scored, judged, summary) {
       : 'n/r';
     const g = m.gates;
     L.push(
-      `| ${place} | ${m.name} | ${m.tier} | ${mark(g.G1.pass)} | ${mark(g.G2.pass)} | ${mark(g.G3.pass)} ${pct(g.G3.rate)} | ${mark(g.G4.pass)} | ${mark(g.G5.pass)} |${hasG6 ? ` ${g.G6 ? mark(g.G6.pass) : 'n/a'} |` : ''} ${num(m.composite)} | ${num(m.parts.quality)} | ${num(m.parts.tools)} | ${num(m.parts.usefulness)} | ${env.machine.target ? num(m.parts.speed) : 'n/a'} | ${num(m.parts.memory)} |`,
+      `| ${place} | ${m.name} | ${m.tier} | ${mark(g.G1.pass)} | ${mark(g.G2.pass)} | ${g.G3 ? `${mark(g.G3.pass)} ${pct(g.G3.rate)}` : 'n/a'} | ${mark(g.G4.pass)} | ${mark(g.G5.pass)} |${hasG6 ? ` ${g.G6 ? mark(g.G6.pass) : 'n/a'} |` : ''}${hasG7 ? ` ${g.G7 ? mark(g.G7.pass) : 'n/a'} |` : ''} ${num(m.composite)} | ${num(m.parts.quality)} | ${num(m.parts.tools)} | ${num(m.parts.usefulness)} | ${env.machine.target ? num(m.parts.speed) : 'n/a'} | ${num(m.parts.memory)} |`,
     );
   });
   L.push('');

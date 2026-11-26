@@ -1072,21 +1072,10 @@ pub async fn ask_agent<R: Runtime>(
                             emit(Update::Tool {
                                 name: "Working out how your items are going".to_string(),
                             });
-                            items::write(&client, &analysis, |prompt| {
-                                ChatRequest::new(
-                                    &model,
-                                    adapter::Adapter::for_tier(engine.tier()).assemble(
-                                        vec![Turn {
-                                            role: Role::User,
-                                            content: prompt,
-                                        }],
-                                        &clock::present(),
-                                    ),
-                                )
-                            })
-                            .await
-                            .map(|written| written.text)
-                            .ok()
+                            items::write(&client, &analysis, items_request(&model, engine.tier()))
+                                .await
+                                .map(|written| written.text)
+                                .ok()
                         }
                         Err(_) => None,
                     };
@@ -1306,6 +1295,27 @@ pub(crate) async fn answer_for_bench(
         |_| {},
     )
     .await
+}
+
+/// How one section of an `/items` answer is asked of the model. The app and
+/// the benchmark both use it, so the benchmark measures the request Chief
+/// really sends.
+pub(crate) fn items_request(
+    model: &str,
+    tier: crate::probe::Tier,
+) -> impl Fn(String) -> ChatRequest + '_ {
+    move |prompt| {
+        ChatRequest::new(
+            model,
+            adapter::Adapter::for_tier(tier).assemble(
+                vec![Turn {
+                    role: Role::User,
+                    content: prompt,
+                }],
+                &clock::present(),
+            ),
+        )
+    }
 }
 
 /// Build a transcript turn, shared by the test modules below.

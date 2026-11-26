@@ -10,6 +10,7 @@ pnpm engine:fetch                       # once: the bundled llama-server
 pnpm bench                              # every enabled model, 5 repeats, no AI judge
 pnpm bench --only qwen3-1.7b            # one model
 pnpm bench --fixture em-12 --repeats 1  # one fixture, quick
+pnpm bench --suite jira                 # the Jira suite (see public-data/README.md), not the main fixtures
 pnpm bench --judge api                  # Haiku 5.5 via ANTHROPIC_API_KEY, capped by --max-spend (default $10)
 pnpm bench --judge claude-code          # your own `claude -p`; fine for a dry run, not for decisions
 pnpm bench --judge file                 # write judge-requests.json; answer it with judgements.json
@@ -58,3 +59,6 @@ labelled, and left out of the score.
   `FIXTURE_VERSION` in `run.mjs` or the judge prompt version when you do, and do not compare across.
 - The invention check is a heuristic for times, numbers and names. It is why the judge and the
   human ratings exist.
+
+Fixtures built from public datasets live in `public-data/`; see its README. They are evaluation
+only and are kept apart from anything that could become training data.

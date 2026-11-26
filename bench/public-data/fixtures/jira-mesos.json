@@ -1,0 +1,674 @@
+{
+ "schema_version": 1,
+ "source": {
+  "dataset": "TAWOS v1.1",
+  "doi": "10.5522/04/21308124",
+  "licence": "Apache-2.0",
+  "project": {
+   "key": "MESOS",
+   "name": "Apache Mesos"
+  },
+  "asof": "2018-06-15"
+ },
+ "today": "2026-11-20",
+ "me": "Avery Quinn",
+ "search": {
+  "issues": [
+   {
+    "key": "MESOS-3475",
+    "fields": {
+     "summary": "TestContainerizer should not modify global environment variables.",
+     "status": {
+      "name": "Resolved",
+      "statusCategory": {
+       "key": "done"
+      }
+     },
+     "resolutiondate": "2026-11-20T14:43:01.000+0000",
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": "2026-11-12",
+     "updated": "2026-11-20T14:43:01.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": [
+      {
+       "created": "2024-02-25T19:06:13.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Open",
+         "toString": "Accepted"
+        }
+       ]
+      },
+      {
+       "created": "2024-03-10T10:31:06.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Accepted",
+         "toString": "In Progress"
+        }
+       ]
+      },
+      {
+       "created": "2024-03-10T10:31:52.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "In Progress",
+         "toString": "Reviewable"
+        }
+       ]
+      },
+      {
+       "created": "2025-09-19T09:22:15.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Reviewable",
+         "toString": "In Progress"
+        }
+       ]
+      },
+      {
+       "created": "2025-09-19T09:22:39.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "In Progress",
+         "toString": "Accepted"
+        }
+       ]
+      },
+      {
+       "created": "2026-11-03T09:51:29.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Accepted",
+         "toString": "In Progress"
+        }
+       ]
+      },
+      {
+       "created": "2026-11-03T15:38:11.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "In Progress",
+         "toString": "Reviewable"
+        }
+       ]
+      },
+      {
+       "created": "2026-11-20T14:43:01.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Reviewable",
+         "toString": "Resolved"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "key": "MESOS-6632",
+    "fields": {
+     "summary": "ContainerLogger might leak FD if container launch fails.",
+     "status": {
+      "name": "Open",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Critical"
+     },
+     "duedate": null,
+     "updated": "2025-04-30T19:14:58.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "MESOS-7121",
+    "fields": {
+     "summary": "Make IO Switchboard optional for debug containers",
+     "status": {
+      "name": "Open",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": null,
+     "updated": "2025-07-21T18:50:09.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "MESOS-7357",
+    "fields": {
+     "summary": "Command checks via agent implicitly set up IOSwitchboard but do not use it.",
+     "status": {
+      "name": "Open",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": null,
+     "updated": "2025-09-11T11:16:43.000+0000",
+     "issuelinks": [
+      {
+       "type": {
+        "name": "Blocks",
+        "inward": "is blocked by",
+        "outward": "blocks"
+       },
+       "inwardIssue": {
+        "key": "MESOS-7121",
+        "fields": {
+         "status": {
+          "name": "Open",
+          "statusCategory": {
+           "key": "new"
+          }
+         }
+        }
+       }
+      }
+     ],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": [
+      {
+       "created": "2025-09-11T11:16:43.000+0000",
+       "items": [
+        {
+         "field": "Link",
+         "toString": "This issue is blocked by MESOS-7121"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "key": "MESOS-7474",
+    "fields": {
+     "summary": "Mesos fetcher cache doesn't retry when missed.",
+     "status": {
+      "name": "Open",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": null,
+     "updated": "2025-10-13T22:27:26.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "MESOS-7485",
+    "fields": {
+     "summary": "Add verbose logging for curl commands used in fetcher/puller",
+     "status": {
+      "name": "Open",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": null,
+     "updated": "2025-10-14T22:07:30.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "MESOS-8537",
+    "fields": {
+     "summary": "Default executor doesn't wait for status updates to be ack'd before shutting down",
+     "status": {
+      "name": "Open",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": "2027-12-22",
+     "updated": "2026-07-10T20:38:29.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "MESOS-8545",
+    "fields": {
+     "summary": "AgentAPIStreamingTest.AttachInputToNestedContainerSession is flaky.",
+     "status": {
+      "name": "Accepted",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": "2026-09-03",
+     "updated": "2026-09-03T12:17:44.000+0000",
+     "issuelinks": [
+      {
+       "type": {
+        "name": "Blocks",
+        "inward": "is blocked by",
+        "outward": "blocks"
+       },
+       "inwardIssue": {
+        "key": "MESOS-8729",
+        "fields": {
+         "status": {
+          "name": "Accepted",
+          "statusCategory": {
+           "key": "new"
+          }
+         }
+        }
+       }
+      }
+     ],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": [
+      {
+       "created": "2026-07-13T19:08:43.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Open",
+         "toString": "Accepted"
+        }
+       ]
+      },
+      {
+       "created": "2026-08-24T16:00:16.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Accepted",
+         "toString": "In Progress"
+        }
+       ]
+      },
+      {
+       "created": "2026-08-24T19:00:35.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "In Progress",
+         "toString": "Reviewable"
+        }
+       ]
+      },
+      {
+       "created": "2026-08-24T21:53:22.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Reviewable",
+         "toString": "Resolved"
+        }
+       ]
+      },
+      {
+       "created": "2026-09-03T12:17:20.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Resolved",
+         "toString": "Accepted"
+        }
+       ]
+      },
+      {
+       "created": "2026-09-03T12:17:44.000+0000",
+       "items": [
+        {
+         "field": "Link",
+         "toString": "This issue is blocked by MESOS-8729"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "key": "MESOS-8553",
+    "fields": {
+     "summary": "Implement a test to reproduce a bug in launch nested container call.",
+     "status": {
+      "name": "Open",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": "2027-01-07",
+     "updated": "2026-07-16T14:31:09.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": []
+    }
+   },
+   {
+    "key": "MESOS-8705",
+    "fields": {
+     "summary": "Composing containerizer improvements",
+     "status": {
+      "name": "In Progress",
+      "statusCategory": {
+       "key": "indeterminate"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": null,
+     "updated": "2026-09-10T18:51:58.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": [
+      {
+       "created": "2026-09-10T18:51:30.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Open",
+         "toString": "Accepted"
+        }
+       ]
+      },
+      {
+       "created": "2026-09-10T18:51:58.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Accepted",
+         "toString": "In Progress"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "key": "MESOS-8729",
+    "fields": {
+     "summary": "Libprocess: deadlock in process::finalize",
+     "status": {
+      "name": "Accepted",
+      "statusCategory": {
+       "key": "new"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": null,
+     "updated": "2026-09-01T02:40:46.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": [
+      {
+       "created": "2026-09-01T02:40:46.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Open",
+         "toString": "Accepted"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "key": "MESOS-8732",
+    "fields": {
+     "summary": "Use composing containerizer in some agent tests.",
+     "status": {
+      "name": "Reviewable",
+      "statusCategory": {
+       "key": "indeterminate"
+      }
+     },
+     "resolutiondate": null,
+     "priority": {
+      "name": "Major"
+     },
+     "duedate": "2026-10-01",
+     "updated": "2026-10-01T18:22:29.000+0000",
+     "issuelinks": [],
+     "assignee": {
+      "displayName": "Avery Quinn"
+     },
+     "labels": []
+    },
+    "changelog": {
+     "histories": [
+      {
+       "created": "2026-09-23T11:58:04.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Open",
+         "toString": "Accepted"
+        }
+       ]
+      },
+      {
+       "created": "2026-09-23T11:58:12.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "Accepted",
+         "toString": "In Progress"
+        }
+       ]
+      },
+      {
+       "created": "2026-10-01T18:22:29.000+0000",
+       "items": [
+        {
+         "field": "status",
+         "fromString": "In Progress",
+         "toString": "Reviewable"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "answer": {
+  "open": [
+   "MESOS-6632",
+   "MESOS-7121",
+   "MESOS-7357",
+   "MESOS-7474",
+   "MESOS-7485",
+   "MESOS-8537",
+   "MESOS-8545",
+   "MESOS-8553",
+   "MESOS-8705",
+   "MESOS-8729",
+   "MESOS-8732"
+  ],
+  "not_started": [
+   "MESOS-6632",
+   "MESOS-7121",
+   "MESOS-7357",
+   "MESOS-7474",
+   "MESOS-7485",
+   "MESOS-8537",
+   "MESOS-8545",
+   "MESOS-8553",
+   "MESOS-8729"
+  ],
+  "in_progress": [
+   "MESOS-8705",
+   "MESOS-8732"
+  ],
+  "finished": [
+   "MESOS-3475"
+  ],
+  "blocked": {
+   "MESOS-7357": [
+    "MESOS-7121"
+   ],
+   "MESOS-8545": [
+    "MESOS-8729"
+   ]
+  },
+  "overdue": [
+   "MESOS-8545",
+   "MESOS-8732"
+  ],
+  "due_this_week": [],
+  "no_due_date": [
+   "MESOS-6632",
+   "MESOS-7121",
+   "MESOS-7357",
+   "MESOS-7474",
+   "MESOS-7485",
+   "MESOS-8705",
+   "MESOS-8729"
+  ],
+  "sections": {
+   "Blocked": {
+    "count": 2,
+    "keys": [
+     "MESOS-7357",
+     "MESOS-8545"
+    ]
+   },
+   "Overdue or due this week": {
+    "count": 1,
+    "keys": [
+     "MESOS-8732"
+    ]
+   },
+   "In progress": {
+    "count": 1,
+    "keys": [
+     "MESOS-8705"
+    ]
+   },
+   "Not started": {
+    "count": 7,
+    "keys": [
+     "MESOS-6632",
+     "MESOS-7121",
+     "MESOS-7474",
+     "MESOS-7485",
+     "MESOS-8537",
+     "MESOS-8553",
+     "MESOS-8729"
+    ]
+   }
+  },
+  "people": [
+   "Avery Quinn"
+  ]
+ }
+}

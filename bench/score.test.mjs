@@ -326,6 +326,39 @@ describe('scoreRun', () => {
     expect(failed.routed_read).toBe(false);
   });
 
+  it('knows the work overview tool: a whole number of days is valid, anything else is not', () => {
+    const called = (args) =>
+      scoreRun(
+        run({
+          answer: 'ok',
+          response: sse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    { index: 0, function: { name: 'fetch_work_overview', arguments: args } },
+                  ],
+                },
+              },
+            ],
+          }),
+        }),
+      ).tool_valid;
+    expect(called('{}')).toBe(true);
+    expect(called('{"days":30}')).toBe(true);
+    expect(called('{"days":"a month"}')).toBe(false);
+  });
+
+  it('does not call a dotted identifier from the material an invented name', () => {
+    const shown = 'ENG-8 AgentAPIStreamingTest.AttachInput is flaky';
+    expect(inventedThings('- ENG-8 AgentAPIStreamingTest.AttachInput is flaky.', shown)).toEqual(
+      [],
+    );
+    expect(inventedThings('- ENG-8 AgentAPIStreamingTest.Detach is flaky.', shown)).toEqual([
+      'name AgentAPIStreamingTest.Detach',
+    ]);
+  });
+
   it('fails a tool call when none was expected', () => {
     const response = sse({
       choices: [
@@ -405,5 +438,127 @@ describe('composite', () => {
   });
   it('uses speed only on the target machine', () => {
     expect(composite(parts, 'light', { speedRankable: true, usefulness: 50 }).left_out).toEqual([]);
+  });
+});
+
+describe('the Jira checks', () => {
+  const BOARD = ['ENG-1', 'ENG-2', 'ENG-3'];
+  const score = (answer, key) =>
+    scoreRun(run({ answer, key, group: 'jira', shown: 'ENG-1 ENG-2' }));
+
+  it('names an issue the board does not hold as an invention', () => {
+    const key = { allowed_keys: BOARD };
+    expect(score('ENG-1 and ENG-2 are open.', key).invented).toEqual([]);
+    const bad = score('ENG-1 and ENG-9 are open.', key);
+    expect(bad.invented).toContain('invented issue ENG-9');
+    expect(bad.clean).toBe(false);
+  });
+
+  it('wants a blocked issue and its blocker on one line, not just somewhere', () => {
+    const key = { pairs: [['ENG-1', 'ENG-2']] };
+    expect(score('- ENG-1 is blocked by ENG-2.', key).facts).toBe(1);
+    const apart = score('- ENG-1 is blocked.\n- ENG-2 is fine.', key);
+    expect(apart.facts).toBe(0);
+    expect(apart.missing).toEqual(['ENG-1 with ENG-2']);
+  });
+
+  it('accepts any of a group of words, for an answer that has to say "none"', () => {
+    const key = { must_any: [['nothing', 'none']] };
+    expect(score('Nothing is blocked.', key).facts).toBe(1);
+    expect(score('ENG-1 is blocked.', key).facts).toBe(0);
+  });
+
+  it('tells an issue that is not on the board from a real one that was not asked for', () => {
+    const key = { allowed_keys: ['ENG-1'], known_keys: ['ENG-1', 'ENG-2'] };
+    expect(score('ENG-1, ENG-2 and ENG-9.', key).invented).toEqual([
+      'wrongly named issue ENG-2',
+      'invented issue ENG-9',
+    ]);
+  });
+
+  it('reads what Chief wrote in code as material, so its numbers are not inventions', () => {
+    const answer = 'Needs attention: 3 overdue (ENG-1).';
+    expect(score(answer, { forbid_numbers: true }).invented).toEqual(['number 3']);
+    expect(score(answer, { forbid_numbers: true, material: answer }).invented).toEqual([]);
+  });
+
+  it('does not count a blocker named in "Blocked by" as an issue out of place', () => {
+    const sections = {
+      Blocked: { count: 1, keys: ['ENG-1'] },
+      'Not started': { count: 1, keys: ['ENG-2'] },
+    };
+    const answer = [
+      '## Blocked (1)',
+      '- ENG-1 stuck. Blocked by ENG-2 since 2026-11-01.',
+      '## Not started (1)',
+      '- ENG-2 waiting.',
+    ].join('\n');
+    expect(score(answer, { sections }).misplaced).toEqual([]);
+    expect(score(answer.replace('Blocked by', 'Needs'), { sections }).misplaced).toEqual([
+      'ENG-2 under Blocked',
+    ]);
+  });
+
+  describe('sections', () => {
+    const sections = {
+      Blocked: { count: 1, keys: ['ENG-1'] },
+      'Overdue or due this week': { count: 0, keys: [] },
+      'In progress': { count: 1, keys: ['ENG-2'] },
+      'Not started': { count: 1, keys: ['ENG-3'] },
+    };
+    const good = [
+      '## Blocked (1)',
+      '- ENG-1 stuck, blocked by ENG-9.',
+      '## In progress (1)',
+      '- ENG-2 moving.',
+      '## Not started (1)',
+      '- ENG-3 waiting.',
+    ].join('\n');
+
+    it('passes an answer with every issue under its own heading', () => {
+      const m = score(good, { sections });
+      expect(m.facts).toBe(1);
+      expect(m.misplaced).toEqual([]);
+    });
+
+    it('fails an issue under the wrong heading, and says which', () => {
+      const m = score(good.replace('ENG-2 moving', 'ENG-3 moving'), { sections });
+      expect(m.facts).toBeLessThan(1);
+      expect(m.misplaced).toContain('ENG-3 under In progress');
+    });
+
+    it('fails a count that does not match, a missing issue and a section that should not exist', () => {
+      expect(
+        score(good.replace('## Blocked (1)', '## Blocked (2)'), { sections }).facts,
+      ).toBeLessThan(1);
+      expect(
+        score(good.replace('- ENG-2 moving.', '- Something moving.'), { sections }).facts,
+      ).toBeLessThan(1);
+      const extra = `${good}\n## Overdue or due this week (1)\n- ENG-3 late.`;
+      expect(score(extra, { sections }).facts).toBeLessThan(1);
+    });
+
+    it('holds only the lines shown to a section that shows twelve of more', () => {
+      const long = {
+        Blocked: { count: 20, keys: Array.from({ length: 20 }, (_, i) => `ENG-${i + 100}`) },
+      };
+      const shown = [
+        '## Blocked (20)',
+        ...long.Blocked.keys.slice(0, 12).map((k) => `- ${k}`),
+      ].join('\n');
+      expect(score(shown, { sections: long }).facts).toBe(1);
+    });
+  });
+
+  it('has a gate that fails on an invented issue or a misplaced one, and only for Jira runs', () => {
+    const scored = (answer, key) => {
+      const r = run({ answer, key, group: 'jira', fixture: 'jira-x', shown: 'ENG-1' });
+      return { fixture: r.fixture, fixtureGroup: r.group, repeat: 0, m: scoreRun(r) };
+    };
+    const key = { allowed_keys: ['ENG-1'] };
+    expect(gatesFor([scored('ENG-1 is open.', key)]).G7.pass).toBe(true);
+    expect(gatesFor([scored('ENG-1 and ENG-2 are open.', key)]).G7.pass).toBe(false);
+    // No quiet day in a Jira-only run: that gate has nothing to judge and is left out.
+    expect(gatesFor([scored('ENG-1 is open.', key)]).G3).toBeUndefined();
   });
 });

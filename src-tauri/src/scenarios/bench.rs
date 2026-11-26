@@ -33,7 +33,7 @@ use futures_util::StreamExt;
 use tokio::process::{Child, Command};
 
 use crate::probe::Tier;
-use crate::{agent, engine, facts, propose, tools};
+use crate::{agent, engine, facts, items, propose, tools};
 
 // ---------------------------------------------------------------------------
 // The recording proxy
@@ -563,6 +563,42 @@ const FIXTURES: &[(&str, &str, &str)] = &[
     ),
     ("tool-tomorrow-empty", "tools", "tomorrow's meetings: none"),
     ("chat-no-tool", "chat", "a question no tool fits"),
+    // The Jira suite (`bench/public-data`). Run only on request: `pnpm bench --suite jira`.
+    (
+        "jira-items-compass",
+        "jira",
+        "/items on a 33-issue Compass board, nothing blocked",
+    ),
+    (
+        "jira-items-be",
+        "jira",
+        "/items on a 22-issue Explorer board, one blocker",
+    ),
+    (
+        "jira-items-mesos",
+        "jira",
+        "/items on an 11-issue Mesos board, two blockers",
+    ),
+    (
+        "jira-ask-blocked-mesos",
+        "jira",
+        "what is blocked, and by what: two pairs",
+    ),
+    (
+        "jira-ask-blocked-none-compass",
+        "jira",
+        "what is blocked, when nothing is: say so, invent nothing",
+    ),
+    (
+        "jira-ask-overdue-compass",
+        "jira",
+        "what is overdue: the three that are",
+    ),
+    (
+        "jira-ask-progress-compass",
+        "jira",
+        "what is in progress: the two that are",
+    ),
     (
         "draft-review-known",
         "draft",
@@ -1345,7 +1381,230 @@ async fn play(id: &str, engine_url: &str, tier: Tier) -> Played {
             }
         }
 
+        id if id.starts_with("jira-") => play_jira(id, engine_url, tier).await,
+
         other => panic!("no fixture called {other}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Jira suite
+// ---------------------------------------------------------------------------
+
+/// A Jira board from `bench/public-data`, already moved to today by `bench/run.mjs`.
+fn jira_board(name: &str) -> Value {
+    let dir = setting("CHIEF_BENCH_JIRA_DIR")
+        .expect("CHIEF_BENCH_JIRA_DIR: the Jira suite is run by `pnpm bench --suite jira`");
+    let path = PathBuf::from(dir).join(format!("jira-{name}.json"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{}", path.display()));
+
+    serde_json::from_str(&text).expect("a fixture is JSON")
+}
+
+/// Jira's search, holding one board. Like the real service it answers by the
+/// question it is asked: the open work for the assigned search, the finished
+/// work for the completed one.
+async fn jira_with(board: &Value) -> Mock {
+    let issues = board["search"]["issues"]
+        .as_array()
+        .expect("issues")
+        .clone();
+    let split = |done: bool| -> Value {
+        json!({ "issues": issues.iter().filter(|issue| {
+            (issue["fields"]["status"]["statusCategory"]["key"] == "done") == done
+        }).collect::<Vec<_>>() })
+    };
+    let open = split(false);
+    let finished = split(true);
+
+    mock(move |seen| {
+        if !seen.target.starts_with("/rest/api/3/search/jql") {
+            return Reply::Json(404, "{}".into());
+        }
+        let jql = serde_json::from_str::<Value>(&seen.body)
+            .ok()
+            .and_then(|body| body["jql"].as_str().map(str::to_string))
+            .unwrap_or_default();
+
+        Reply::Json(
+            200,
+            if jql.contains("resolution = EMPTY") {
+                open.to_string()
+            } else {
+                finished.to_string()
+            },
+        )
+    })
+    .await
+}
+
+/// Connect Jira by pasted token, the way a user does, at the mock's address.
+/// `recipe::route` reads a loopback host as `http` in a test build only.
+async fn connect_jira(pool: &sqlx::SqlitePool, host: &str) {
+    integrations::save(
+        pool,
+        integrations::NewAccount {
+            service: integrations::ATLASSIAN,
+            account_key: host.trim_start_matches("http://"),
+            identity: Some("me@example.com"),
+            credential_kind: integrations::API_KEY,
+            access_token: "token",
+            refresh_token: None,
+            expires_at: None,
+            scopes: None,
+            client_id: None,
+            client_secret: None,
+        },
+    )
+    .await
+    .expect("should store a credential");
+}
+
+fn keys_of(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|key| key.as_str().expect("a key").to_string())
+        .collect()
+}
+
+async fn play_jira(id: &str, engine_url: &str, tier: Tier) -> Played {
+    let board_name = id.rsplit('-').next().expect("a board name");
+    let board = jira_board(board_name);
+    let answer_key = &board["answer"];
+    let jira = jira_with(&board).await;
+
+    let mut world = world(None, None, NOWHERE).await;
+    connect_jira(&world.ctx.pool, &jira.host).await;
+    world.ctx.engine = llama::Client::with_base_url(engine_url).expect("client");
+    let client = llama::Client::with_base_url(engine_url).expect("client");
+
+    // Every blocker is named in the answer key, and may be named in an answer
+    // although it is not on the board: it is what holds an issue up.
+    let blockers: Vec<String> = answer_key["blocked"]
+        .as_object()
+        .expect("blocked")
+        .values()
+        .flat_map(keys_of)
+        .collect();
+    let pairs: Vec<Value> = answer_key["blocked"]
+        .as_object()
+        .expect("blocked")
+        .iter()
+        .flat_map(|(blocked, by)| {
+            keys_of(by)
+                .into_iter()
+                .map(move |blocker| json!([blocked, blocker]))
+        })
+        .collect();
+    let names: Vec<&str> = vec![
+        "Avery Quinn",
+        "Maya Okafor",
+        "Tomas Lindqvist",
+        "Priya Ramanathan",
+        "Jonas Whitlock",
+    ];
+
+    if id.starts_with("jira-items-") {
+        // Exactly what the app does for `/items`: read, work out, then word it,
+        // with the same request. See `agent::ask_agent`.
+        let analysis = items::analyse(&world.ctx, items::DEFAULT_DAYS).await;
+        // What Chief worked out in code, as found. Part of the answer is written
+        // from it with no model at all (the headline, a section of one line), so
+        // the check for invention has to read it as material and not only the
+        // requests the model was sent.
+        let material = analysis
+            .as_ref()
+            .map(items::Analysis::markdown)
+            .unwrap_or_default();
+        let answer = match analysis {
+            None => Err("Jira was not read".to_string()),
+            Some(analysis) if analysis.parts.iter().all(|part| !part.worded) => {
+                Ok(analysis.markdown())
+            }
+            Some(analysis) => items::write(
+                &client,
+                &analysis,
+                agent::items_request(agent::DEFAULT_MODEL, tier),
+            )
+            .await
+            .map(|written| written.text)
+            .map_err(|error| error.to_string()),
+        };
+
+        let allowed: Vec<String> = keys_of(&answer_key["open"])
+            .into_iter()
+            .chain(blockers)
+            .collect();
+        let known = allowed.clone();
+
+        return Played {
+            answer,
+            key: json!({
+                "pairs": pairs,
+                "sections": answer_key["sections"],
+                "allowed_keys": allowed,
+                "known_keys": known,
+                "material": material,
+                "forbid": names,
+                "no_tool": true,
+            }),
+            routed: false,
+        };
+    }
+
+    let known: Vec<String> = keys_of(&answer_key["open"])
+        .into_iter()
+        .chain(keys_of(&answer_key["finished"]))
+        .chain(blockers.clone())
+        .collect();
+
+    let (question, key) = match id {
+        "jira-ask-blocked-mesos" => (
+            "What is blocked on my plate, and by what?",
+            json!({
+                "pairs": pairs,
+                "allowed_keys": keys_of(&answer_key["open"]).into_iter().chain(blockers).collect::<Vec<_>>(),
+            }),
+        ),
+        "jira-ask-blocked-none-compass" => (
+            "Is anything of mine blocked in Jira?",
+            json!({
+                "must_any": [["no ", "none", "nothing", "not blocked", "isn't", "aren't"]],
+                "allowed_keys": keys_of(&answer_key["open"]),
+            }),
+        ),
+        "jira-ask-overdue-compass" => (
+            "Which of my Jira issues are overdue?",
+            json!({
+                "must": keys_of(&answer_key["overdue"]),
+                "allowed_keys": keys_of(&answer_key["overdue"]),
+            }),
+        ),
+        "jira-ask-progress-compass" => (
+            "Which of my Jira issues am I actively working on?",
+            json!({
+                "must": keys_of(&answer_key["in_progress"]),
+                "allowed_keys": keys_of(&answer_key["in_progress"]),
+            }),
+        ),
+        other => panic!("no fixture called {other}"),
+    };
+
+    let context = tools::Context::from_recipe(&world.ctx);
+    let answer = agent::answer_for_bench(&client, &context, tier, question)
+        .await
+        .map_err(|error| error.to_string());
+    let mut key = key;
+    key["known_keys"] = json!(known);
+    key["forbid"] = json!(names);
+    key["tool"] = json!({ "name": "fetch_work_overview", "args": {} });
+
+    Played {
+        answer,
+        key,
+        routed: false,
     }
 }
 
@@ -1406,7 +1665,13 @@ async fn run_the_benchmark() {
 
     let mut first = true;
     for (id, group, source) in FIXTURES {
-        if only.as_deref().is_some_and(|only| !id.contains(only)) {
+        // The Jira suite has its own ruler and its own gate, so it never rides along with the
+        // main fixtures: it runs when asked for by name.
+        let wanted = match only.as_deref() {
+            Some(only) => id.contains(only),
+            None => !id.starts_with("jira-"),
+        };
+        if !wanted {
             continue;
         }
 

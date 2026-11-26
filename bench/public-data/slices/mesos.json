@@ -1,0 +1,590 @@
+{
+  "source": {
+    "dataset": "TAWOS v1.1",
+    "doi": "10.5522/04/21308124",
+    "licence": "Apache-2.0",
+    "project": {
+      "key": "MESOS",
+      "name": "Apache Mesos"
+    },
+    "asof": "2018-06-15"
+  },
+  "me": 3374,
+  "issues": [
+    {
+      "id": 15939,
+      "key": "MESOS-8732",
+      "title": "\"Use composing containerizer in some agent tests.\"",
+      "type": "Task",
+      "priority": "Major",
+      "finalStatus": "Resolved",
+      "created": "2018-03-27 13:58:58",
+      "resolved": "2018-08-07 08:32:11",
+      "updated": "2018-08-07 08:32:11",
+      "assignee": 3374,
+      "sprint": 374,
+      "board": true
+    },
+    {
+      "id": 15942,
+      "key": "MESOS-8729",
+      "title": "\"Libprocess: deadlock in process::finalize\"",
+      "type": "Bug",
+      "priority": "Major",
+      "finalStatus": "Accepted",
+      "created": "2018-03-23 20:02:25",
+      "resolved": null,
+      "updated": "2018-09-13 20:39:16",
+      "assignee": 3374,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 15966,
+      "key": "MESOS-8705",
+      "title": "\"Composing containerizer improvements\"",
+      "type": "Epic",
+      "priority": "Major",
+      "finalStatus": "Resolved",
+      "created": "2018-03-21 13:27:52",
+      "resolved": "2018-08-07 08:38:28",
+      "updated": "2018-08-07 08:38:28",
+      "assignee": 3374,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 16117,
+      "key": "MESOS-8553",
+      "title": "\"Implement a test to reproduce a bug in launch nested container call.\"",
+      "type": "Task",
+      "priority": "Major",
+      "finalStatus": "Resolved",
+      "created": "2018-02-08 14:31:09",
+      "resolved": "2018-07-27 19:32:51",
+      "updated": "2018-07-27 19:32:51",
+      "assignee": 3374,
+      "sprint": 363,
+      "board": true
+    },
+    {
+      "id": 16125,
+      "key": "MESOS-8545",
+      "title": "\"AgentAPIStreamingTest.AttachInputToNestedContainerSession is flaky.\"",
+      "type": "Bug",
+      "priority": "Major",
+      "finalStatus": "Resolved",
+      "created": "2018-02-05 19:07:50",
+      "resolved": "2018-09-18 19:21:02",
+      "updated": "2018-10-31 18:41:27",
+      "assignee": 3374,
+      "sprint": 377,
+      "board": true
+    },
+    {
+      "id": 16133,
+      "key": "MESOS-8537",
+      "title": "\"Default executor doesn't wait for status updates to be ack'd before shutting down\"",
+      "type": "Bug",
+      "priority": "Major",
+      "finalStatus": "Resolved",
+      "created": "2018-02-02 20:38:29",
+      "resolved": "2020-02-03 15:56:15",
+      "updated": "2020-03-19 22:31:33",
+      "assignee": 3374,
+      "sprint": 299,
+      "board": true
+    },
+    {
+      "id": 17184,
+      "key": "MESOS-7485",
+      "title": "\"Add verbose logging for curl commands used in fetcher/puller\"",
+      "type": "Bug",
+      "priority": "Major",
+      "finalStatus": "Resolved",
+      "created": "2017-05-09 22:07:30",
+      "resolved": "2020-06-10 14:10:33",
+      "updated": "2020-06-10 14:12:01",
+      "assignee": 3374,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 17195,
+      "key": "MESOS-7474",
+      "title": "\"Mesos fetcher cache doesn't retry when missed.\"",
+      "type": "Bug",
+      "priority": "Major",
+      "finalStatus": "Resolved",
+      "created": "2017-05-08 22:27:26",
+      "resolved": "2018-11-14 20:11:53",
+      "updated": "2019-01-16 00:41:25",
+      "assignee": 3374,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 17312,
+      "key": "MESOS-7357",
+      "title": "\"Command checks via agent implicitly set up IOSwitchboard but do not use it.\"",
+      "type": "Improvement",
+      "priority": "Major",
+      "finalStatus": "Open",
+      "created": "2017-04-06 11:16:17",
+      "resolved": null,
+      "updated": "2018-12-10 23:20:44",
+      "assignee": 3374,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 17548,
+      "key": "MESOS-7121",
+      "title": "\"Make IO Switchboard optional for debug containers\"",
+      "type": "Improvement",
+      "priority": "Major",
+      "finalStatus": "Open",
+      "created": "2017-02-13 18:50:09",
+      "resolved": null,
+      "updated": "2019-01-07 22:57:00",
+      "assignee": 3374,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 18035,
+      "key": "MESOS-6632",
+      "title": "\"ContainerLogger might leak FD if container launch fails.\"",
+      "type": "Bug",
+      "priority": "Critical",
+      "finalStatus": "Resolved",
+      "created": "2016-11-23 19:14:58",
+      "resolved": "2019-01-09 19:16:11",
+      "updated": "2019-02-08 16:12:57",
+      "assignee": 3374,
+      "sprint": null,
+      "board": true
+    },
+    {
+      "id": 21174,
+      "key": "MESOS-3475",
+      "title": "\"TestContainerizer should not modify global environment variables.\"",
+      "type": "Bug",
+      "priority": "Major",
+      "finalStatus": "Resolved",
+      "created": "2015-09-20 19:03:08",
+      "resolved": "2018-11-26 12:21:33",
+      "updated": "2018-11-26 12:21:33",
+      "assignee": 3374,
+      "sprint": 371,
+      "board": true
+    },
+    {
+      "id": 16303,
+      "key": "MESOS-8366",
+      "title": "\"Replace the command executor with the default executor.\"",
+      "type": "Bug",
+      "priority": "Major",
+      "finalStatus": "Reviewable",
+      "created": "2017-12-29 04:01:21",
+      "resolved": null,
+      "updated": "2018-01-02 13:08:55",
+      "assignee": 3408,
+      "sprint": null,
+      "board": false
+    }
+  ],
+  "changes": [
+    {
+      "issue": 15939,
+      "field": "status",
+      "at": "2018-04-18 11:58:04",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 15939,
+      "field": "status",
+      "at": "2018-04-18 11:58:12",
+      "from": "Accepted",
+      "to": "In Progress"
+    },
+    {
+      "issue": 15939,
+      "field": "status",
+      "at": "2018-04-26 18:22:29",
+      "from": "In Progress",
+      "to": "Reviewable"
+    },
+    {
+      "issue": 15942,
+      "field": "status",
+      "at": "2018-03-27 02:40:46",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 15966,
+      "field": "status",
+      "at": "2018-04-05 18:51:30",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 15966,
+      "field": "status",
+      "at": "2018-04-05 18:51:58",
+      "from": "Accepted",
+      "to": "In Progress"
+    },
+    {
+      "issue": 16125,
+      "field": "status",
+      "at": "2018-02-05 19:08:43",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 16125,
+      "field": "status",
+      "at": "2018-03-19 16:00:16",
+      "from": "Accepted",
+      "to": "In Progress"
+    },
+    {
+      "issue": 16125,
+      "field": "status",
+      "at": "2018-03-19 19:00:35",
+      "from": "In Progress",
+      "to": "Reviewable"
+    },
+    {
+      "issue": 16125,
+      "field": "status",
+      "at": "2018-03-19 21:53:22",
+      "from": "Reviewable",
+      "to": "Resolved"
+    },
+    {
+      "issue": 16125,
+      "field": "status",
+      "at": "2018-03-29 12:17:20",
+      "from": "Resolved",
+      "to": "Accepted"
+    },
+    {
+      "issue": 21174,
+      "field": "status",
+      "at": "2015-09-20 19:06:13",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 21174,
+      "field": "status",
+      "at": "2015-10-04 10:31:06",
+      "from": "Accepted",
+      "to": "In Progress"
+    },
+    {
+      "issue": 21174,
+      "field": "status",
+      "at": "2015-10-04 10:31:52",
+      "from": "In Progress",
+      "to": "Reviewable"
+    },
+    {
+      "issue": 21174,
+      "field": "status",
+      "at": "2017-04-14 09:22:15",
+      "from": "Reviewable",
+      "to": "In Progress"
+    },
+    {
+      "issue": 21174,
+      "field": "status",
+      "at": "2017-04-14 09:22:39",
+      "from": "In Progress",
+      "to": "Accepted"
+    },
+    {
+      "issue": 21174,
+      "field": "status",
+      "at": "2018-05-29 09:51:29",
+      "from": "Accepted",
+      "to": "In Progress"
+    },
+    {
+      "issue": 21174,
+      "field": "status",
+      "at": "2018-05-29 15:38:11",
+      "from": "In Progress",
+      "to": "Reviewable"
+    },
+    {
+      "issue": 21174,
+      "field": "status",
+      "at": "2018-06-15 14:43:01",
+      "from": "Reviewable",
+      "to": "Resolved"
+    },
+    {
+      "issue": 16303,
+      "field": "status",
+      "at": "2017-12-30 20:06:44",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 16303,
+      "field": "status",
+      "at": "2017-12-30 20:06:47",
+      "from": "Accepted",
+      "to": "In Progress"
+    },
+    {
+      "issue": 16303,
+      "field": "status",
+      "at": "2017-12-30 20:07:14",
+      "from": "In Progress",
+      "to": "Reviewable"
+    },
+    {
+      "issue": 15939,
+      "field": "link",
+      "at": "2018-04-24 13:24:23",
+      "to": "This issue is related to MESOS-8826"
+    },
+    {
+      "issue": 15939,
+      "field": "link",
+      "at": "2018-04-24 13:53:39",
+      "to": "This issue is related to MESOS-8827"
+    },
+    {
+      "issue": 15939,
+      "field": "link",
+      "at": "2018-04-24 15:34:58",
+      "to": "This issue is related to MESOS-8828"
+    },
+    {
+      "issue": 15942,
+      "field": "link",
+      "at": "2018-03-26 13:34:25",
+      "to": "This issue causes MESOS-8723"
+    },
+    {
+      "issue": 15942,
+      "field": "link",
+      "at": "2018-03-29 12:17:44",
+      "to": "This issue blocks MESOS-8545"
+    },
+    {
+      "issue": 16125,
+      "field": "link",
+      "at": "2018-02-05 19:09:04",
+      "to": "This issue is part of MESOS-7742"
+    },
+    {
+      "issue": 16125,
+      "field": "link",
+      "at": "2018-03-29 12:17:44",
+      "to": "This issue is blocked by MESOS-8729"
+    },
+    {
+      "issue": 16303,
+      "field": "link",
+      "at": "2017-12-29 04:01:34",
+      "to": "This issue is related to MESOS-7564"
+    },
+    {
+      "issue": 16303,
+      "field": "link",
+      "at": "2018-01-02 13:08:55",
+      "to": "This issue is blocked by MESOS-7357"
+    },
+    {
+      "issue": 17312,
+      "field": "link",
+      "at": "2017-04-06 11:16:43",
+      "to": "This issue is blocked by MESOS-7121"
+    },
+    {
+      "issue": 17312,
+      "field": "link",
+      "at": "2018-01-02 13:08:55",
+      "to": "This issue blocks MESOS-8366"
+    },
+    {
+      "issue": 17548,
+      "field": "link",
+      "at": "2017-04-06 11:16:43",
+      "to": "This issue blocks MESOS-7357"
+    },
+    {
+      "issue": 21174,
+      "field": "link",
+      "at": "2018-05-14 10:34:46",
+      "to": "This issue breaks MESOS-8875"
+    },
+    {
+      "issue": 21174,
+      "field": "link",
+      "at": "2018-05-14 10:35:47",
+      "to": "This issue breaks MESOS-2407"
+    },
+    {
+      "issue": 21174,
+      "field": "link",
+      "at": "2018-05-14 10:36:03",
+      "to": "This issue breaks MESOS-8134"
+    },
+    {
+      "issue": 21174,
+      "field": "link",
+      "at": "2018-05-14 10:36:16",
+      "to": "This issue breaks MESOS-6985"
+    }
+  ],
+  "firstMoveAfter": [
+    {
+      "issue": 15939,
+      "field": "status",
+      "at": "2018-08-07 08:32:11",
+      "from": "Reviewable",
+      "to": "Resolved"
+    },
+    {
+      "issue": 15966,
+      "field": "status",
+      "at": "2018-08-07 08:38:28",
+      "from": "In Progress",
+      "to": "Resolved"
+    },
+    {
+      "issue": 16117,
+      "field": "status",
+      "at": "2018-07-24 10:37:29",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 16125,
+      "field": "status",
+      "at": "2018-09-05 18:42:02",
+      "from": "Accepted",
+      "to": "In Progress"
+    },
+    {
+      "issue": 16133,
+      "field": "status",
+      "at": "2019-02-06 17:14:49",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 17184,
+      "field": "status",
+      "at": "2020-06-10 14:09:13",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 17195,
+      "field": "status",
+      "at": "2018-10-24 13:57:40",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 18035,
+      "field": "status",
+      "at": "2018-11-30 23:11:32",
+      "from": "Open",
+      "to": "Accepted"
+    },
+    {
+      "issue": 21174,
+      "field": "status",
+      "at": "2018-11-21 16:50:44",
+      "from": "Resolved",
+      "to": "Accepted"
+    }
+  ],
+  "links": [
+    {
+      "issue": 15942,
+      "name": "Blocker",
+      "words": "blocks",
+      "direction": "OUTBOUND",
+      "target": 16125
+    },
+    {
+      "issue": 16125,
+      "name": "Blocker",
+      "words": "is blocked by",
+      "direction": "INBOUND",
+      "target": 15942
+    },
+    {
+      "issue": 16303,
+      "name": "Blocker",
+      "words": "is blocked by",
+      "direction": "INBOUND",
+      "target": 17312
+    },
+    {
+      "issue": 17312,
+      "name": "Blocker",
+      "words": "blocks",
+      "direction": "OUTBOUND",
+      "target": 16303
+    },
+    {
+      "issue": 17312,
+      "name": "Blocker",
+      "words": "is blocked by",
+      "direction": "INBOUND",
+      "target": 17548
+    },
+    {
+      "issue": 17548,
+      "name": "Blocker",
+      "words": "blocks",
+      "direction": "OUTBOUND",
+      "target": 17312
+    }
+  ],
+  "sprints": [
+    {
+      "id": 374,
+      "name": "Mesosphere Sprint 78",
+      "start": "2018-04-12 17:11:36",
+      "end": "2018-04-26 17:11:00"
+    },
+    {
+      "id": 363,
+      "name": "Mesosphere Sprint 2018-25",
+      "start": "2018-07-19 16:00:43",
+      "end": "2018-08-02 16:00:00"
+    },
+    {
+      "id": 377,
+      "name": "Mesosphere Sprint 76",
+      "start": "2018-03-08 16:28:02",
+      "end": "2018-03-29 16:00:00"
+    },
+    {
+      "id": 299,
+      "name": "Containerization: RI-16 Sp 50",
+      "start": "2019-07-03 18:43:30",
+      "end": "2019-07-17 18:43:00"
+    },
+    {
+      "id": 371,
+      "name": "Mesosphere Sprint 2018-21",
+      "start": "2018-05-24 16:00:59",
+      "end": "2018-06-07 16:00:00"
+    }
+  ]
+}

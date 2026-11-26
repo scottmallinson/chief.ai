@@ -20,3 +20,5 @@ website/changelog.html
 # WiX source for the MSI installer. Prettier has no parser for it and mistakes
 # the extension for one it does.
 src-tauri/windows/*.wxs
+bench/public-data/fixtures/
+bench/public-data/slices/
