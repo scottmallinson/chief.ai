@@ -37,7 +37,7 @@ const MODELS_DIR = path.join(ROOT, 'bench', '.models');
 const RESULTS = path.join(ROOT, 'bench-results');
 const FIXTURE_VERSION = 'v2';
 /** The Jira suite has its own ruler: a change to its fixtures or keys bumps this, not the one above. */
-const JIRA_SUITE_VERSION = 'v2';
+const JIRA_SUITE_VERSION = 'v3';
 
 function options(argv) {
   const out = { judge: 'none', repeats: 5, maxSpend: 10 };

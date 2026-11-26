@@ -1450,6 +1450,75 @@ pub fn describe(issue: &Issue) -> String {
     format!("{} {}{status}", issue.key, issue.summary)
 }
 
+/// The line the work overview shows: the plain line, then the facts a
+/// question about blocked, overdue or in-progress work is answered from. The
+/// date arithmetic is done here, because the model that reads the line does
+/// not do it reliably, and the category is Jira's own, which no site can
+/// rename.
+#[must_use]
+pub fn describe_with_facts(issue: &Issue, today: chrono::NaiveDate) -> String {
+    let mut line = describe(issue);
+
+    match issue.detail.status_kind.as_str() {
+        "new" => line.push_str(", not started"),
+        "indeterminate" => line.push_str(", in progress"),
+        _ => {}
+    }
+
+    if let Some(due) = &issue.detail.due {
+        match chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d") {
+            Ok(day) => {
+                let days = (day - today).num_days();
+                match days {
+                    d if d < 0 => line.push_str(&format!(
+                        ", overdue by {} day{} (due {due})",
+                        -d,
+                        if d == -1 { "" } else { "s" }
+                    )),
+                    0 => line.push_str(", due today"),
+                    d => line.push_str(&format!(
+                        ", due {due} (in {d} day{})",
+                        if d == 1 { "" } else { "s" }
+                    )),
+                }
+            }
+            Err(_) => line.push_str(&format!(", due {due}")),
+        }
+    }
+    if !issue.detail.blocked_by.is_empty() {
+        line.push_str(&format!(
+            ", blocked by {}",
+            issue.detail.blocked_by.join(", ")
+        ));
+    }
+
+    line
+}
+
+/// Where an open issue sorts when only some can be shown: blocked, then
+/// overdue, then due within a week, then in progress, then the rest.
+#[must_use]
+pub fn urgency(issue: &Issue, today: chrono::NaiveDate) -> u8 {
+    let days = issue
+        .detail
+        .due
+        .as_deref()
+        .and_then(|due| chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d").ok())
+        .map(|day| (day - today).num_days());
+
+    if !issue.detail.blocked_by.is_empty() {
+        0
+    } else if days.is_some_and(|d| d < 0) {
+        1
+    } else if days.is_some_and(|d| d <= 7) {
+        2
+    } else if issue.detail.status_kind == "indeterminate" {
+        3
+    } else {
+        4
+    }
+}
+
 impl crate::oauth::Provider for Client {
     const SERVICE: &'static str = crate::integrations::ATLASSIAN;
 
@@ -2515,6 +2584,42 @@ mod tests {
         let found = issues_at(&bare, "");
 
         assert_eq!(found[0].detail, Detail::default());
+    }
+
+    #[test]
+    fn the_overview_line_carries_the_facts_a_question_is_answered_from() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 26).expect("a date");
+        let issue = |status_kind: &str, due: Option<&str>, blocked: &[&str]| Issue {
+            key: "PROJ-7".to_string(),
+            summary: "Migrate".to_string(),
+            status: "In Review".to_string(),
+            url: None,
+            resolved: None,
+            detail: Detail {
+                status_kind: status_kind.to_string(),
+                due: due.map(str::to_string),
+                blocked_by: blocked.iter().map(|k| (*k).to_string()).collect(),
+                ..Detail::default()
+            },
+        };
+
+        assert_eq!(
+            describe_with_facts(&issue("indeterminate", Some("2026-11-20"), &["PROJ-3"]), today),
+            "PROJ-7 Migrate [In Review], in progress, overdue by 6 days (due 2026-11-20), blocked by PROJ-3"
+        );
+        assert_eq!(
+            describe_with_facts(&issue("new", Some("2026-11-27"), &[]), today),
+            "PROJ-7 Migrate [In Review], not started, due 2026-11-27 (in 1 day)"
+        );
+        assert_eq!(
+            describe_with_facts(&issue("", None, &[]), today),
+            "PROJ-7 Migrate [In Review]"
+        );
+        assert_eq!(urgency(&issue("new", None, &["X-1"]), today), 0);
+        assert_eq!(urgency(&issue("new", Some("2026-11-01"), &[]), today), 1);
+        assert_eq!(urgency(&issue("new", Some("2026-12-01"), &[]), today), 2);
+        assert_eq!(urgency(&issue("indeterminate", None, &[]), today), 3);
+        assert_eq!(urgency(&issue("new", Some("2028-01-01"), &[]), today), 4);
     }
 
     #[test]

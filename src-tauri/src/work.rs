@@ -89,6 +89,10 @@ pub struct Work {
     pub mail: Part,
     /// The day `done` reaches back to, so an answer can say how far it looked.
     pub done_since: Option<NaiveDate>,
+    /// How many open Jira issues have a linked blocker, counted in code, when
+    /// Jira was read: "is anything blocked" is answered from a number, not by
+    /// the model reading the lines for the word.
+    pub jira_linked_blockers: Option<usize>,
 }
 
 /// What to read, and how much of it.
@@ -104,12 +108,16 @@ pub struct Scope {
 }
 
 /// One source's answer, before it is folded into a [`Part`].
+#[derive(Default)]
 struct Reading {
     name: &'static str,
     /// `Some` when the source answered, however empty.
     lines: Option<Vec<String>>,
     /// Why each connected account that did not answer could not be read.
     failed: Vec<String>,
+    /// More lines than the question's usual limit, for a source whose lines
+    /// are what the question is answered from.
+    limit: Option<usize>,
 }
 
 impl Reading {
@@ -119,7 +127,13 @@ impl Reading {
             name,
             lines: None,
             failed: Vec::new(),
+            limit: None,
         }
+    }
+
+    fn up_to(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
     }
 
     fn of<T>(name: &'static str, found: Found<T>, line: impl Fn(&T) -> Option<String>) -> Self {
@@ -129,6 +143,7 @@ impl Reading {
                 .answered
                 .then(|| found.items.iter().filter_map(&line).collect()),
             failed: found.failed,
+            limit: None,
         }
     }
 }
@@ -138,6 +153,7 @@ fn part(readings: Vec<Reading>, limit: usize) -> Part {
 
     for reading in readings {
         if let Some(mut lines) = reading.lines {
+            let limit = reading.limit.unwrap_or(limit);
             part.read.push(reading.name);
             part.more += lines.len().saturating_sub(limit);
             lines.truncate(limit);
@@ -162,6 +178,7 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
     let today = now.date_naive();
     let limit = scope.limit;
 
+    let mut jira_linked_blockers = None;
     let open = part(
         vec![
             pull_requests(context, PullRequestState::Open, Whose::Mine, |pr| {
@@ -175,9 +192,20 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
             Reading::of("Linear", sources::linear(context, None).await, |issue| {
                 Some(linear_line(issue, ""))
             }),
-            Reading::of("Jira", sources::jira(context, None).await, |issue| {
-                Some(crate::atlassian::describe(issue))
-            }),
+            {
+                let mut jira = sources::jira(context, None).await;
+                if jira.answered {
+                    jira_linked_blockers = Some(linked_blockers(&jira.items));
+                }
+                // Only some lines can be shown, so the ones a question about
+                // blocked, overdue or in-progress work needs come first.
+                jira.items
+                    .sort_by_key(|issue| crate::atlassian::urgency(issue, today));
+                Reading::of("Jira", jira, |issue| {
+                    Some(crate::atlassian::describe_with_facts(issue, today))
+                })
+                .up_to(limit.max(usize::from(recipe::PER_SOURCE)))
+            },
         ],
         limit,
     );
@@ -238,6 +266,7 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
     };
 
     Work {
+        jira_linked_blockers,
         open,
         reviews,
         done,
@@ -267,6 +296,14 @@ pub fn last_working_day(today: NaiveDate) -> NaiveDate {
 #[cfg(test)]
 fn last_week(today: NaiveDate) -> NaiveDate {
     today - Duration::days(6)
+}
+
+/// How many of these open Jira issues a linked, unfinished issue blocks.
+fn linked_blockers(issues: &[crate::atlassian::Issue]) -> usize {
+    issues
+        .iter()
+        .filter(|issue| !issue.detail.blocked_by.is_empty())
+        .count()
 }
 
 /// "today", "yesterday" or "N days ago".
@@ -349,6 +386,7 @@ async fn pull_requests(
                     .unwrap_or_default(),
             ),
             failed: Vec::new(),
+            ..Reading::default()
         },
         Err(github::Error::NotConnected) => Reading::absent("GitHub"),
         Err(error) => {
@@ -357,6 +395,7 @@ async fn pull_requests(
                 name: "GitHub",
                 lines: None,
                 failed: vec![error.to_string()],
+                ..Reading::default()
             }
         }
     }
@@ -409,6 +448,7 @@ async fn merged_pull_requests(
         name: "GitHub",
         lines: answered.then_some(lines),
         failed,
+        ..Reading::default()
     }
 }
 
@@ -498,6 +538,7 @@ async fn day_meetings(context: &Context, now: DateTime<Local>) -> Vec<Reading> {
             None
         },
         failed: calendar_failed,
+        ..Reading::default()
     });
 
     readings
@@ -588,6 +629,13 @@ impl Work {
             );
         }
 
+        if let Some(count) = self.jira_linked_blockers {
+            result.insert(
+                "jira_issues_with_a_linked_blocker".to_string(),
+                json!(count),
+            );
+        }
+
         if !not_read.is_empty() {
             result.insert("not_read".to_string(), Value::Array(not_read));
         }
@@ -611,8 +659,10 @@ const HOW_TO_USE: &str = "Answer from these lines only, in plain text. To priori
     on first, then urgent or in-progress open work, mentioning a meeting that limits the time. \
     For what was done, use the completed list and its dates. A list that is empty means there is \
     nothing; one under not_read could not be read, so say that and do not guess. Say how many \
-    more are under not_shown. If my_recently_completed_work_covers is shorter than the period \
-    the user asked about, call this tool again with more days.";
+    more are under not_shown. jira_issues_with_a_linked_blocker \
+    counts the Jira issues a linked issue blocks, and a line says 'blocked by' for each. If it is \
+    0, say that nothing has a linked blocker; you may add an issue whose status is named blocked, \
+    as its status and without inventing a cause. If my_recently_completed_work_covers is shorter than the period the user asked about, call this tool again with more days.";
 
 #[cfg(test)]
 mod tests {
@@ -680,6 +730,7 @@ mod tests {
             name,
             lines: lines.map(|lines| lines.iter().map(ToString::to_string).collect()),
             failed: failed.iter().map(ToString::to_string).collect(),
+            ..Reading::default()
         }
     }
 
@@ -722,6 +773,72 @@ mod tests {
     /// answer can say so.
     ///
     /// Proved by dropping the `more` count: the model is not told.
+    fn jira_issue(key: &str, blocked_by: &[&str]) -> crate::atlassian::Issue {
+        crate::atlassian::Issue {
+            key: key.to_string(),
+            summary: "Something".to_string(),
+            status: "Open".to_string(),
+            url: None,
+            resolved: None,
+            detail: crate::atlassian::Detail {
+                blocked_by: blocked_by.iter().map(|k| (*k).to_string()).collect(),
+                ..crate::atlassian::Detail::default()
+            },
+        }
+    }
+
+    #[test]
+    fn counts_the_jira_issues_a_linked_issue_blocks() {
+        let issues = [
+            jira_issue("A-1", &[]),
+            jira_issue("A-2", &["A-9"]),
+            jira_issue("A-3", &["A-9", "A-8"]),
+        ];
+
+        assert_eq!(linked_blockers(&issues), 2);
+        assert_eq!(linked_blockers(&issues[..1]), 0);
+    }
+
+    #[test]
+    fn the_count_is_in_the_result_only_when_jira_was_read() {
+        let mut read = Work {
+            open: Part {
+                read: vec!["Jira"],
+                lines: vec!["A-1 Something [Open]".to_string()],
+                ..Part::default()
+            },
+            ..Work::default()
+        };
+
+        assert!(read
+            .as_tool_result()
+            .expect("a result")
+            .get("jira_issues_with_a_linked_blocker")
+            .is_none());
+
+        read.jira_linked_blockers = Some(0);
+        assert_eq!(
+            read.as_tool_result().expect("a result")["jira_issues_with_a_linked_blocker"],
+            0
+        );
+    }
+
+    #[test]
+    fn a_source_asked_for_more_lines_keeps_them_and_the_rest_keep_the_limit() {
+        let lines = |n: usize| (0..n).map(|i| format!("line {i}")).collect::<Vec<_>>();
+        let reading = |name: &'static str| Reading {
+            name,
+            lines: Some(lines(12)),
+            failed: Vec::new(),
+            limit: None,
+        };
+
+        let kept = part(vec![reading("GitHub"), reading("Jira").up_to(25)], 8);
+
+        assert_eq!(kept.lines.len(), 8 + 12);
+        assert_eq!(kept.more, 4);
+    }
+
     #[test]
     fn lines_beyond_the_limit_are_counted_not_lost_silently() {
         let lines: Vec<String> = (1..=11).map(|n| format!("item {n}")).collect();
