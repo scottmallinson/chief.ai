@@ -175,9 +175,16 @@ pub async fn read(context: &Context, scope: &Scope) -> Work {
             Reading::of("Linear", sources::linear(context, None).await, |issue| {
                 Some(linear_line(issue, ""))
             }),
-            Reading::of("Jira", sources::jira(context, None).await, |issue| {
-                Some(crate::atlassian::describe_with_facts(issue))
-            }),
+            {
+                let mut jira = sources::jira(context, None).await;
+                // Only some lines can be shown, so the ones a question about
+                // blocked, overdue or in-progress work needs come first.
+                jira.items
+                    .sort_by_key(|issue| crate::atlassian::urgency(issue, today));
+                Reading::of("Jira", jira, |issue| {
+                    Some(crate::atlassian::describe_with_facts(issue, today))
+                })
+            },
         ],
         limit,
     );
